@@ -8,12 +8,14 @@ from pathlib import Path
 
 from mcp.server.fastmcp import Context, FastMCP
 
+from . import dispatch
 from .endpoint import EndpointCLI
 from .facility.base import Facility
 from .facility.local import LocalFacility
 from .lifecycle import EndpointState, ensure_warm
-from .models import EndpointStatus
+from .models import EndpointStatus, ShellOutcome
 from .profile import Profile
+from .runner import GlobusRunner
 
 
 @dataclass
@@ -21,6 +23,7 @@ class AppCtx:
     facility: Facility
     profile: Profile
     state: EndpointState = field(default_factory=EndpointState)
+    runner: GlobusRunner | None = None
 
 
 def make_facility() -> Facility:
@@ -31,7 +34,12 @@ def make_facility() -> Facility:
 @asynccontextmanager
 async def lifespan(server: FastMCP) -> AsyncIterator[AppCtx]:
     mode = os.environ.get("HPC_BRIDGE_PROFILE", "batch")
-    yield AppCtx(facility=make_facility(), profile=Profile(mode=mode))  # type: ignore[arg-type]
+    app = AppCtx(facility=make_facility(), profile=Profile(mode=mode))  # type: ignore[arg-type]
+    try:
+        yield app
+    finally:
+        if app.runner is not None:
+            app.runner.close()
 
 
 mcp = FastMCP("hpc-bridge", lifespan=lifespan)
@@ -53,6 +61,28 @@ async def _ensure_endpoint_up(app: AppCtx) -> EndpointStatus:
 async def ensure_endpoint_up(ctx: Context) -> EndpointStatus:
     """Ensure the personal HPC endpoint is up; report whether its pilot block is warm."""
     return await _ensure_endpoint_up(ctx.request_context.lifespan_context)
+
+
+async def _run_shell(app: AppCtx, command: str) -> ShellOutcome:
+    block, app.state = await ensure_warm(app.facility, app.profile, app.state)
+    if block != "warm":
+        return ShellOutcome(
+            phase="cold_start",
+            block_state=block,
+            est_wait_s=60,
+            notice="allocating nodes…",
+        )
+    if app.runner is None or app.runner.endpoint_id != app.state.endpoint_id:
+        if app.runner is not None:
+            app.runner.close()
+        app.runner = GlobusRunner(app.state.endpoint_id)  # type: ignore[arg-type]
+    return await dispatch.execute(command, app.runner, block_state="warm")
+
+
+@mcp.tool()
+async def run_shell(command: str, ctx: Context) -> ShellOutcome:
+    """Run a shell command on the warm HPC compute block and return its result."""
+    return await _run_shell(ctx.request_context.lifespan_context, command)
 
 
 def main() -> None:
