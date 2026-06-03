@@ -15,6 +15,11 @@ class FakeCLI:
         p.parent.mkdir(parents=True, exist_ok=True)
         return p
 
+    def user_template_path(self, name):
+        p = self.tmp / name / "user_config_template.yaml.j2"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        return p
+
     async def configure(self, name):
         self.configured.append(name)
 
@@ -41,5 +46,7 @@ async def test_provision_writes_config_and_starts(tmp_path):
     handle = await f.provision(Profile(mode="batch"))
     assert handle.endpoint_id == "local-eid"
     assert cli.configured == ["dev"] and cli.started == ["dev"]
-    written = (tmp_path / "dev" / "config.yaml").read_text()
+    # engine must be written to the UEP template, NOT the manager config.yaml
+    written = (tmp_path / "dev" / "user_config_template.yaml.j2").read_text()
     assert "LocalProvider" in written
+    assert not (tmp_path / "dev" / "config.yaml").exists()

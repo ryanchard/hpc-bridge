@@ -16,9 +16,11 @@ class LocalFacility:
         self.endpoint_name = endpoint_name
 
     def config_template(self, profile: Profile) -> dict:
+        # The per-user-process (UEP) template content. In globus-compute-endpoint 4.x
+        # the engine lives here, not in the manager config.yaml. The interactive
+        # profile holds a warm block (min_blocks>=1); batch scales to zero.
         warm = profile.mode == "interactive"
         return {
-            "display_name": self.endpoint_name,
             "engine": {
                 "type": "GlobusComputeEngine",
                 "max_workers_per_node": 1,
@@ -33,9 +35,12 @@ class LocalFacility:
         }
 
     async def provision(self, profile: Profile) -> EndpointHandle:
+        # configure() forces --multi-user false (personal, no identity-mapping);
+        # then write our engine into the UEP template, leaving config.yaml as the
+        # engine-free manager config that `start` requires.
         await self.cli.configure(self.endpoint_name)
-        path = self.cli.config_path(self.endpoint_name)
-        path.write_text(yaml.safe_dump(self.config_template(profile), sort_keys=False))
+        template = self.cli.user_template_path(self.endpoint_name)
+        template.write_text(yaml.safe_dump(self.config_template(profile), sort_keys=False))
         eid = await self.cli.start(self.endpoint_name)
         return EndpointHandle(endpoint_id=eid, name=self.endpoint_name)
 

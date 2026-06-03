@@ -25,6 +25,13 @@ class EndpointCLI:
         base = self.user_dir or (Path.home() / ".globus_compute")
         return base / name / "config.yaml"
 
+    def user_template_path(self, name: str) -> Path:
+        # globus-compute-endpoint 4.x runs `start` as an EndpointManager whose
+        # config.yaml must be engine-free; the compute engine lives here, in the
+        # per-user-process (UEP) template.
+        base = self.user_dir or (Path.home() / ".globus_compute")
+        return base / name / "user_config_template.yaml.j2"
+
     async def _default_run(self, *args: str) -> tuple[int, str, str]:
         proc = await asyncio.create_subprocess_exec(
             "globus-compute-endpoint",
@@ -36,8 +43,14 @@ class EndpointCLI:
         out, err = await proc.communicate()
         return proc.returncode or 0, out.decode(), err.decode()
 
-    async def configure(self, name: str) -> None:
-        rc, _out, err = await self._run("configure", name)
+    async def configure(self, name: str, multi_user: bool = False) -> None:
+        # hpc-bridge invariant: always a PERSONAL (single-user) endpoint, never a MEP.
+        # globus-compute-endpoint's default auto-selects multi-user from the configuring
+        # user's POSIX capabilities, which can silently create a multi-user (identity-
+        # mapping) endpoint — the exact thing this project avoids. Force it off.
+        rc, _out, err = await self._run(
+            "configure", "--multi-user", "true" if multi_user else "false", name
+        )
         if rc != 0:
             raise RuntimeError(f"configure failed: {err}")
 
