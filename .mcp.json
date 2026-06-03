@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "hpc-bridge": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["--from", "${CLAUDE_PLUGIN_ROOT}", "hpc-bridge"],
+      "env": { "HPC_BRIDGE_USER_DIR": "${CLAUDE_PLUGIN_DATA}/globus_compute" }
+    }
+  }
+}
