@@ -35,7 +35,30 @@ class AppCtx:
     warm_since: float | None = None
 
 
+def _require_env(name: str) -> str:
+    val = os.environ.get(name, "").strip()
+    if not val:
+        raise RuntimeError(f"{name} is required for the selected HPC_BRIDGE_FACILITY")
+    return val
+
+
 def make_facility() -> Facility:
+    """Select the facility: a remote Slurm cluster (HPC_BRIDGE_FACILITY) or local dev."""
+    fac = os.environ.get("HPC_BRIDGE_FACILITY", "").strip().lower()
+    if fac == "anvil":
+        from .facility.remote import RemoteEndpointCLI, SlurmFacility, SshTarget, anvil_profile
+
+        target = SshTarget(
+            host=os.environ.get("HPC_BRIDGE_SSH_HOST", "anvil.rcac.purdue.edu"),
+            user=_require_env("HPC_BRIDGE_SSH_USER"),
+            key_path=os.path.expanduser(_require_env("HPC_BRIDGE_SSH_KEY")),
+        )
+        profile = anvil_profile(
+            account=_require_env("HPC_BRIDGE_ACCOUNT"),
+            user=target.user,
+            partition=os.environ.get("HPC_BRIDGE_PARTITION", "debug"),
+        )
+        return SlurmFacility(profile, RemoteEndpointCLI(target, profile.env_setup))
     user_dir = Path(os.environ.get("HPC_BRIDGE_USER_DIR", str(Path.home() / ".globus_compute")))
     return LocalFacility(EndpointCLI(user_dir=user_dir))
 
@@ -72,9 +95,14 @@ def _env_endpoint_id() -> str | None:
 
 @asynccontextmanager
 async def lifespan(server: FastMCP) -> AsyncIterator[AppCtx]:
-    scratch = os.path.expanduser(os.environ.get("HPC_BRIDGE_SCRATCH", "~/.hpc-bridge"))
+    facility = make_facility()
+    # Session-shell root: explicit env wins, else the facility's shared-FS scratch
+    # (e.g. Anvil $SCRATCH), else a local default.
+    scratch = os.path.expanduser(
+        os.environ.get("HPC_BRIDGE_SCRATCH") or getattr(facility, "scratch_root", None) or "~/.hpc-bridge"
+    )
     app = AppCtx(
-        facility=make_facility(),
+        facility=facility,
         profile=Profile(mode=_env_mode()),  # type: ignore[arg-type]
         state=EndpointState(endpoint_id=_env_endpoint_id()),
         scratch_root=scratch,
@@ -129,6 +157,35 @@ async def _ensure_endpoint_up(app: AppCtx) -> EndpointStatus:
 async def ensure_endpoint_up(ctx: Context) -> EndpointStatus:
     """Ensure the personal HPC endpoint is up; report whether its pilot block is warm."""
     return await _ensure_endpoint_up(ctx.request_context.lifespan_context)
+
+
+async def _stop_endpoint(app: AppCtx) -> EndpointStatus:
+    """Tear down the current endpoint, release its compute, and reset session state."""
+    eid = app.state.endpoint_id
+    teardown = getattr(app.facility, "teardown", None)
+    if eid is None:
+        notice = "no endpoint was up"
+    elif teardown is None:
+        notice = "this facility has no teardown (local dev)"
+    else:
+        try:
+            await teardown(eid)
+            notice = "endpoint stopped; compute block released"
+        except Exception as exc:  # noqa: BLE001 - report, never crash the tool
+            notice = f"stop attempted; {type(exc).__name__}: {exc}"[:300]
+    if app.runner is not None:
+        app.runner.close()
+        app.runner = None
+    app.state = EndpointState()  # clear so the next ensure_endpoint_up re-provisions
+    app.warm_since = None
+    return EndpointStatus(status="down", block_state="cold", endpoint_id=eid, notice=notice)
+
+
+@mcp.tool()
+async def stop_endpoint(ctx: Context) -> EndpointStatus:
+    """Stop the HPC endpoint and release its compute block(s). Call when finished with a
+    session so the allocation stops being charged for the held block."""
+    return await _stop_endpoint(ctx.request_context.lifespan_context)
 
 
 def _cold_outcome(block: str) -> ShellOutcome:

@@ -169,3 +169,66 @@ async def test_ensure_endpoint_up_reports_down_on_provision_failure():
     res = await _ensure_endpoint_up(app)
     assert res.status == "down"
     assert res.notice and "Linux" in res.notice
+
+
+async def test_stop_endpoint_tears_down_and_resets():
+    from hpc_bridge.server import _stop_endpoint
+
+    class _TeardownFacility(FakeFacility):
+        def __init__(self):
+            super().__init__()
+            self.torn = None
+
+        async def teardown(self, eid):
+            self.torn = eid
+
+    f = _TeardownFacility()
+    app = AppCtx(facility=f, profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
+    app.runner = _FakeRunner("eid-1", _Res(0, "", ""))
+    res = await _stop_endpoint(app)
+    assert res.status == "down" and res.block_state == "cold"
+    assert f.torn == "eid-1"  # facility teardown called with the live endpoint
+    assert app.runner is None and app.state.endpoint_id is None  # reset for re-provision
+    assert "released" in (res.notice or "")
+
+
+async def test_stop_endpoint_noop_when_nothing_up():
+    from hpc_bridge.server import _stop_endpoint
+
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    res = await _stop_endpoint(app)
+    assert res.status == "down" and "no endpoint" in (res.notice or "")
+
+
+async def test_server_registers_stop_endpoint_tool():
+    tools = await mcp.list_tools()
+    assert any(t.name == "stop_endpoint" for t in tools)
+
+
+def test_make_facility_selects_slurm_for_anvil(monkeypatch):
+    from hpc_bridge.server import make_facility
+
+    monkeypatch.setenv("HPC_BRIDGE_FACILITY", "anvil")
+    monkeypatch.setenv("HPC_BRIDGE_SSH_USER", "x-u")
+    monkeypatch.setenv("HPC_BRIDGE_SSH_KEY", "/tmp/anvil-key")
+    monkeypatch.setenv("HPC_BRIDGE_ACCOUNT", "ACC")
+    assert make_facility().name == "anvil"
+
+
+def test_make_facility_requires_env_for_anvil(monkeypatch):
+    import pytest
+
+    from hpc_bridge.server import make_facility
+
+    monkeypatch.setenv("HPC_BRIDGE_FACILITY", "anvil")
+    for v in ("HPC_BRIDGE_SSH_USER", "HPC_BRIDGE_SSH_KEY", "HPC_BRIDGE_ACCOUNT"):
+        monkeypatch.delenv(v, raising=False)
+    with pytest.raises(RuntimeError, match="required"):
+        make_facility()
+
+
+def test_make_facility_defaults_local(monkeypatch):
+    from hpc_bridge.server import make_facility
+
+    monkeypatch.delenv("HPC_BRIDGE_FACILITY", raising=False)
+    assert make_facility().name == "local"
