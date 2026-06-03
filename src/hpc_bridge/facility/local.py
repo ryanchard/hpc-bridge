@@ -49,13 +49,13 @@ class LocalFacility:
         await self.cli.start(self.endpoint_name)
 
     async def worker_count(self, endpoint_id: str) -> int:
-        # Queries the Globus web service. NOTE: verify the status-dict keys against
-        # the installed globus-compute-sdk during the integration test; adjust if needed.
+        # globus-compute-endpoint 4.x exposes only {"status": "online"|"offline"} here —
+        # NOT a worker count (confirmed against 4.12). Treat manager-online as ready (1).
+        # True warm/cold worker-block readiness is observed at dispatch time (M1), not here.
         from globus_compute_sdk import Client
 
         status = await asyncio.to_thread(Client().get_endpoint_status, endpoint_id)
-        details = status.get("details") or {}
-        return int(details.get("total_workers") or details.get("managers") or 0)
+        return 1 if status.get("status") == "online" else 0
 
     async def allocation_remaining(self) -> float | None:
         return None

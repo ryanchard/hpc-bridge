@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
-import re
 from pathlib import Path
 from typing import Awaitable, Callable
 
 Runner = Callable[..., Awaitable[tuple[int, str, str]]]
-_EID = re.compile(r"Endpoint ID:\s*([0-9a-fA-F-]{36})")
 
 
 class EndpointCLI:
@@ -21,16 +20,21 @@ class EndpointCLI:
             env["GLOBUS_COMPUTE_USER_DIR"] = str(self.user_dir)
         return env
 
-    def config_path(self, name: str) -> Path:
+    def _ep_dir(self, name: str) -> Path:
         base = self.user_dir or (Path.home() / ".globus_compute")
-        return base / name / "config.yaml"
+        return base / name
+
+    def config_path(self, name: str) -> Path:
+        return self._ep_dir(name) / "config.yaml"
 
     def user_template_path(self, name: str) -> Path:
         # globus-compute-endpoint 4.x runs `start` as an EndpointManager whose
         # config.yaml must be engine-free; the compute engine lives here, in the
         # per-user-process (UEP) template.
-        base = self.user_dir or (Path.home() / ".globus_compute")
-        return base / name / "user_config_template.yaml.j2"
+        return self._ep_dir(name) / "user_config_template.yaml.j2"
+
+    def endpoint_id(self, name: str) -> str:
+        return json.loads((self._ep_dir(name) / "endpoint.json").read_text())["endpoint_id"]
 
     async def _default_run(self, *args: str) -> tuple[int, str, str]:
         proc = await asyncio.create_subprocess_exec(
@@ -55,13 +59,12 @@ class EndpointCLI:
             raise RuntimeError(f"configure failed: {err}")
 
     async def start(self, name: str) -> str:
-        rc, out, err = await self._run("start", name)
+        # 4.x `start` runs in the FOREGROUND by default; --detach daemonizes it and
+        # returns promptly. The registered UUID is written to endpoint.json, not stdout.
+        rc, _out, err = await self._run("start", name, "--detach")
         if rc != 0:
             raise RuntimeError(f"start failed: {err}")
-        m = _EID.search(out)
-        if not m:
-            raise RuntimeError(f"no endpoint id in output: {out!r}")
-        return m.group(1)
+        return self.endpoint_id(name)
 
     async def stop(self, name: str) -> None:
         rc, _out, err = await self._run("stop", name)
