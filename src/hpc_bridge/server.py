@@ -8,7 +8,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import Context, FastMCP
 
-from . import dispatch
+from . import dispatch, session_shell
 from .endpoint import EndpointCLI
 from .facility.base import Facility
 from .facility.local import LocalFacility
@@ -16,6 +16,7 @@ from .lifecycle import EndpointState, ensure_warm
 from .models import EndpointStatus, ShellOutcome
 from .profile import Profile
 from .runner import GlobusRunner
+from .session_shell import Session
 
 
 @dataclass
@@ -24,6 +25,7 @@ class AppCtx:
     profile: Profile
     state: EndpointState = field(default_factory=EndpointState)
     runner: GlobusRunner | None = None
+    scratch_root: str = "~/.hpc-bridge"
 
 
 def make_facility() -> Facility:
@@ -34,7 +36,12 @@ def make_facility() -> Facility:
 @asynccontextmanager
 async def lifespan(server: FastMCP) -> AsyncIterator[AppCtx]:
     mode = os.environ.get("HPC_BRIDGE_PROFILE", "batch")
-    app = AppCtx(facility=make_facility(), profile=Profile(mode=mode))  # type: ignore[arg-type]
+    scratch = os.path.expanduser(os.environ.get("HPC_BRIDGE_SCRATCH", "~/.hpc-bridge"))
+    app = AppCtx(
+        facility=make_facility(),
+        profile=Profile(mode=mode),  # type: ignore[arg-type]
+        scratch_root=scratch,
+    )
     try:
         yield app
     finally:
@@ -63,26 +70,57 @@ async def ensure_endpoint_up(ctx: Context) -> EndpointStatus:
     return await _ensure_endpoint_up(ctx.request_context.lifespan_context)
 
 
-async def _run_shell(app: AppCtx, command: str) -> ShellOutcome:
+def _cold_outcome(block: str) -> ShellOutcome:
+    return ShellOutcome(
+        phase="cold_start",
+        block_state=block,
+        est_wait_s=60,
+        notice="allocating nodes…",
+    )
+
+
+async def _ensure_warm_runner(app: AppCtx) -> str | None:
+    """Ensure the endpoint is warm and a runner exists. Returns block state if NOT warm."""
     block, app.state = await ensure_warm(app.facility, app.profile, app.state)
     if block != "warm":
-        return ShellOutcome(
-            phase="cold_start",
-            block_state=block,
-            est_wait_s=60,
-            notice="allocating nodes…",
-        )
+        return block
     if app.runner is None or app.runner.endpoint_id != app.state.endpoint_id:
         if app.runner is not None:
             app.runner.close()
         app.runner = GlobusRunner(app.state.endpoint_id)  # type: ignore[arg-type]
-    return await dispatch.execute(command, app.runner, block_state="warm")
+    return None
+
+
+async def _run_shell(app: AppCtx, command: str, session_id: str = "default") -> ShellOutcome:
+    not_warm = await _ensure_warm_runner(app)
+    if not_warm is not None:
+        return _cold_outcome(not_warm)
+    wrapped = session_shell.wrap(command, Session(session_id, app.scratch_root))
+    return await dispatch.execute(wrapped, app.runner, block_state="warm")
+
+
+async def _reset_session(app: AppCtx, session_id: str = "default") -> ShellOutcome:
+    not_warm = await _ensure_warm_runner(app)
+    if not_warm is not None:
+        return _cold_outcome(not_warm)
+    cmd = session_shell.reset_command(Session(session_id, app.scratch_root))
+    return await dispatch.execute(cmd, app.runner, block_state="warm")
 
 
 @mcp.tool()
-async def run_shell(command: str, ctx: Context) -> ShellOutcome:
-    """Run a shell command on the warm HPC compute block and return its result."""
-    return await _run_shell(ctx.request_context.lifespan_context, command)
+async def run_shell(command: str, ctx: Context, session_id: str = "default") -> ShellOutcome:
+    """Run a shell command on the warm HPC compute block.
+
+    The session keeps a persistent working directory and environment, so `cd` and
+    relative paths carry across calls within the same session_id.
+    """
+    return await _run_shell(ctx.request_context.lifespan_context, command, session_id)
+
+
+@mcp.tool()
+async def reset_session(ctx: Context, session_id: str = "default") -> ShellOutcome:
+    """Clear a session's persisted working directory and environment (fresh slate)."""
+    return await _reset_session(ctx.request_context.lifespan_context, session_id)
 
 
 def main() -> None:

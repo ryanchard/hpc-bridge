@@ -15,8 +15,10 @@ class _FakeRunner:
         self.endpoint_id = endpoint_id
         self._res = res
         self.closed = False
+        self.commands = []
 
     async def run(self, command):
+        self.commands.append(command)
         return self._res
 
     def close(self):
@@ -69,3 +71,33 @@ async def test_run_shell_cold_returns_cold_start():
 async def test_server_registers_run_shell_tool():
     tools = await mcp.list_tools()
     assert any(t.name == "run_shell" for t in tools)
+
+
+async def test_run_shell_wraps_command_with_session_shim():
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    app.runner = _FakeRunner("fake-eid", _Res(0, "", ""))
+    await _run_shell(app, "make", session_id="s1")
+    sent = app.runner.commands[-1]
+    assert "make" in sent
+    assert "sessions/s1" in sent  # routed through the session dir
+    assert ".cwd" in sent  # shim rehydrates/persists cwd
+
+
+async def test_reset_session_dispatches_reset_command():
+    from hpc_bridge.server import _reset_session
+
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    app.runner = _FakeRunner("fake-eid", _Res(0, "", ""))
+    await _reset_session(app, "s1")
+    sent = app.runner.commands[-1]
+    assert sent.startswith("rm -f")
+    assert "sessions/s1" in sent
+
+
+async def test_server_registers_reset_session_tool():
+    tools = await mcp.list_tools()
+    assert any(t.name == "reset_session" for t in tools)
