@@ -42,3 +42,35 @@ async def test_execute_caps_large_output():
     out = await execute("big", runner, max_output_chars=100)
     assert out.stdout.startswith("y" * 100)
     assert "truncated" in out.stdout
+
+
+class RaisingRunner:
+    def __init__(self, exc):
+        self.exc = exc
+
+    async def run(self, command):
+        raise self.exc
+
+
+async def test_execute_translates_timeout_to_structured_failure():
+    out = await execute("sleep 999", RaisingRunner(TimeoutError()))
+    assert out.phase == "failed"
+    assert out.exit_code == 124
+    assert "ensure_endpoint_up" in (out.notice or "")
+
+
+async def test_execute_translates_generic_exception_to_failure():
+    out = await execute("boom", RaisingRunner(RuntimeError("kaboom")))
+    assert out.phase == "failed"
+    assert "kaboom" in (out.stderr_snippet or "")
+
+
+class _NamedError(Exception):
+    pass
+
+
+async def test_execute_translates_result_size_by_class_name():
+    err = type("MaxResultSizeExceeded", (Exception,), {})()
+    out = await execute("cat huge", RaisingRunner(err))
+    assert out.phase == "failed"
+    assert "10 MB" in (out.notice or "")

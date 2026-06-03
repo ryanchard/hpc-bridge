@@ -27,9 +27,9 @@ async def test_local_endpoint_reaches_warm(tmp_path: Path):
         assert state.endpoint_id
         # interactive profile has init_blocks=1; a worker should register shortly
         for _ in range(30):
-            if await fac.worker_count(state.endpoint_id) >= 1:
+            if await fac.manager_online(state.endpoint_id):
                 break
             await asyncio.sleep(1)
-        assert await fac.worker_count(state.endpoint_id) >= 1
+        assert await fac.manager_online(state.endpoint_id)
     finally:
         await cli.stop(name)

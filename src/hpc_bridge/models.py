@@ -8,7 +8,7 @@ NodeHours = float
 
 
 class ShellOutcome(BaseModel):
-    phase: Literal["complete", "cold_start"]
+    phase: Literal["complete", "cold_start", "failed"]
     exit_code: int | None = None
     stdout: str = ""
     stderr_snippet: str = ""

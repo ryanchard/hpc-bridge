@@ -17,9 +17,18 @@ class GlobusRunner:
     for tests; the default builds a real `globus_compute_sdk.Executor`.
     """
 
-    def __init__(self, endpoint_id: str, executor_factory=None, timeout: float = 200.0) -> None:
+    def __init__(
+        self,
+        endpoint_id: str,
+        executor_factory=None,
+        timeout: float = 120.0,
+        walltime: float | None = None,
+    ) -> None:
         self.endpoint_id = endpoint_id
         self.timeout = timeout
+        # Server-side wall-clock: the worker kills the process and returns 124 at
+        # `walltime`, slightly before the client stops waiting at `timeout`.
+        self.walltime = walltime if walltime is not None else max(timeout - 10.0, 5.0)
         self._ex = None
         self._factory = executor_factory or self._default_factory
 
@@ -36,7 +45,8 @@ class GlobusRunner:
     async def run(self, command: str):
         from globus_compute_sdk import ShellFunction
 
-        fut = self.executor().submit(ShellFunction(_escape_for_shellfunction(command)))
+        fn = ShellFunction(_escape_for_shellfunction(command), walltime=self.walltime)
+        fut = self.executor().submit(fn)
         # .result() blocks on the AMQP round-trip; run it off the event loop.
         return await asyncio.to_thread(fut.result, self.timeout)
 

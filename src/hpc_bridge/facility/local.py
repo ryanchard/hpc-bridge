@@ -48,14 +48,15 @@ class LocalFacility:
         await self.cli.stop(self.endpoint_name)
         await self.cli.start(self.endpoint_name)
 
-    async def worker_count(self, endpoint_id: str) -> int:
+    async def manager_online(self, endpoint_id: str) -> bool:
         # globus-compute-endpoint 4.x exposes only {"status": "online"|"offline"} here —
-        # NOT a worker count (confirmed against 4.12). Treat manager-online as ready (1).
-        # True warm/cold worker-block readiness is observed at dispatch time (M1), not here.
+        # NOT a worker count (confirmed against 4.12). The EndpointManager being online is
+        # our readiness signal; true warm/cold worker-block readiness isn't exposed and is
+        # a dispatch-time concern.
         from globus_compute_sdk import Client
 
         status = await asyncio.to_thread(Client().get_endpoint_status, endpoint_id)
-        return 1 if status.get("status") == "online" else 0
+        return status.get("status") == "online"
 
     async def allocation_remaining(self) -> float | None:
         return None

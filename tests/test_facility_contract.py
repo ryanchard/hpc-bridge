@@ -12,8 +12,8 @@ async def test_fake_facility_satisfies_protocol_and_provisions():
     assert f.provisioned is True
 
 
-async def test_fake_facility_worker_count_is_controllable():
+async def test_fake_facility_manager_online_is_controllable():
     f = FakeFacility()
-    assert await f.worker_count("fake-eid") == 0
+    assert await f.manager_online("fake-eid") is False
     f.workers = 2
-    assert await f.worker_count("fake-eid") == 2
+    assert await f.manager_online("fake-eid") is True

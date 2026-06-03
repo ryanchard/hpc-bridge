@@ -80,9 +80,9 @@ async def test_run_shell_wraps_command_with_session_shim():
     app.runner = _FakeRunner("fake-eid", _Res(0, "", ""))
     await _run_shell(app, "make", session_id="s1")
     sent = app.runner.commands[-1]
-    assert "make" in sent
     assert "sessions/s1" in sent  # routed through the session dir
     assert ".cwd" in sent  # shim rehydrates/persists cwd
+    assert "base64 -d" in sent  # command carried inertly, not raw
 
 
 async def test_reset_session_dispatches_reset_command():
@@ -101,3 +101,36 @@ async def test_reset_session_dispatches_reset_command():
 async def test_server_registers_reset_session_tool():
     tools = await mcp.list_tools()
     assert any(t.name == "reset_session" for t in tools)
+
+
+async def test_run_shell_rejects_traversal_session_id():
+    import pytest
+
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    app.runner = _FakeRunner("fake-eid", _Res(0, "", ""))
+    with pytest.raises(ValueError):
+        await _run_shell(app, "echo hi", session_id="../../etc")
+
+
+async def test_cost_gate_downgrades_interactive_below_floor():
+    from hpc_bridge.server import _provision
+
+    f = FakeFacility()
+    f.workers = 1
+    f.allocation = 100.0
+    app = AppCtx(facility=f, profile=Profile(mode="interactive"), alloc_floor=1000.0)
+    await _provision(app)
+    assert f.provisioned_profile.mode == "batch"  # downgraded by the gate
+
+
+async def test_cost_gate_keeps_interactive_with_ample_allocation():
+    from hpc_bridge.server import _provision
+
+    f = FakeFacility()
+    f.workers = 1
+    f.allocation = 5000.0
+    app = AppCtx(facility=f, profile=Profile(mode="interactive"), alloc_floor=1000.0)
+    await _provision(app)
+    assert f.provisioned_profile.mode == "interactive"
