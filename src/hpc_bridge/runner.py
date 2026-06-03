@@ -3,6 +3,12 @@ from __future__ import annotations
 import asyncio
 
 
+def _escape_for_shellfunction(command: str) -> str:
+    """ShellFunction runs cmd.format(**kwargs); double literal braces so arbitrary
+    shell (brace groups, ${VAR}) survives the format pass as single braces."""
+    return command.replace("{", "{{").replace("}", "}}")
+
+
 class GlobusRunner:
     """Dispatches shell commands to a Globus Compute endpoint via a long-lived Executor.
 
@@ -30,7 +36,7 @@ class GlobusRunner:
     async def run(self, command: str):
         from globus_compute_sdk import ShellFunction
 
-        fut = self.executor().submit(ShellFunction(command))
+        fut = self.executor().submit(ShellFunction(_escape_for_shellfunction(command)))
         # .result() blocks on the AMQP round-trip; run it off the event loop.
         return await asyncio.to_thread(fut.result, self.timeout)
 

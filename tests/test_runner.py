@@ -1,6 +1,15 @@
 import pytest
 
-from hpc_bridge.runner import GlobusRunner
+from hpc_bridge.runner import GlobusRunner, _escape_for_shellfunction
+
+
+def test_escape_braces_for_shellfunction_roundtrips():
+    # ShellFunction does cmd.format(**kwargs); literal braces must be doubled so they
+    # survive as single braces (and don't get read as replacement fields).
+    cmd = "mkdir -p x && { echo hi; } && echo ${HOME}"
+    escaped = _escape_for_shellfunction(cmd)
+    assert "{{" in escaped and "}}" in escaped
+    assert escaped.format() == cmd  # collapses back to the original shell command
 
 
 class FakeFuture:
