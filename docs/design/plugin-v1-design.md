@@ -46,6 +46,8 @@ class Facility(Protocol):
 - `LocalFacility` — `LocalProvider` config, no SSH, mock accounting. Drives M0–M4.
 - `NerscFacility` — `SlurmProvider` config + `worker_init`/`address_by_interface`; `provision`/`restart` delegate SSH to the broker; `allocation_remaining` hits Iris. Built at M5.
 
+> **v4.x endpoint model (confirmed during M0 live debugging).** `globus-compute-endpoint` ≥4 runs `start` as an **EndpointManager**: its `config.yaml` must be **engine-free**, and the compute engine lives in `user_config_template.yaml.j2` (the per-user-process template). Provisioning a *personal* endpoint therefore means: `configure --multi-user false` (disables identity-mapping so the manager spawns the worker process as you — no privilege; the manager *is* the lightweight "coordinator" the vision describes), then write the engine to the UEP template, not `config.yaml`. The default `configure` (no `--multi-user`) auto-selects multi-user from POSIX capabilities and can silently create an identity-mapping MEP — so forcing `--multi-user false` is a hard invariant, not a preference.
+
 ---
 
 ## 2. The MCP tool contract
