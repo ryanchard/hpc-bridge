@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -9,6 +10,7 @@ from pathlib import Path
 from mcp.server.fastmcp import Context, FastMCP
 
 from . import dispatch, session_shell
+from .cost import estimate_spend, gate_profile
 from .endpoint import EndpointCLI
 from .facility.base import Facility
 from .facility.local import LocalFacility
@@ -26,6 +28,10 @@ class AppCtx:
     state: EndpointState = field(default_factory=EndpointState)
     runner: GlobusRunner | None = None
     scratch_root: str = "~/.hpc-bridge"
+    alloc_floor: float = 1000.0
+    charge_factor: float = 0.0
+    max_output_chars: int = 1_000_000
+    warm_since: float | None = None
 
 
 def make_facility() -> Facility:
@@ -41,6 +47,8 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppCtx]:
         facility=make_facility(),
         profile=Profile(mode=mode),  # type: ignore[arg-type]
         scratch_root=scratch,
+        alloc_floor=float(os.environ.get("HPC_BRIDGE_ALLOC_FLOOR", "1000")),
+        charge_factor=float(os.environ.get("HPC_BRIDGE_CHARGE_FACTOR", "0")),
     )
     try:
         yield app
@@ -81,9 +89,15 @@ def _cold_outcome(block: str) -> ShellOutcome:
 
 async def _ensure_warm_runner(app: AppCtx) -> str | None:
     """Ensure the endpoint is warm and a runner exists. Returns block state if NOT warm."""
-    block, app.state = await ensure_warm(app.facility, app.profile, app.state)
+    # Cost gate: refuse a warm block below the allocation floor (no-op when remaining
+    # is unknown, e.g. local dev). Then provision/probe under the (possibly downgraded) profile.
+    remaining = await app.facility.allocation_remaining()
+    profile = gate_profile(app.profile, remaining, app.alloc_floor)
+    block, app.state = await ensure_warm(app.facility, profile, app.state)
     if block != "warm":
         return block
+    if app.warm_since is None:
+        app.warm_since = time.monotonic()
     if app.runner is None or app.runner.endpoint_id != app.state.endpoint_id:
         if app.runner is not None:
             app.runner.close()
@@ -91,12 +105,23 @@ async def _ensure_warm_runner(app: AppCtx) -> str | None:
     return None
 
 
+def _with_spend(app: AppCtx, out: ShellOutcome) -> ShellOutcome:
+    if app.warm_since is not None:
+        out.session_spend = estimate_spend(
+            time.monotonic() - app.warm_since, app.profile.nodes_per_block, app.charge_factor
+        )
+    return out
+
+
 async def _run_shell(app: AppCtx, command: str, session_id: str = "default") -> ShellOutcome:
     not_warm = await _ensure_warm_runner(app)
     if not_warm is not None:
         return _cold_outcome(not_warm)
     wrapped = session_shell.wrap(command, Session(session_id, app.scratch_root))
-    return await dispatch.execute(wrapped, app.runner, block_state="warm")
+    out = await dispatch.execute(
+        wrapped, app.runner, block_state="warm", max_output_chars=app.max_output_chars
+    )
+    return _with_spend(app, out)
 
 
 async def _reset_session(app: AppCtx, session_id: str = "default") -> ShellOutcome:

@@ -35,3 +35,10 @@ async def test_execute_preserves_nonzero_exit_and_stderr():
     out = await execute("false", runner)
     assert out.exit_code == 2
     assert out.stderr_snippet == "boom\n"
+
+
+async def test_execute_caps_large_output():
+    runner = FakeRunner(FakeResult(0, "y" * 5000, ""))
+    out = await execute("big", runner, max_output_chars=100)
+    assert out.stdout.startswith("y" * 100)
+    assert "truncated" in out.stdout
