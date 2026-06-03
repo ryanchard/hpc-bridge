@@ -1,5 +1,6 @@
-from hpc_bridge.server import AppCtx, _ensure_endpoint_up, _run_shell, mcp
+from hpc_bridge.lifecycle import EndpointState
 from hpc_bridge.profile import Profile
+from hpc_bridge.server import AppCtx, _ensure_endpoint_up, _run_shell, mcp
 from tests.fakes import FakeFacility
 
 
@@ -134,3 +135,37 @@ async def test_cost_gate_keeps_interactive_with_ample_allocation():
     app = AppCtx(facility=f, profile=Profile(mode="interactive"), alloc_floor=1000.0)
     await _provision(app)
     assert f.provisioned_profile.mode == "interactive"
+
+
+async def test_byo_endpoint_skips_provisioning():
+    # HPC_BRIDGE_ENDPOINT_ID seeds the state, so the server dispatches to an existing
+    # endpoint and never provisions a local one (the macOS / remote-endpoint path).
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile(), state=EndpointState(endpoint_id="byo-uuid"))
+    res = await _ensure_endpoint_up(app)
+    assert res.status == "up" and res.endpoint_id == "byo-uuid"
+    assert f.provisioned is False
+
+
+def test_env_endpoint_id_reads_and_trims(monkeypatch):
+    from hpc_bridge.server import _env_endpoint_id
+
+    monkeypatch.delenv("HPC_BRIDGE_ENDPOINT_ID", raising=False)
+    assert _env_endpoint_id() is None
+    monkeypatch.setenv("HPC_BRIDGE_ENDPOINT_ID", "  ep-42  ")
+    assert _env_endpoint_id() == "ep-42"
+    monkeypatch.setenv("HPC_BRIDGE_ENDPOINT_ID", "   ")
+    assert _env_endpoint_id() is None
+
+
+async def test_ensure_endpoint_up_reports_down_on_provision_failure():
+    # A non-Linux host (or any provisioning error) yields a structured 'down', not a crash.
+    class BoomFacility(FakeFacility):
+        async def provision(self, profile):
+            raise RuntimeError("globus-compute-endpoint runs only on Linux")
+
+    app = AppCtx(facility=BoomFacility(), profile=Profile())  # cold -> provisions -> boom
+    res = await _ensure_endpoint_up(app)
+    assert res.status == "down"
+    assert res.notice and "Linux" in res.notice

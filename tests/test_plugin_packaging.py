@@ -17,6 +17,16 @@ def test_mcp_config_launches_server():
     assert "hpc-bridge" in srv["args"] or srv["command"] == "hpc-bridge"
 
 
+def test_mcp_config_installs_runtime_deps():
+    # The plugin probes and dispatches via globus-compute-sdk at runtime, so the uvx
+    # env MUST install the integration extra — base deps alone can neither probe nor
+    # dispatch (ModuleNotFoundError: globus_compute_sdk). Guard against reverting it.
+    c = json.loads((ROOT / ".mcp.json").read_text())
+    args = c["mcpServers"]["hpc-bridge"]["args"]
+    from_spec = args[args.index("--from") + 1]
+    assert "[integration]" in from_spec, f"--from must request the integration extra, got {from_spec!r}"
+
+
 def test_hooks_config_valid_and_guard_executable():
     h = json.loads((ROOT / "hooks" / "hooks.json").read_text())
     assert h["hooks"]["PreToolUse"]

@@ -59,12 +59,24 @@ def _env_mode(default: str = "batch") -> str:
     return mode
 
 
+def _env_endpoint_id() -> str | None:
+    """An existing endpoint UUID to dispatch to instead of provisioning a local one.
+
+    Set HPC_BRIDGE_ENDPOINT_ID to skip local provisioning entirely. Required on
+    macOS/Windows, where globus-compute-endpoint (the local endpoint daemon) cannot
+    run — the SDK dispatch path still reaches a remote/Linux endpoint by UUID.
+    """
+    eid = os.environ.get("HPC_BRIDGE_ENDPOINT_ID", "").strip()
+    return eid or None
+
+
 @asynccontextmanager
 async def lifespan(server: FastMCP) -> AsyncIterator[AppCtx]:
     scratch = os.path.expanduser(os.environ.get("HPC_BRIDGE_SCRATCH", "~/.hpc-bridge"))
     app = AppCtx(
         facility=make_facility(),
         profile=Profile(mode=_env_mode()),  # type: ignore[arg-type]
+        state=EndpointState(endpoint_id=_env_endpoint_id()),
         scratch_root=scratch,
         alloc_floor=_env_float("HPC_BRIDGE_ALLOC_FLOOR", 1000.0),
         charge_factor=_env_float("HPC_BRIDGE_CHARGE_FACTOR", 0.0),
@@ -94,7 +106,15 @@ async def _provision(app: AppCtx) -> str:
 
 
 async def _ensure_endpoint_up(app: AppCtx) -> EndpointStatus:
-    block = await _provision(app)
+    try:
+        block = await _provision(app)
+    except Exception as exc:  # noqa: BLE001 - provisioning unavailable (e.g. non-Linux host)
+        return EndpointStatus(
+            status="down",
+            block_state="cold",
+            endpoint_id=app.state.endpoint_id,
+            notice=f"hpc-bridge error: {type(exc).__name__}: {exc}"[:500],
+        )
     status = "up" if block == "warm" else "provisioning"
     notice = None if block == "warm" else "allocating nodes…"
     return EndpointStatus(

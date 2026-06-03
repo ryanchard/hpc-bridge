@@ -58,3 +58,14 @@ async def test_configure_forces_single_user_by_default():
     cli = make_cli([(0, "", "")])
     await cli.configure("dev")
     assert cli.calls[0] == ("configure", "--multi-user", "false", "dev")
+
+
+async def test_default_run_guards_non_linux(monkeypatch):
+    # globus-compute-endpoint is Linux-only; the real subprocess path must refuse on
+    # macOS/Windows with an actionable message before exec'ing anything.
+    import sys
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    cli = EndpointCLI(user_dir=None)  # no injected runner -> real _default_run
+    with pytest.raises(RuntimeError, match="only on Linux"):
+        await cli.configure("dev")

@@ -118,7 +118,14 @@ HPC_BRIDGE_RUN_INTEGRATION=1 HPC_BRIDGE_LIVE_ENDPOINT=<uuid> uv run pytest tests
 
 **Config (env vars):** `HPC_BRIDGE_PROFILE` (`interactive`|`batch`),
 `HPC_BRIDGE_USER_DIR`, `HPC_BRIDGE_SCRATCH`, `HPC_BRIDGE_ALLOC_FLOOR`,
-`HPC_BRIDGE_CHARGE_FACTOR`.
+`HPC_BRIDGE_CHARGE_FACTOR`, `HPC_BRIDGE_ENDPOINT_ID` (dispatch to an existing
+endpoint UUID; skips local provisioning).
+
+> **Platform note:** local provisioning — `ensure_endpoint_up` starting an endpoint
+> for you — requires **Linux**; `globus-compute-endpoint` does not run on macOS or
+> Windows. On those hosts, run the endpoint elsewhere (a Linux box, container, or HPC
+> login node) and set `HPC_BRIDGE_ENDPOINT_ID=<uuid>`. The SDK dispatch path
+> (`run_shell`) is cross-platform and reaches the endpoint by UUID.
 
 ---
 
