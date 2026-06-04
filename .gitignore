@@ -21,3 +21,6 @@ htmlcov/
 *.swp
 .idea/
 .vscode/
+
+docs/architecture.html
+docs/poc-transcript.html
