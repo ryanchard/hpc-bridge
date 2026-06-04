@@ -19,23 +19,43 @@ def test_anvil_profile_fields():
     assert p.worker_init == p.env_setup  # worker replays the same env
 
 
-def test_config_template_interactive_holds_warm_block():
+def test_config_template_interactive_eager_block_idle_releases():
     f = SlurmFacility(_profile(), cli=None)
-    eng = f.config_template(Profile(mode="interactive"))["engine"]
+    uep = f.config_template(Profile(mode="interactive"))
+    eng = uep["engine"]
     assert eng["type"] == "GlobusComputeEngine"
     assert eng["address"] == {"type": "address_by_interface", "ifname": "ib0"}
     prov = eng["provider"]
     assert prov["type"] == "SlurmProvider"
     assert prov["account"] == "ACC" and prov["partition"] == "debug"
     assert prov["launcher"] == {"type": "SrunLauncher"}
-    assert prov["init_blocks"] == 1 and prov["min_blocks"] == 1  # warm block held
-    assert prov["max_blocks"] == 1
+    # eager block on first task (init_blocks=1), but min_blocks=0 so the idle timer can
+    # release it (no SU leak); init_blocks acts when the UEP forks, not at provision()
+    assert prov["init_blocks"] == 1 and prov["min_blocks"] == 0 and prov["max_blocks"] == 1
+    # the idle cost-net is the block scale-in at ~max_idletime (default 600s = 10 min)
+    assert eng["job_status_kwargs"]["max_idletime"] == 600.0
+    # idle_heartbeats_soft is deliberately NOT set — proven a no-op in gce v4.x (validated live)
+    assert "idle_heartbeats_soft" not in uep
 
 
-def test_config_template_batch_scales_to_zero():
+def test_config_template_batch_is_on_demand():
     f = SlurmFacility(_profile(), cli=None)
     prov = f.config_template(Profile(mode="batch"))["engine"]["provider"]
     assert prov["init_blocks"] == 0 and prov["min_blocks"] == 0
+
+
+def test_config_template_idle_timeout_follows_profile():
+    f = SlurmFacility(_profile(), cli=None)
+    uep = f.config_template(Profile(mode="interactive", max_idletime_s=300))
+    assert uep["engine"]["job_status_kwargs"]["max_idletime"] == 300.0
+
+
+def test_config_template_max_idletime_typing():
+    f = SlurmFacility(_profile(), cli=None)
+    eng = f.config_template(Profile(mode="interactive"))["engine"]
+    # globus-compute expects a float max_idletime + a strategy_period under job_status_kwargs
+    assert isinstance(eng["job_status_kwargs"]["max_idletime"], float)
+    assert eng["job_status_kwargs"]["strategy_period"] == 30
 
 
 def test_slurm_facility_satisfies_protocol():

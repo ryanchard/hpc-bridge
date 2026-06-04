@@ -17,8 +17,10 @@ class LocalFacility:
 
     def config_template(self, profile: Profile) -> dict:
         # The per-user-process (UEP) template content. In globus-compute-endpoint 4.x
-        # the engine lives here, not in the manager config.yaml. The interactive
-        # profile holds a warm block (min_blocks>=1); batch scales to zero.
+        # the engine lives here, not in the manager config.yaml. The interactive profile
+        # holds a warm block (min_blocks>=1) — a LocalProvider block costs no allocation, so
+        # unlike SlurmFacility (which forces min_blocks=0 + an idle timer to avoid leaking
+        # SU) we keep it warm for snappy local dev; batch scales to zero.
         warm = profile.mode == "interactive"
         return {
             "engine": {

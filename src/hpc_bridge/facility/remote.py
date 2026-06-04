@@ -195,8 +195,21 @@ class SlurmFacility:
         return self.profile.scratch_root
 
     def config_template(self, hpc: Profile) -> dict:
-        # The per-user-process (UEP) engine. interactive => hold a warm block
-        # (min_blocks>=1); batch => scale to zero between tasks.
+        # interactive => request a block eagerly the moment the UEP starts (init_blocks=1).
+        # NOTE: in the v4 MEP model the UEP only forks on the FIRST task, so this does NOT
+        # pre-warm before provision() returns — the first run_shell still cold-starts. batch
+        # => fully on-demand. min_blocks is ALWAYS 0 so the idle timer can release the compute
+        # node: Parsl never scales below min_blocks, so min_blocks>=1 would bill the allocation
+        # until walltime or an explicit teardown. The block scale-to-zero (min_blocks=0 +
+        # max_idletime) is the cost net — VALIDATED live on Anvil (2026-06-04): the Slurm block
+        # self-released ~1 idle window after the last task, both client-open and client-closed.
+        # (gce's idle_heartbeats_soft, the UEP self-shutdown knob, is deliberately NOT set: live
+        # testing showed it never fires here — the UEP never flags idle once the block is gone —
+        # so it's a no-op footgun. The UEP + manager are free login-node processes, freed by
+        # stop_endpoint / the canary.) CAVEAT: manager_online() sees only the manager, not worker
+        # readiness — so after an idle release ensure_endpoint_up can still read "up" while the
+        # next run_shell silently cold-starts (confirmed live). The worker-registration canary
+        # is the real fix.
         warm = hpc.mode == "interactive"
         p = self.profile
         provider: dict = {
@@ -207,7 +220,7 @@ class SlurmFacility:
             "worker_init": p.worker_init,
             "walltime": p.walltime,
             "init_blocks": 1 if warm else 0,
-            "min_blocks": 1 if warm else 0,
+            "min_blocks": 0,
             "max_blocks": 1,
         }
         if p.scheduler_options:
@@ -217,8 +230,13 @@ class SlurmFacility:
                 "type": "GlobusComputeEngine",
                 "max_workers_per_node": p.max_workers_per_node,
                 "address": {"type": "address_by_interface", "ifname": p.interface},
+                # Scale the worker block to zero after max_idletime idle (needs min_blocks=0).
+                "job_status_kwargs": {
+                    "max_idletime": float(hpc.max_idletime_s),
+                    "strategy_period": 30,
+                },
                 "provider": provider,
-            }
+            },
         }
 
     async def provision(self, hpc: Profile) -> EndpointHandle:

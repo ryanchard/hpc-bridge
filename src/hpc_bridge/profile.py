@@ -11,7 +11,7 @@ MODES = ("interactive", "batch")
 class Profile:
     mode: Literal["interactive", "batch"] = "batch"
     nodes_per_block: int = 1
-    max_idletime_s: int = 30
+    max_idletime_s: int = 600  # idle grace (s) before the block + UEP auto-release
     account: str | None = None
     queue: str | None = None
 
@@ -20,3 +20,5 @@ class Profile:
         # treating them as batch downstream.
         if self.mode not in MODES:
             raise ValueError(f"invalid profile mode {self.mode!r}: must be one of {MODES}")
+        if self.max_idletime_s < 1:
+            raise ValueError(f"max_idletime_s must be >= 1s, got {self.max_idletime_s}")
