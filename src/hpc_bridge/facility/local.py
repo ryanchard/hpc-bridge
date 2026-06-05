@@ -46,10 +46,6 @@ class LocalFacility:
         eid = await self.cli.start(self.endpoint_name)
         return EndpointHandle(endpoint_id=eid, name=self.endpoint_name)
 
-    async def restart(self, endpoint_id: str) -> None:
-        await self.cli.stop(self.endpoint_name)
-        await self.cli.start(self.endpoint_name)
-
     async def manager_online(self, endpoint_id: str) -> bool:
         # globus-compute-endpoint 4.x exposes only {"status": "online"|"offline"} here —
         # NOT a worker count (confirmed against 4.12). The EndpointManager being online is
@@ -59,6 +55,3 @@ class LocalFacility:
 
         status = await asyncio.to_thread(Client().get_endpoint_status, endpoint_id)
         return status.get("status") == "online"
-
-    async def allocation_remaining(self) -> float | None:
-        return None

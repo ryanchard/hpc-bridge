@@ -1,21 +1,4 @@
-from hpc_bridge.cost import cap_output, estimate_spend, gate_profile
-from hpc_bridge.profile import Profile
-
-
-def test_gate_forces_batch_when_interactive_below_floor():
-    gated = gate_profile(Profile(mode="interactive"), remaining=100.0, floor=1000.0)
-    assert gated.mode == "batch"
-
-
-def test_gate_keeps_interactive_above_floor():
-    gated = gate_profile(Profile(mode="interactive"), remaining=5000.0, floor=1000.0)
-    assert gated.mode == "interactive"
-
-
-def test_gate_noop_when_remaining_unknown():
-    # local dev / no accounting => never downgraded
-    gated = gate_profile(Profile(mode="interactive"), remaining=None, floor=1000.0)
-    assert gated.mode == "interactive"
+from hpc_bridge.cost import cap_output, estimate_spend
 
 
 def test_estimate_spend_node_hours():

@@ -124,6 +124,12 @@ class RemoteEndpointCLI:
         inner = f"{self.env_setup} && globus-compute-endpoint " + " ".join(shlex.quote(a) for a in args)
         return await ssh_exec(self.target, f"bash -lc {shlex.quote(inner)}")
 
+    async def login_exec(self, command: str) -> tuple[int, str, str]:
+        """Run a read-only command on the login node over SSH for facility discovery
+        (sinfo/sacctmgr/module). Unlike `_gce` it does NOT source the endpoint venv — base
+        login-node tools are already on PATH — and it provisions nothing."""
+        return await ssh_exec(self.target, f"bash -lc {shlex.quote(command)}")
+
     async def configure(self, name: str, multi_user: bool = False) -> None:
         # Force --multi-user false (personal endpoint): the default auto-selects from
         # POSIX caps and can silently create an identity-mapping MEP — see endpoint.py.
@@ -207,9 +213,11 @@ class SlurmFacility:
         # testing showed it never fires here — the UEP never flags idle once the block is gone —
         # so it's a no-op footgun. The UEP + manager are free login-node processes, freed by
         # stop_endpoint / the canary.) CAVEAT: manager_online() sees only the manager, not worker
-        # readiness — so after an idle release ensure_endpoint_up can still read "up" while the
-        # next run_shell silently cold-starts (confirmed live). The worker-registration canary
-        # is the real fix.
+        # readiness — so after an idle release the endpoint manager still reads "online" while the
+        # next task cold-starts (confirmed live). The fix is the worker-registration canary, now
+        # IMPLEMENTED in the dispatch layer (runner.GlobusRunner.canary + server._confirm_worker):
+        # warmth requires a worker to actually answer a trivial task, so ensure_endpoint_up reports
+        # "provisioning" (not "up") and run_shell returns cold_start (not a 124) until one does.
         warm = hpc.mode == "interactive"
         p = self.profile
         provider: dict = {
@@ -259,13 +267,14 @@ class SlurmFacility:
         eid = await self.cli.start(name)
         return EndpointHandle(endpoint_id=eid, name=name)
 
-    async def restart(self, endpoint_id: str) -> None:
-        await self.cli.stop(self.profile.endpoint_name)
-        await self.cli.start(self.profile.endpoint_name)
-
     async def teardown(self, endpoint_id: str) -> None:
         """Stop the endpoint and cancel its Slurm block(s) — the cost-control exit."""
         await self.cli.stop(self.profile.endpoint_name)
+
+    async def login_exec(self, command: str) -> tuple[int, str, str]:
+        """Read-only login-node command for discovery — no block, no allocation (delegates
+        to the SSH CLI). This is the channel that backs the `login_shell` tool."""
+        return await self.cli.login_exec(command)
 
     async def manager_online(self, endpoint_id: str) -> bool:
         # Web-service query (runs in the MCP process, not over SSH) — works for any
@@ -273,9 +282,6 @@ class SlurmFacility:
         client = self._client_factory()
         status = await asyncio.to_thread(client.get_endpoint_status, endpoint_id)
         return status.get("status") == "online"
-
-    async def allocation_remaining(self) -> float | None:
-        return None  # TODO(M4): parse `mybalance` for the account; gate stays off until then
 
     def _default_client(self):
         from globus_compute_sdk import Client

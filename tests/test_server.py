@@ -1,5 +1,6 @@
 from hpc_bridge.lifecycle import EndpointState
 from hpc_bridge.profile import Profile
+from hpc_bridge.runner import CanaryResult
 from hpc_bridge.server import AppCtx, _ensure_endpoint_up, _run_shell, mcp
 from tests.fakes import FakeFacility
 
@@ -12,15 +13,25 @@ class _Res:
 
 
 class _FakeRunner:
-    def __init__(self, endpoint_id, res):
+    def __init__(self, endpoint_id, res, *, canary_result=None):
         self.endpoint_id = endpoint_id
         self._res = res
+        # default: a live worker (so existing warm-path tests stay warm); pass a not-ok
+        # canary_result to simulate the cold-start gap (manager up, no worker yet).
+        self._canary = canary_result or CanaryResult(
+            ok=True, worker_host="a070", worker_python="3.11.7", worker_dill="0.3.9"
+        )
         self.closed = False
         self.commands = []
+        self.canaries = 0
 
     async def run(self, command):
         self.commands.append(command)
         return self._res
+
+    async def canary(self, timeout=8.0):
+        self.canaries += 1
+        return self._canary
 
     def close(self):
         self.closed = True
@@ -28,11 +39,27 @@ class _FakeRunner:
 
 async def test_ensure_endpoint_up_reports_up_when_warm():
     f = FakeFacility()
-    f.workers = 1
+    f.workers = 1  # manager online; the canary (below) confirms a live worker
     app = AppCtx(facility=f, profile=Profile())
+    app.runner_factory = lambda eid: _FakeRunner(eid, _Res(0, "", ""))
     res = await _ensure_endpoint_up(app)
     assert res.status == "up" and res.block_state == "warm"
-    assert res.endpoint_id == "fake-eid" and res.notice is None
+    assert res.endpoint_id == "fake-eid"
+    assert res.notice and "worker live" in res.notice  # warm => a worker answered, not just the manager
+
+
+async def test_ensure_endpoint_up_provisioning_when_manager_up_but_worker_cold():
+    # The canary gap: manager_online() True but no worker answers -> NOT warm. Without the
+    # canary this wrongly reported 'up' and the next run_shell 124'd on a cold start.
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    app.runner_factory = lambda eid: _FakeRunner(
+        eid, _Res(0, "", ""), canary_result=CanaryResult(ok=False, error="timeout")
+    )
+    res = await _ensure_endpoint_up(app)
+    assert res.status == "provisioning" and res.block_state == "provisioning"
+    assert res.notice and "allocating" in res.notice.lower()
 
 
 async def test_ensure_endpoint_up_reports_provisioning_when_cold():
@@ -67,6 +94,33 @@ async def test_run_shell_cold_returns_cold_start():
     out = await _run_shell(app, "echo hi")
     assert out.phase == "cold_start"
     assert out.notice and "allocating" in out.notice.lower()
+
+
+async def test_run_shell_cold_start_when_worker_not_registered():
+    # Manager online but the canary fails -> cold_start, and the command must NOT be dispatched
+    # into the void (no run() call) where it would hang for the full dispatch timeout.
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    runner = _FakeRunner("fake-eid", _Res(0, "", ""), canary_result=CanaryResult(ok=False, error="timeout"))
+    app.runner = runner
+    out = await _run_shell(app, "echo hi")
+    assert out.phase == "cold_start"
+    assert runner.canaries == 1 and runner.commands == []  # canaried, never dispatched
+
+
+async def test_canary_ttl_skips_repeat_canary_on_hot_path():
+    # Two run_shells in quick succession: the first canaries, the second trusts the <45s TTL
+    # (and a successful dispatch refreshes it) so interactive bursts don't pay the round-trip.
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    runner = _FakeRunner("fake-eid", _Res(0, "ok\n", ""))
+    app.runner = runner
+    await _run_shell(app, "echo a")
+    await _run_shell(app, "echo b")
+    assert runner.canaries == 1  # second call skipped the canary
+    assert len(runner.commands) == 2  # both commands still dispatched
 
 
 async def test_server_registers_run_shell_tool():
@@ -115,34 +169,13 @@ async def test_run_shell_rejects_traversal_session_id():
         await _run_shell(app, "echo hi", session_id="../../etc")
 
 
-async def test_cost_gate_downgrades_interactive_below_floor():
-    from hpc_bridge.server import _provision
-
-    f = FakeFacility()
-    f.workers = 1
-    f.allocation = 100.0
-    app = AppCtx(facility=f, profile=Profile(mode="interactive"), alloc_floor=1000.0)
-    await _provision(app)
-    assert f.provisioned_profile.mode == "batch"  # downgraded by the gate
-
-
-async def test_cost_gate_keeps_interactive_with_ample_allocation():
-    from hpc_bridge.server import _provision
-
-    f = FakeFacility()
-    f.workers = 1
-    f.allocation = 5000.0
-    app = AppCtx(facility=f, profile=Profile(mode="interactive"), alloc_floor=1000.0)
-    await _provision(app)
-    assert f.provisioned_profile.mode == "interactive"
-
-
 async def test_byo_endpoint_skips_provisioning():
     # HPC_BRIDGE_ENDPOINT_ID seeds the state, so the server dispatches to an existing
     # endpoint and never provisions a local one (the macOS / remote-endpoint path).
     f = FakeFacility()
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile(), state=EndpointState(endpoint_id="byo-uuid"))
+    app.runner_factory = lambda eid: _FakeRunner(eid, _Res(0, "", ""))
     res = await _ensure_endpoint_up(app)
     assert res.status == "up" and res.endpoint_id == "byo-uuid"
     assert f.provisioned is False
@@ -232,3 +265,93 @@ def test_make_facility_defaults_local(monkeypatch):
 
     monkeypatch.delenv("HPC_BRIDGE_FACILITY", raising=False)
     assert make_facility().name == "local"
+
+
+def test_billing_banks_warm_interval_across_idle_release(monkeypatch):
+    # The canary makes warm_since track a TRUE worker, so the clock stops on idle release.
+    # Spend must (a) exclude the idle gap (no over-report) and (b) retain prior warm time
+    # (no under-report) — i.e. accrue across intervals.
+    import hpc_bridge.server as srv
+
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(srv.time, "monotonic", lambda: clock["t"])
+    app = AppCtx(facility=FakeFacility(), profile=Profile(nodes_per_block=1), charge_factor=1.0)
+
+    srv._settle_billing(app, "warm")  # worker confirmed at t=1000
+    assert app.warm_since == 1000.0
+    clock["t"] += 3600  # held warm for 1h
+    srv._settle_billing(app, "provisioning")  # idle release: bank 1.0 node-hour, stop the clock
+    assert app.warm_since is None and abs(app.spend_accrued - 1.0) < 1e-9
+    clock["t"] += 7200  # 2h cold — must NOT be billed
+    srv._settle_billing(app, "warm")  # warm again
+    clock["t"] += 1800  # +0.5h
+    assert abs(srv._session_spend(app) - 1.5) < 1e-9  # 1.0 banked + 0.5 current; idle gap excluded
+
+
+def test_worker_notice_flags_dill_skew(monkeypatch):
+    import hpc_bridge.server as srv
+
+    monkeypatch.setattr(srv, "_local_dill", lambda: "0.3.9")
+    skewed = srv._worker_notice(
+        CanaryResult(ok=True, worker_host="a070", worker_python="3.11.7", worker_dill="0.3.8")
+    )
+    assert "a070" in skewed and "skew" in skewed and "0.3.8" in skewed and "0.3.9" in skewed
+    matched = srv._worker_notice(CanaryResult(ok=True, worker_dill="0.3.9"))
+    assert matched and "skew" not in matched
+
+
+def test_note_dispatch_refreshes_on_complete_and_voids_on_timeout(monkeypatch):
+    import hpc_bridge.server as srv
+    from hpc_bridge.models import ShellOutcome
+
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    app.warm_confirmed_at = 5.0
+    srv._note_dispatch(app, ShellOutcome(phase="failed", block_state="warm", exit_code=124))
+    assert app.warm_confirmed_at is None  # a dispatch timeout forces a re-canary next call
+    monkeypatch.setattr(srv.time, "monotonic", lambda: 999.0)
+    srv._note_dispatch(app, ShellOutcome(phase="complete", block_state="warm", exit_code=0))
+    assert app.warm_confirmed_at == 999.0  # a real result refreshes liveness
+
+
+async def test_concurrent_run_shell_serializes_runner_creation():
+    # The lock must serialize provision + runner-swap: two run_shells racing on a fresh app
+    # create exactly ONE runner (without it, both could see app.runner is None and double up).
+    import asyncio
+
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    created = []
+
+    def factory(eid):
+        r = _FakeRunner(eid, _Res(0, "ok\n", ""))
+        created.append(r)
+        return r
+
+    app.runner_factory = factory
+    outs = await asyncio.gather(_run_shell(app, "echo a"), _run_shell(app, "echo b"))
+    assert all(o.phase == "complete" for o in outs)
+    assert len(created) == 1  # the second call reused the runner instead of racing a new one
+
+
+async def test_login_shell_runs_on_ssh_facility():
+    from hpc_bridge.server import _login_shell
+
+    class _SshFacility(FakeFacility):  # an SSH facility exposes login_exec; local does not
+        async def login_exec(self, command):
+            return (0, "shared*|up|infinite|250|128|257400|226/12/12/250\n", "")
+
+    res = await _login_shell(AppCtx(facility=_SshFacility(), profile=Profile()), "sinfo -h")
+    assert res.exit_code == 0 and "shared" in res.stdout
+
+
+async def test_login_shell_unavailable_on_local_facility():
+    from hpc_bridge.server import _login_shell
+
+    res = await _login_shell(AppCtx(facility=FakeFacility(), profile=Profile()), "sinfo")
+    assert res.exit_code == 1 and "SSH facility" in (res.notice or "")  # local has no login node
+
+
+async def test_server_registers_login_shell_tool():
+    tools = await mcp.list_tools()
+    assert any(t.name == "login_shell" for t in tools)

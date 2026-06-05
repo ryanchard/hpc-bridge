@@ -15,7 +15,6 @@ class ShellOutcome(BaseModel):
     cwd: str | None = None
     block_state: Literal["warm", "cold", "provisioning"]
     session_spend: NodeHours = 0.0
-    allocation_remaining: NodeHours | None = None
     task_handle: str | None = None
     est_wait_s: int | None = None
     notice: str | None = None
@@ -26,6 +25,15 @@ class EndpointStatus(BaseModel):
     block_state: Literal["warm", "cold", "provisioning"]
     endpoint_id: str | None = None
     session_spend: NodeHours = 0.0
-    allocation_remaining: NodeHours | None = None
     cert_expires_in: str | None = None
+    notice: str | None = None
+
+
+class LoginShellResult(BaseModel):
+    """Result of a read-only login-node command (facility discovery) — a separate channel
+    from the compute-block `ShellOutcome`: no block, no allocation, no session spend."""
+
+    exit_code: int
+    stdout: str = ""
+    stderr_snippet: str = ""
     notice: str | None = None

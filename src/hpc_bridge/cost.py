@@ -1,19 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
-
-from .profile import Profile
-
-
-def gate_profile(profile: Profile, remaining: float | None, floor: float) -> Profile:
-    """Force batch (scale-to-zero) when an interactive/warm profile would run below the
-    remaining-allocation floor. `remaining is None` (e.g. local dev, no accounting)
-    leaves the profile unchanged — the gate only fires on real, low allocations.
-    """
-    if profile.mode == "interactive" and remaining is not None and remaining < floor:
-        return replace(profile, mode="batch")
-    return profile
-
 
 def estimate_spend(elapsed_s: float, nodes: int, charge_factor: float) -> float:
     """Estimated node-hours for a warm block held `elapsed_s` seconds.

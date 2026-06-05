@@ -88,6 +88,10 @@ class _FakeRemoteCLI:
     async def endpoint_id(self, name):
         return "running-eid"
 
+    async def login_exec(self, command):
+        self.calls.append(("login_exec", command))
+        return (0, "OUT", "")
+
 
 def _kinds(cli):
     return [c[0] for c in cli.calls]
@@ -200,3 +204,24 @@ async def test_status_parses_running_configured_absent(monkeypatch):
     assert await cli.status("hpc-bridge") == "configured"
     out["v"] = "| 358c89fb-... | Running | anvil-dev |\n"  # different endpoint only
     assert await cli.status("hpc-bridge") is None
+
+
+async def test_remote_cli_login_exec_runs_bash_lc_over_ssh(monkeypatch):
+    captured = {}
+
+    async def fake_ssh_exec(target, cmd, **kw):
+        captured["cmd"] = cmd
+        return (0, "shared*|up|infinite|250|128|257400|226/12/12/250\n", "")
+
+    monkeypatch.setattr(remote, "ssh_exec", fake_ssh_exec)
+    cli = RemoteEndpointCLI(SshTarget("h", "u", "k"), "true")
+    rc, out, _ = await cli.login_exec("sinfo -h")
+    assert rc == 0 and "shared" in out
+    assert captured["cmd"].startswith("bash -lc ") and "sinfo" in captured["cmd"]  # login shell, no venv
+
+
+async def test_slurm_facility_login_exec_delegates_to_cli():
+    cli = _FakeRemoteCLI()
+    rc, out, _ = await SlurmFacility(_profile(), cli=cli).login_exec("sinfo -h")
+    assert rc == 0 and out == "OUT"
+    assert ("login_exec", "sinfo -h") in cli.calls  # discovery routed through the SSH CLI, not _gce
