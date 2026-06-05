@@ -2,6 +2,8 @@
 
 Status: design note · 2026-06-02 · companion to [`../vision.md`](../vision.md) and [`../analysis/`](../analysis/README.md)
 
+> **See also (2026-06-05):** [`./agent-tool-boundary.md`](./agent-tool-boundary.md) (tool vs agent-judgment boundary) and [`./facility-discovery.md`](./facility-discovery.md) (discovery-first, uncached facility profiles). The §6 worker-registration warm/cold rule is now implemented as the dispatch-layer **canary**.
+
 **Purpose.** Name the core mechanism hpc-bridge actually sells — *a pilot job's lifecycle, managed as an interactive REPL* — and define the lifecycle state machine the plugin must implement. This is the bridge from the analysis to the v1 plugin design: §1–§5 are the concept; §6–§9 are the build.
 
 ---
@@ -162,4 +164,4 @@ The pilot-job-as-REPL is an *insight*, and it is a **pattern** — anyone can `s
 
 ---
 
-*Next: a focused v1 plugin design spec (MCP server + skill + `/hpc-connect` + hooks) built on this lifecycle. This note defines the runtime behavior that spec must realize.*
+*This note defines the runtime behavior the plugin realizes. For the system as built, see the [README](../../README.md); for where it's heading, [`./agent-tool-boundary.md`](./agent-tool-boundary.md) and [`./facility-discovery.md`](./facility-discovery.md).*

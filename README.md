@@ -1,157 +1,172 @@
 # hpc-bridge
 
-**Extend AI coding agents into HPC.** A Claude Code plugin that gives an agent
-interactive, low-latency access to real supercomputer compute — by standing up a
-*personal* Globus Compute endpoint behind the scenes, no admin and no multi-user
-endpoint (MEP) deployment required.
+**Extend AI coding agents into HPC.** A Claude Code plugin (FastMCP server) that gives an
+agent interactive, low-latency access to real supercomputer compute — by standing up a
+*personal* Globus Compute endpoint on an HPC login node over SSH, then dispatching shell
+commands to a warm compute block over Globus Compute's credential-free AMQP path.
 
-Globus Compute is the engine under the hood; `hpc-bridge` is the agent-facing
-packaging and the frictionless on-ramp. The product is a **pilot job's lifecycle
-managed as an interactive REPL** — provision → warm → idle-down → self-heal,
-credential-isolated, behind one tool call.
+Globus Compute is the engine; `hpc-bridge` is the agent-facing packaging, the bootstrap, and
+the runtime that makes a batch supercomputer feel like a REPL.
 
 ---
 
-## Status (branch `claude-effort` · 2026-06-02)
+## Status
 
-A working **v1 plugin is implemented and proven against a live local Globus Compute
-endpoint**, built strictly TDD and local-dev-first. Milestones M0, M1, M3, M4 are
-done; M2 (durable handles) and M5 (real facility + credential broker) are next.
+Actively developed. **Proven end-to-end on a real facility (Purdue Anvil / Slurm)** and on a
+local dev endpoint. The agent stands up an Anvil endpoint over key-based SSH, runs commands on
+a compute node, and tears it down — releasing the allocation. Suite: **90 passed, 2 skipped**,
+ruff clean.
 
-| Milestone | Scope | Status |
-|---|---|---|
-| **M0** | Installable FastMCP plugin skeleton, `ensure_endpoint_up`, `Facility` seam | ✅ live |
-| **M1** | `run_shell` dispatch via Globus Compute `ShellFunction` | ✅ live (rc=0) |
-| **M3** | Session-shell shim (`reset_session`) — cwd/env persistence | ✅ live REPL acceptance |
-| **M4** | Cost-governance primitives (allocation gate, spend, output cap) | ✅ |
-| **M2** | Durable task handles (`reload_tasks`, persist-before-return) | ⏸ deferred (robustness) |
-| **M5** | NERSC + interactive SSH/MFA + credential broker | ⏭ next (needs facility access) |
-
-**Tests:** 56 unit pass + 2 gated live integration tests. A 7-agent adversarial code
-review was run and its findings (incl. 4 HIGH security/robustness bugs) fixed with
-regression tests. See [`docs/analysis/`](docs/analysis/README.md) (viability + risks),
-[`docs/design/`](docs/design/plugin-v1-design.md) (architecture), and
-[`docs/plans/`](docs/plans/) (the TDD milestone plans).
-
-> This branch is committed locally and pushed to `origin/claude-effort` only —
-> **never to `main`**.
+Current direction is **discovery-first** (the agent probes a facility and derives its config,
+rather than us hand-writing a class per machine) — see the design docs below.
 
 ---
 
-## What works now
+## The five MCP tools
 
-Installed into Claude Code, the plugin exposes three MCP tools (all return structured
-results; failures are reported as `phase: "failed"`, never raw crashes):
+All return structured Pydantic results; failures come back as structured outcomes, never raw
+crashes.
 
-- **`ensure_endpoint_up`** — provisions/warms a personal endpoint, reports `up`/`provisioning`.
-- **`run_shell(command, session_id="default")`** — runs a shell command on the warm
-  compute block and returns `{exit_code, stdout, stderr_snippet, block_state, session_spend}`.
-- **`reset_session(session_id)`** — clears a session's persisted cwd/env.
-
-**Proven live** (against a `LocalProvider` endpoint on this machine):
-- An agent dispatches real shell commands to a Globus Compute worker and gets results back.
-- **REPL continuity:** `cd` and `export` persist across separate `run_shell` calls in a
-  session (bare relative paths work); different `session_id`s are isolated.
-- Cost primitives, output capping, and structured error handling are wired in.
-
-Also bundled: a `/hpc-connect` slash command, a `driving-hpc` skill (working-dir
-discipline, cold-start, result-size guidance), and a `PreToolUse` credential-guard hook.
+| Tool | What it does |
+|---|---|
+| `ensure_endpoint_up()` | Provision/probe the personal endpoint. Reports `up` only once a **worker answers a canary** (not merely that the manager is online); otherwise `provisioning` (and the probe kicks a cold block). |
+| `run_shell(command, session_id="default")` | Run a shell command on the warm compute block → `{phase, exit_code, stdout, stderr_snippet, block_state, session_spend}`. Cold endpoint → `cold_start` (no hang). |
+| `reset_session(session_id="default")` | Clear a session's persisted working directory + environment. |
+| `stop_endpoint()` | Tear down the endpoint, release its Slurm block, reset session state. |
+| `login_shell(command)` | Run a **read-only** command on the login node over SSH for *discovery* (`sinfo`, `sacctmgr`, `module avail`) — no block, no allocation, no cost. SSH facility only. |
 
 ---
 
-## Architecture
+## How it works
 
-Three processes plus the Compute endpoint (the credential boundary falls out of the split):
+Two channels, by design: **SSH is control-plane only** (bootstrap/teardown); the **work hot
+path is Globus Compute over AMQP** (a scoped Globus Auth token, never SSH material).
 
 ```
-Claude Code ──stdio──▶ hpc-bridge MCP server ──UDS──▶ credential broker (M5; no-op locally)
-                         • pilot lifecycle state machine        • SSH/MFA only (out-of-band)
-                         • session-shell shim, cost plane
-                         • holds only a scoped Globus token
-                         │ ShellFunction over AMQP (credential-free hot path)
-                         ▼
-                       Globus Compute endpoint  (DEV: LocalProvider · NERSC: SlurmProvider)
+Claude Code (laptop)
+  │  MCP tools (stdio): ensure_endpoint_up · run_shell · reset_session · stop_endpoint · login_shell
+  ▼
+hpc-bridge MCP server          ── SSH (key-only, bootstrap/teardown ONLY) ──┐
+  • provision + worker canary                                              ▼
+  • session-shell shim · spend clock                          Endpoint manager (login node)
+  • asyncio.Lock serializes provision/swap/teardown            │ submits a Slurm block on first task
+  │  ShellFunction over AMQP (credential-free hot path)        ▼
+  ▼                                                          Warm block on a compute node
+Globus web service ── AMQP ──► Endpoint  ◄───────────────────  │ runs the command
+                                                               ▼  state persists via shared FS
+                                                            result ── AMQP ──► back to the agent
 ```
 
-The `Facility` protocol (`LocalFacility` / future `NerscFacility`) is the seam that makes
-local-first work: lifecycle/dispatch/cost code is facility-agnostic.
+**The warmth lifecycle (and why the canary matters).** `ensure_endpoint_up` provisions the
+endpoint if needed and checks `manager_online` (a cheap Globus web query) — but that only
+reflects the login-node *manager*, not a worker. In the v4 MEP model the first task forks a
+User Endpoint Process and submits a Slurm block, so the manager reads "online" while the next
+command would cold-start. The fix is a **worker-registration canary**: a trivial `ShellFunction`
+submitted through the same long-lived Executor real work uses, with a short budget. A returned
+result ⇒ truly warm; a timeout ⇒ still `provisioning` (and the submit *kicks* the block). A 45 s
+TTL keeps the hot path from paying the round-trip every call. This is what makes "is it warm?"
+honest and keeps `run_shell` from dispatching into a 124 timeout.
 
-`src/hpc_bridge/`: `server.py` (FastMCP tools + lifespan), `lifecycle.py` (provision/probe),
-`dispatch.py` (+ failure translation), `runner.py` (`GlobusRunner` + `ShellFunction`),
-`session_shell.py` (cwd/env shim), `cost.py`, `endpoint.py` (CLI wrapper), `facility/`,
-`models.py`, `profile.py`.
+**Cost control.** The load-bearing net is **idle block release**: the Slurm provider runs with
+`min_blocks=0` + `max_idletime` (default 600 s), so the compute node — the thing that costs
+allocation — self-releases after the last task (validated live on Anvil). A spend clock
+(`session_spend`, driven by true worker presence and accrued across warm intervals) is surfaced
+on every result; `stop_endpoint` is the explicit exit. `charge_factor` defaults to `0.0` (free
+local dev).
 
-**Note on globus-compute-endpoint 4.x** (learned by live debugging): `start` runs an
-EndpointManager — `config.yaml` must be engine-free, the engine lives in
-`user_config_template.yaml.j2`, `configure` must force `--multi-user false` (personal,
-no identity-mapping), `start` needs `--detach`, the UUID is in `endpoint.json`,
-`get_endpoint_status` returns only `{"status":"online"}`, and `ShellFunction` runs
-`cmd.format()` so braces are handled. All encoded in the code.
+**Session continuity.** `ShellFunction` runs each command in a fresh subprocess, so the
+server wraps commands to rehydrate+persist `cwd`/env in `<scratch>/sessions/<id>/{.cwd,.env}` on
+the shared filesystem — a bare `cd build` then `make` just works. `session_id` is
+allowlist-validated and the command is base64-carried so it can't break out of the wrapper.
+
+### The `Facility` seam
+
+Everything machine-specific sits behind one protocol (`provision` / `manager_online` /
+`config_template`); the runtime is facility-agnostic.
+
+- **`LocalFacility`** — `LocalProvider`, no SSH, for local dev (Linux only).
+- **`SlurmFacility`** — provisions a Globus Compute endpoint on a remote Slurm login node over
+  key-based SSH. Per-facility data lives in a `MachineProfile` (`anvil_profile` is the first).
+
+### Module map (`src/hpc_bridge/`)
+
+`server.py` (FastMCP tools, lifespan, the provision→canary→dispatch→spend flow + the lock) ·
+`runner.py` (`GlobusRunner`: `ShellFunction` dispatch + the `canary`) · `dispatch.py` (translate
+timeouts/oversized-results/task-failures into structured outcomes) · `lifecycle.py`
+(provision + manager-level probe) · `session_shell.py` (cwd/env shim) · `cost.py`
+(`estimate_spend`, `cap_output`) · `profile.py` · `endpoint.py` (local `globus-compute-endpoint`
+CLI wrapper) · `facility/{base,local,remote}.py` · `models.py`.
 
 ---
 
-## Develop / run it
+## Run / develop
 
-Requires Python ≥3.11 and [`uv`](https://docs.astral.sh/uv/). Globus Compute is an
-optional `integration` extra (M0–M4 unit tests are hermetic and don't need it).
+Requires Python ≥3.11 and [`uv`](https://docs.astral.sh/uv/). Globus Compute is an optional
+`integration` extra (unit tests are hermetic and don't need it).
 
 ```bash
-uv sync --extra dev                 # unit test deps
-uv run pytest -q                    # 56 passed, 2 skipped
-
-# Run the MCP server standalone (stdio):
-uv run hpc-bridge
-
-# Install into Claude Code for local testing:
-claude --plugin-dir .
+uv sync --extra dev
+uv run pytest -q                 # 90 passed, 2 skipped
+uv run hpc-bridge                # run the MCP server standalone (stdio)
+claude --plugin-dir .            # install into Claude Code for local testing
 ```
 
-**Drive a real local endpoint** (needs a one-time Globus login):
+**Config (env vars):**
 
-```bash
-uv sync --extra dev --extra integration
-uv run globus-compute-endpoint login          # interactive (browser + paste code)
-# hpc-bridge provisions/starts the endpoint for you on first ensure_endpoint_up,
-# or run the gated integration tests:
-HPC_BRIDGE_RUN_INTEGRATION=1 HPC_BRIDGE_LIVE_ENDPOINT=<uuid> uv run pytest tests/integration -q
-```
+- `HPC_BRIDGE_FACILITY` — `anvil` for the remote Slurm facility; unset = local dev.
+- Anvil requires `HPC_BRIDGE_SSH_USER`, `HPC_BRIDGE_SSH_KEY`, `HPC_BRIDGE_ACCOUNT`
+  (optional `HPC_BRIDGE_SSH_HOST`, `HPC_BRIDGE_PARTITION`).
+- `HPC_BRIDGE_PROFILE` (`interactive`|`batch`), `HPC_BRIDGE_SCRATCH`, `HPC_BRIDGE_USER_DIR`,
+  `HPC_BRIDGE_CHARGE_FACTOR`.
+- `HPC_BRIDGE_ENDPOINT_ID=<uuid>` — **BYO endpoint**: dispatch to an existing endpoint and skip
+  local provisioning. Required on macOS/Windows, where `globus-compute-endpoint` (the local
+  daemon) can't run; the SDK dispatch path still reaches a remote/Linux endpoint by UUID.
 
-**Config (env vars):** `HPC_BRIDGE_PROFILE` (`interactive`|`batch`),
-`HPC_BRIDGE_USER_DIR`, `HPC_BRIDGE_SCRATCH`, `HPC_BRIDGE_ALLOC_FLOOR`,
-`HPC_BRIDGE_CHARGE_FACTOR`, `HPC_BRIDGE_ENDPOINT_ID` (dispatch to an existing
-endpoint UUID; skips local provisioning).
-
-> **Platform note:** local provisioning — `ensure_endpoint_up` starting an endpoint
-> for you — requires **Linux**; `globus-compute-endpoint` does not run on macOS or
-> Windows. On those hosts, run the endpoint elsewhere (a Linux box, container, or HPC
-> login node) and set `HPC_BRIDGE_ENDPOINT_ID=<uuid>`. The SDK dispatch path
-> (`run_shell`) is cross-platform and reaches the endpoint by UUID.
+> **globus-compute-endpoint 4.x invariants** (learned by live debugging, encoded in the code):
+> `start` runs an EndpointManager — `config.yaml` must be **engine-free**, the engine lives in
+> `user_config_template.yaml.j2`; `configure` forces `--multi-user false` (personal, no
+> identity-mapping); `start` needs `--detach`; `get_endpoint_status` returns only
+> `{"status":"online"}` (manager, not worker); `ShellFunction` runs `cmd.format()`.
 
 ---
 
 ## Security posture (current)
 
-Hardened in v1: `session_id` is allowlist-validated (no path traversal); commands are
-base64-carried into the shim so they can't break out of the wrapper; session state files
-are `0600` (umask 077); the hot path uses a Globus Auth token, never SSH material; the
-credential-guard hook covers both `Bash` and `run_shell`.
+The hot path carries a scoped Globus Auth token, **never SSH material**; SSH is key-only
+(`BatchMode`, `IdentitiesOnly`) and used only to bootstrap/teardown. `session_id` is
+allowlist-validated (no traversal); commands are base64-carried into the shim; session files are
+`0600`. A `PreToolUse` credential-guard hook is a documented **non-load-bearing backstop**.
 
-Honestly deferred (see [`docs/analysis/02-risk-register.md`](docs/analysis/02-risk-register.md)):
-the credential broker as a separate UID (M5), and the irreducible "agent runs as you / can
-read your own credentials" prompt-injection surface — to be addressed with hard controls
-(Transfer allowlist, dedicated-UID broker, audit log) before any facility deployment.
+Honestly deferred (see [`docs/analysis/02-risk-register.md`](docs/analysis/02-risk-register.md)
+and [`03-ssh-mfa-interactive-access.md`](docs/analysis/03-ssh-mfa-interactive-access.md)): a
+separate-UID credential broker for OTP facilities, and the irreducible "the agent runs as you and
+can read your own credential files" prompt-injection surface — to be addressed with hard controls
+before any production facility deployment.
 
 ---
 
-## Next steps
+## Documentation map
 
-1. **M2 — durable handles:** persist `task_group_id` before return; `reload_tasks()` on
-   reconnect to recover results within the 30-min TTL; structured cold-path task handle.
-2. **M5 — facility:** `NerscFacility` (Slurm template + canary), the credential broker +
-   url-mode MFA elicitation, `/hpc-connect` over sshproxy/SFAPI. Gated by **experiment E1**
-   (measure real warm round-trip latency on a Perlmutter node).
-3. **Polish:** quiet the Globus SDK's stderr logging; wire `ShellOutcome.cwd`; an
-   end-to-end `wrap()` integration test in CI.
+- **This README** — current state: what's built, how it works, how to run it.
+- **Workflow & gaps** — [`docs/design/workflow.md`](docs/design/workflow.md): the end-to-end flow phase by phase, marked built / partial / not-yet, with the prioritized next steps.
+- **Direction** — [`docs/design/agent-tool-boundary.md`](docs/design/agent-tool-boundary.md)
+  (what belongs to a tool vs the agent's judgment) and
+  [`docs/design/facility-discovery.md`](docs/design/facility-discovery.md) (discovery-first,
+  uncached facility profiles — where this is going).
+- **Core mechanism** — [`docs/design/pilot-job-repl-lifecycle.md`](docs/design/pilot-job-repl-lifecycle.md)
+  (why a warm pilot block = an interactive REPL).
+- **Background analysis** (the *why* behind decisions, not current state) —
+  [`docs/analysis/`](docs/analysis/README.md): viability, risk register, the credential/MFA
+  security model, and the architecture + capability-probing reasoning the discovery angle builds on.
+- **Vision** — [`docs/vision.md`](docs/vision.md): the north-star pitch (personal endpoints as the
+  bottom-up path that pulls MEPs into facilities).
 
-See [`docs/design/plugin-v1-design.md`](docs/design/plugin-v1-design.md) §11 for the full
-milestone plan and [`docs/vision.md`](docs/vision.md) for the original vision.
+---
+
+## What's deferred / not built
+
+Worker-pinned live-process state (a true in-memory kernel); a separate-UID credential broker +
+MFA elicitation (for OTP facilities like NERSC/ALCF/OLCF); durable task handles that survive an
+MCP restart; facilities beyond Anvil + local; and the **discovery pipeline** itself — the next
+concrete step (a thin Stage-2 slice: gce-version preflight, login-node pinning, `$SCRATCH`
+discovery), per [`facility-discovery.md`](docs/design/facility-discovery.md).
