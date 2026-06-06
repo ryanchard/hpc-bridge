@@ -13,12 +13,20 @@ import base64
 import json
 import re
 import shlex
+import tempfile
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
+from globus_compute_sdk.sdk.auth.token_storage import (
+    _get_storage_filepath,
+    _resolve_namespace,
+)
 
+from ..credentials import build_minimal_storage_db
 from ..profile import Profile
+from ..state import EndpointRecord
 from .base import EndpointHandle
 
 # ---------------------------------------------------------------- SSH transport
@@ -215,6 +223,11 @@ class RemoteEndpointCLI:
                     return m.group(0)
         raise RuntimeError(f"could not find endpoint {name!r} in `list` output")
 
+    async def whoami(self) -> bool:
+        """True if the remote endpoint can authenticate (storage.db usable)."""
+        rc, _out, _err = await self._gce("whoami")
+        return rc == 0
+
     async def hostname_fqdn(self) -> str:
         """The fully-qualified hostname of the login node this SSH connection landed on.
 
@@ -236,11 +249,21 @@ class RemoteEndpointCLI:
 class SlurmFacility:
     """A Globus Compute endpoint on a remote Slurm cluster, provisioned over SSH."""
 
-    def __init__(self, profile: MachineProfile, cli: RemoteEndpointCLI, *, client_factory=None) -> None:
+    def __init__(
+        self,
+        profile: MachineProfile,
+        cli: RemoteEndpointCLI,
+        *,
+        client_factory=None,
+        store=None,
+        alias=None,
+    ) -> None:
         self.profile = profile
         self.cli = cli
         self.name = profile.name
         self._client_factory = client_factory or self._default_client
+        self.store = store
+        self.alias = alias
 
     @property
     def scratch_root(self) -> str | None:
@@ -314,6 +337,38 @@ engine:
         if p.scheduler_options is not None:
             defaults["scheduler_options"] = p.scheduler_options
         return template, defaults
+
+    async def bootstrap(self, hpc: Profile) -> EndpointHandle:
+        """Full first-run bootstrap: ensure remote creds exist, provision, capture the
+        login-node FQDN, and record it so later sessions reconnect direct-to-node.
+        Idempotent: seeds storage.db only if the remote can't already authenticate, and
+        reuses a running endpoint (via provision())."""
+        if not await self.cli.whoami():
+            with tempfile.TemporaryDirectory() as tmp:
+                trimmed = build_minimal_storage_db(
+                    src_path=Path(_get_storage_filepath()),
+                    dst_path=Path(tmp) / "storage.db",
+                    namespace=_resolve_namespace(),
+                )
+                await self.cli.seed_storage_db(trimmed)
+        fqdn = await self.cli.hostname_fqdn()
+        handle = await self.provision(hpc)
+        handle = EndpointHandle(
+            endpoint_id=handle.endpoint_id, name=handle.name, login_host=fqdn
+        )
+        if self.store is not None and self.alias is not None:
+            self.store.put(
+                EndpointRecord(
+                    endpoint_id=handle.endpoint_id,
+                    login_host=fqdn,
+                    alias=self.alias,
+                    user=self.cli.target.user,
+                    key_path=self.cli.target.key_path,
+                    name=handle.name,
+                    provisioned_at=datetime.now(timezone.utc).isoformat(),
+                )
+            )
+        return handle
 
     async def provision(self, hpc: Profile) -> EndpointHandle:
         # Idempotent: reuse a running endpoint; configure only if it doesn't exist yet

@@ -93,6 +93,61 @@ def _kinds(cli):
     return [c[0] for c in cli.calls]
 
 
+class _BootstrapCLI(_FakeRemoteCLI):
+    def __init__(self, status=None, remote_db_present=False):
+        super().__init__(status=status)
+        self.remote_db_present = remote_db_present
+        self.seeded = None
+        self.fqdn = "login03.anvil.rcac.purdue.edu"
+        self.target = SshTarget("anvil.rcac.purdue.edu", "x-u", "/tmp/k")
+
+    async def whoami(self):
+        return self.remote_db_present
+
+    async def seed_storage_db(self, local_db):
+        self.seeded = local_db
+        self.remote_db_present = True
+
+    async def hostname_fqdn(self):
+        return self.fqdn
+
+    def rebind(self, host):
+        self.calls.append(("rebind", host))
+
+
+async def test_bootstrap_seeds_when_remote_db_absent(monkeypatch, tmp_path):
+    cli = _BootstrapCLI(status=None, remote_db_present=False)
+    fac = SlurmFacility(_profile(), cli=cli)
+    made = tmp_path / "trimmed.db"
+    made.write_bytes(b"db")
+    monkeypatch.setattr(remote, "build_minimal_storage_db", lambda **kw: made)
+    handle = await fac.bootstrap(Profile(mode="interactive"))
+    assert cli.seeded == made  # creds shipped because remote db was absent
+    assert handle.login_host == "login03.anvil.rcac.purdue.edu"
+    assert ("start", "hpc-bridge") in cli.calls
+
+
+async def test_bootstrap_skips_seed_when_remote_db_present(monkeypatch, tmp_path):
+    cli = _BootstrapCLI(status="running", remote_db_present=True)
+    fac = SlurmFacility(_profile(), cli=cli)
+    monkeypatch.setattr(remote, "build_minimal_storage_db", lambda **kw: tmp_path / "x.db")
+    handle = await fac.bootstrap(Profile(mode="interactive"))
+    assert cli.seeded is None  # already had creds -> no reseed
+    assert handle.login_host == "login03.anvil.rcac.purdue.edu"
+
+
+async def test_bootstrap_records_login_node_in_store(monkeypatch, tmp_path):
+    from hpc_bridge.state import LoginNodeStore
+
+    cli = _BootstrapCLI(status=None, remote_db_present=True)  # present -> no seed needed
+    store = LoginNodeStore(tmp_path / "endpoints.json")
+    fac = SlurmFacility(_profile(), cli=cli, store=store, alias="anvil.rcac.purdue.edu")
+    await fac.bootstrap(Profile(mode="interactive"))
+    rec = store.get(alias="anvil.rcac.purdue.edu", name="hpc-bridge")
+    assert rec is not None and rec.login_host == "login03.anvil.rcac.purdue.edu"
+    assert rec.user == "x-u" and rec.key_path == "/tmp/k"
+
+
 async def test_provision_fresh_configures_writes_and_starts():
     cli = _FakeRemoteCLI(status=None)  # not configured yet
     handle = await SlurmFacility(_profile(), cli=cli).provision(Profile(mode="interactive"))

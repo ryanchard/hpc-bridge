@@ -64,9 +64,11 @@ def make_facility() -> Facility:
     fac = os.environ.get("HPC_BRIDGE_FACILITY", "").strip().lower()
     if fac == "anvil":
         from .facility.remote import RemoteEndpointCLI, SlurmFacility, SshTarget, anvil_profile
+        from .state import LoginNodeStore
 
+        alias = os.environ.get("HPC_BRIDGE_SSH_HOST", "anvil.rcac.purdue.edu")
         target = SshTarget(
-            host=os.environ.get("HPC_BRIDGE_SSH_HOST", "anvil.rcac.purdue.edu"),
+            host=alias,
             user=_require_env("HPC_BRIDGE_SSH_USER"),
             key_path=os.path.expanduser(_require_env("HPC_BRIDGE_SSH_KEY")),
         )
@@ -75,7 +77,12 @@ def make_facility() -> Facility:
             user=target.user,
             partition=os.environ.get("HPC_BRIDGE_PARTITION", "debug"),
         )
-        return SlurmFacility(profile, RemoteEndpointCLI(target, profile.env_setup))
+        cli = RemoteEndpointCLI(target, profile.env_setup)
+        store = LoginNodeStore()
+        rec = store.get(alias=alias, name=profile.endpoint_name)
+        if rec is not None:  # reconnect direct-to-node instead of the round-robin alias
+            cli.rebind(rec.login_host)
+        return SlurmFacility(profile, cli, store=store, alias=alias)
     user_dir = Path(os.environ.get("HPC_BRIDGE_USER_DIR", str(Path.home() / ".globus_compute")))
     return LocalFacility(EndpointCLI(user_dir=user_dir))
 
@@ -278,6 +285,11 @@ async def _provision(app: AppCtx, shape: str, *, force_canary: bool = False) -> 
     """Provision/probe under the session profile and update the spend clock. Returns the
     block state. 'warm' means a WORKER answered a canary — not merely that the manager is
     online; that distinction is the cold-start gap this closes."""
+    if app.state.endpoint_id is None:
+        bootstrap = getattr(app.facility, "bootstrap", None)
+        if bootstrap is not None:
+            handle = await bootstrap(app.profile)
+            app.state = EndpointState(endpoint_id=handle.endpoint_id)
     block, app.state = await ensure_warm(app.facility, app.profile, app.state)
     rt = _shape_runtime(app, shape)
     if block == "warm":  # manager online -> confirm a worker is actually live
