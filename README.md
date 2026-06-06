@@ -98,7 +98,9 @@ node next session. To reset a stale pin — e.g. after a node goes down — dele
 running on the login node — lightweight, no allocation, not billed) and `shape="slurm"` (a
 `SlurmProvider` block — heavy compute, billed, idle-released) via per-task
 `user_endpoint_config`. `run_shell(command, shape=...)` selects the target; sessions (cwd/env)
-persist independently per shape.
+persist independently per shape. The rendered provider is parameterized — `max_workers_per_node`,
+`nodes_per_block`, `max_blocks`, and `available_accelerators` (GPU count or device IDs) default
+from the `MachineProfile` and can be overridden per task via `user_endpoint_config`.
 
 **Teardown.** `stop_endpoint` stops the endpoint, releases the Slurm block, and removes the
 login-node pin from `endpoints.json` so a stale FQDN is not reused next session. The seeded

@@ -85,7 +85,10 @@ class MachineProfile:
     # endpoint_name used for registration). Defaults to endpoint_name when unset.
     display_name: str | None = None
     walltime: str = "00:30:00"
-    max_workers_per_node: int = 2
+    max_workers_per_node: int = 2     # parsl workers per node (the engine's slots)
+    nodes_per_block: int = 1          # nodes requested per Slurm block
+    max_blocks: int = 1               # ceiling on concurrent Slurm blocks Parsl may hold
+    available_accelerators: int | list[str] | None = None  # GPU count or device IDs
     amqp_port: int = 443    # facilities firewall the default AMQPS 5671; 443 is allowed
     scheduler_options: str | None = None
     scratch_root: str | None = None  # session-shell root on the shared filesystem
@@ -100,6 +103,10 @@ def anvil_profile(
     endpoint_name: str = "hpc-bridge",
     display_name: str = "HPC-Bridge Anvil",
     walltime: str = "00:30:00",
+    max_workers_per_node: int = 2,
+    nodes_per_block: int = 1,
+    max_blocks: int = 1,
+    available_accelerators: int | list[str] | None = None,
 ) -> MachineProfile:
     """Anvil (Purdue/ACCESS) profile — validated 2026-06-03 (worker on compute node a006)."""
     venv = f"/home/{user}/hpc-bridge/gce-venv"
@@ -114,6 +121,10 @@ def anvil_profile(
         account=account,
         worker_init=env,
         walltime=walltime,
+        max_workers_per_node=max_workers_per_node,
+        nodes_per_block=nodes_per_block,
+        max_blocks=max_blocks,
+        available_accelerators=available_accelerators,
         scratch_root=f"/anvil/scratch/{user}/.hpc-bridge",
     )
 
@@ -328,6 +339,9 @@ engine:
   address:
     type: address_by_interface
     ifname: {{ interface | default(@@IFACE@@) }}
+{% if available_accelerators is defined and available_accelerators %}
+  available_accelerators: {{ available_accelerators | tojson }}
+{% endif %}
   job_status_kwargs:
     max_idletime: @@IDLE@@
     strategy_period: 30
@@ -337,19 +351,20 @@ engine:
     partition: {{ partition | default(@@PARTITION@@) }}
     account: {{ account | default(@@ACCOUNT@@) }}
     walltime: {{ walltime | default(@@WALLTIME@@) }}
+    nodes_per_block: {{ nodes_per_block | default(@@NODES@@) }}
     worker_init: {{ worker_init | default(@@WORKER_INIT@@) | tojson }}
     launcher:
       type: SrunLauncher
     init_blocks: {{ init_blocks | default(@@EAGER@@) }}
     min_blocks: 0
-    max_blocks: 1
+    max_blocks: {{ max_blocks | default(@@MAXBLK@@) }}
 {% if scheduler_options is defined and scheduler_options %}
     scheduler_options: {{ scheduler_options | tojson }}
 {% endif %}
 {% else %}
     init_blocks: 1
     min_blocks: 0
-    max_blocks: 1
+    max_blocks: {{ max_blocks | default(@@MAXBLK@@) }}
 {% endif %}
 """
         subs = {
@@ -361,6 +376,8 @@ engine:
             "@@WALLTIME@@": json.dumps(p.walltime),
             "@@WORKER_INIT@@": json.dumps(p.worker_init),
             "@@EAGER@@": str(eager),
+            "@@NODES@@": str(p.nodes_per_block),
+            "@@MAXBLK@@": str(p.max_blocks),
         }
         for token, value in subs.items():
             template = template.replace(token, value)
@@ -371,9 +388,13 @@ engine:
             "walltime": p.walltime,
             "worker_init": p.worker_init,
             "max_workers_per_node": p.max_workers_per_node,
+            "nodes_per_block": p.nodes_per_block,
+            "max_blocks": p.max_blocks,
         }
         if p.scheduler_options is not None:
             defaults["scheduler_options"] = p.scheduler_options
+        if p.available_accelerators is not None:
+            defaults["available_accelerators"] = p.available_accelerators
         return template, defaults
 
     async def bootstrap(self, hpc: Profile) -> EndpointHandle:

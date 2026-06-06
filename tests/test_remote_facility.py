@@ -56,6 +56,54 @@ def test_template_defaults_to_slurm_account_from_profile():
     assert cfg["engine"]["provider"]["account"] == "ACC"
 
 
+def test_template_max_blocks_and_nodes_per_block_default_and_override():
+    from dataclasses import replace as _dc_replace
+
+    # profile defaults flow into the rendered slurm provider
+    prof = _dc_replace(_profile(), max_blocks=4, nodes_per_block=3)
+    f = SlurmFacility(prof, cli=None)
+    tmpl, defaults = f.config_template(Profile(mode="interactive"))
+    prov = _render(tmpl, {**defaults, **shape_config("slurm")})["engine"]["provider"]
+    assert prov["max_blocks"] == 4 and prov["nodes_per_block"] == 3
+    assert prov["min_blocks"] == 0  # idle-release cost net unchanged
+
+    # a per-task user_endpoint_config overrides the profile default
+    over = _render(tmpl, shape_config("slurm", max_blocks=9, nodes_per_block=2))
+    assert over["engine"]["provider"]["max_blocks"] == 9
+    assert over["engine"]["provider"]["nodes_per_block"] == 2
+
+
+def test_template_max_blocks_configurable_for_local_shape():
+    from dataclasses import replace as _dc_replace
+
+    f = SlurmFacility(_dc_replace(_profile(), max_blocks=5), cli=None)
+    tmpl, defaults = f.config_template(Profile(mode="interactive"))
+    prov = _render(tmpl, {**defaults, **shape_config("login")})["engine"]["provider"]
+    assert prov["type"] == "LocalProvider" and prov["max_blocks"] == 5
+
+
+def test_template_emits_available_accelerators_only_when_set():
+    from dataclasses import replace as _dc_replace
+
+    # unset -> the key is omitted entirely
+    f0 = SlurmFacility(_profile(), cli=None)
+    t0, d0 = f0.config_template(Profile(mode="interactive"))
+    assert "available_accelerators" not in _render(t0, {**d0, **shape_config("slurm")})["engine"]
+
+    # int count
+    f1 = SlurmFacility(_dc_replace(_profile(), available_accelerators=4), cli=None)
+    t1, d1 = f1.config_template(Profile(mode="interactive"))
+    assert _render(t1, {**d1, **shape_config("slurm")})["engine"]["available_accelerators"] == 4
+
+    # explicit device list
+    f2 = SlurmFacility(
+        _dc_replace(_profile(), available_accelerators=["gpu0", "gpu1"]), cli=None
+    )
+    t2, d2 = f2.config_template(Profile(mode="interactive"))
+    eng = _render(t2, {**d2, **shape_config("slurm")})["engine"]
+    assert eng["available_accelerators"] == ["gpu0", "gpu1"]
+
+
 def test_slurm_facility_satisfies_protocol():
     assert isinstance(SlurmFacility(_profile(), cli=None), Facility)
 
