@@ -242,9 +242,12 @@ async def test_seed_storage_db_streams_b64_and_locks_permissions(monkeypatch, tm
     cli = RemoteEndpointCLI(SshTarget("h", "u", "k"), "true")
     await cli.seed_storage_db(db)
 
-    joined = " ; ".join(c for c, _ in cmds)
-    assert "mkdir -p" in joined and "chmod 700" in joined  # dir locked first
-    assert "base64 -d" in joined and "chmod 600" in joined  # binary streamed, file locked
+    mkdir_i = next(i for i, (c, _) in enumerate(cmds) if "mkdir -p" in c)
+    write_i = next(i for i, (c, _) in enumerate(cmds) if "base64 -d" in c)
+    chmod_file_i = next(i for i, (c, _) in enumerate(cmds) if "chmod 600" in c)
+    # dir created, then file written, then file locked
+    assert mkdir_i < write_i < chmod_file_i
+    assert any("chmod 700" in c for c, _ in cmds)  # dir locked to user-only
     # the base64 payload round-trips to the original bytes
     payload = next(s for c, s in cmds if "base64 -d" in c)
     assert base64.b64decode(payload) == b"\x00sqlite-bytes\xff"

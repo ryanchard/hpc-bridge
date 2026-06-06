@@ -171,10 +171,10 @@ class RemoteEndpointCLI:
         remotely. The directory is created 0700 and the file chmod'd 0600 — this is a
         bearer credential. Raises RuntimeError on any remote step failure."""
         payload = base64.b64encode(Path(local_db).read_bytes()).decode("ascii")
-        gc_dir = self.remote_dir
-        db_path = f"{gc_dir}/storage.db"
+        db_path = f"{self.remote_dir}/storage.db"
         rc, out, err = await ssh_exec(
-            self.target, f'mkdir -p "{gc_dir}" && chmod 700 "{gc_dir}"'
+            self.target,
+            f'mkdir -p "{self.remote_dir}" && chmod 700 "{self.remote_dir}"',
         )
         if rc != 0:
             raise RuntimeError(
