@@ -13,11 +13,21 @@ from hpc_bridge.credentials import (
 NS = "user/production"
 
 
-def _td(rs: str, *, refresh: str | None = "r-tok") -> TokenStorageData:
+# A scope string that satisfies the endpoint's requirements for BOTH resource servers
+# (openid + manage_projects for auth.globus.org, the compute /all scope for funcx).
+_OK_SCOPE = (
+    "openid urn:globus:auth:scope:auth.globus.org:manage_projects "
+    "https://auth.globus.org/scopes/facd7ccc-c5f4-42aa-916b-a0e270e2c2a9/all"
+)
+
+
+def _td(
+    rs: str, *, refresh: str | None = "r-tok", scope: str = _OK_SCOPE
+) -> TokenStorageData:
     return TokenStorageData(
         resource_server=rs,
         identity_id="id-1",
-        scope="openid",
+        scope=scope,
         access_token="a-tok",
         refresh_token=refresh,
         expires_at_seconds=9999999999,
@@ -86,6 +96,24 @@ def test_build_raises_when_refresh_token_absent(tmp_path):
         },
     )
     with pytest.raises(MissingCredentials, match="refresh"):
+        build_minimal_storage_db(
+            src_path=src, dst_path=tmp_path / "out.db", namespace=NS
+        )
+
+
+def test_build_raises_when_auth_token_lacks_manage_projects(tmp_path):
+    # Regression (caught live on Anvil): a plain SDK login yields auth.globus.org with
+    # only `openid`. The endpoint needs `manage_projects` too, else the remote manager
+    # dies on a headless interactive-login attempt. Fail loudly here instead.
+    src = tmp_path / "src.db"
+    _seed_source(
+        src,
+        {
+            "funcx_service": _td("funcx_service"),
+            "auth.globus.org": _td("auth.globus.org", scope="openid"),  # no mgmt scope
+        },
+    )
+    with pytest.raises(MissingCredentials, match="manage_projects"):
         build_minimal_storage_db(
             src_path=src, dst_path=tmp_path / "out.db", namespace=NS
         )

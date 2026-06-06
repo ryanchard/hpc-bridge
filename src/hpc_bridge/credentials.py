@@ -32,8 +32,39 @@ def _required_resource_servers() -> frozenset[str]:
 REQUIRED_RESOURCE_SERVERS = _required_resource_servers()
 
 
+def _required_scopes() -> dict[str, list[str]]:
+    """resource_server -> scope strings the endpoint must hold to START.
+
+    The endpoint registers these as hard requirements (compute_endpoint/auth.py
+    get_globus_app_with_scopes), so a token missing any of them makes the manager's
+    login_required() True — it then tries an interactive login in a detached daemon and
+    dies. A plain SDK `Client` login only gets `openid` on auth.globus.org, NOT
+    `manage_projects`, so we must verify before shipping (learned live on Anvil)."""
+    from globus_compute_sdk.sdk.auth.auth_client import ComputeAuthClient
+
+    out = {
+        ComputeAuthClient.scopes.resource_server: [
+            str(s) for s in ComputeAuthClient.default_scope_requirements
+        ]
+    }
+    try:
+        from globus_sdk import ComputeClientV3
+
+        out[ComputeClientV3.scopes.resource_server] = [
+            str(s) for s in ComputeClientV3.default_scope_requirements
+        ]
+    except Exception:  # noqa: BLE001 - compute scope check is best-effort
+        pass
+    return out
+
+
+def _missing_scopes(token_scope: str | None, required: list[str]) -> list[str]:
+    have = token_scope or ""
+    return [s for s in required if s.split("[", 1)[0].strip() not in have]
+
+
 class MissingCredentials(RuntimeError):
-    """The source storage.db lacks a usable (refreshable) token for a required RS."""
+    """The source storage.db lacks a usable, adequately-scoped token for a required RS."""
 
 
 def _open(path: Path, namespace: str) -> SQLiteTokenStorage:
@@ -70,6 +101,22 @@ def build_minimal_storage_db(*, src_path: Path, dst_path: Path, namespace: str) 
                 f"token for {rs!r} has no refresh token; re-login to obtain one"
             )
         kept[rs] = td
+
+    # Scope adequacy: a token present but under-scoped (e.g. auth.globus.org with
+    # `openid` but no `manage_projects`, as a plain SDK login produces) silently kills
+    # the remote manager. Fail here, locally, with a clear remediation instead.
+    for rs, required in _required_scopes().items():
+        td = kept.get(rs)
+        if td is None:
+            continue
+        missing = _missing_scopes(td.scope, required)
+        if missing:
+            raise MissingCredentials(
+                f"token for {rs!r} is missing required scope(s) {missing} "
+                f"(have: {td.scope!r}). Run an endpoint-scoped login "
+                f"(`globus-compute-endpoint login`) so it carries openid + "
+                f"manage_projects, then retry."
+            )
 
     dst_path.parent.mkdir(parents=True, exist_ok=True)
     dst = _open(dst_path, namespace)
