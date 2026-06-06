@@ -41,7 +41,7 @@ async def test_ensure_endpoint_up_reports_up_when_warm():
     f = FakeFacility()
     f.workers = 1  # manager online; the canary (below) confirms a live worker
     app = AppCtx(facility=f, profile=Profile())
-    app.runner_factory = lambda eid: _FakeRunner(eid, _Res(0, "", ""))
+    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
     res = await _ensure_endpoint_up(app)
     assert res.status == "up" and res.block_state == "warm"
     assert res.endpoint_id == "fake-eid"
@@ -54,7 +54,7 @@ async def test_ensure_endpoint_up_provisioning_when_manager_up_but_worker_cold()
     f = FakeFacility()
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile())
-    app.runner_factory = lambda eid: _FakeRunner(
+    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(
         eid, _Res(0, "", ""), canary_result=CanaryResult(ok=False, error="timeout")
     )
     res = await _ensure_endpoint_up(app)
@@ -80,7 +80,7 @@ async def test_run_shell_warm_returns_complete_outcome():
     f = FakeFacility()
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile())
-    app.runner = _FakeRunner("fake-eid", _Res(0, "hi\n", ""))
+    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "hi\n", ""))
     out = await _run_shell(app, "echo hi")
     assert out.phase == "complete"
     assert out.exit_code == 0 and out.stdout == "hi\n"
@@ -103,7 +103,7 @@ async def test_run_shell_cold_start_when_worker_not_registered():
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile())
     runner = _FakeRunner("fake-eid", _Res(0, "", ""), canary_result=CanaryResult(ok=False, error="timeout"))
-    app.runner = runner
+    app.runner_factory = lambda eid, user_endpoint_config=None: runner
     out = await _run_shell(app, "echo hi")
     assert out.phase == "cold_start"
     assert runner.canaries == 1 and runner.commands == []  # canaried, never dispatched
@@ -116,11 +116,37 @@ async def test_canary_ttl_skips_repeat_canary_on_hot_path():
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile())
     runner = _FakeRunner("fake-eid", _Res(0, "ok\n", ""))
-    app.runner = runner
+    app.runner_factory = lambda eid, user_endpoint_config=None: runner
     await _run_shell(app, "echo a")
     await _run_shell(app, "echo b")
     assert runner.canaries == 1  # second call skipped the canary
     assert len(runner.commands) == 2  # both commands still dispatched
+
+
+async def test_run_shell_login_shape_uses_localprovider_config():
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    seen = {}
+
+    def factory(eid, user_endpoint_config=None):
+        seen["uec"] = user_endpoint_config
+        return _FakeRunner(eid, _Res(0, "", ""))
+
+    app.runner_factory = factory
+    await _run_shell(app, "echo hi", shape="login")
+    assert seen["uec"]["provider_type"] == "LocalProvider"
+
+
+async def test_two_shapes_keep_independent_runners():
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
+    await _run_shell(app, "echo a", shape="login")
+    await _run_shell(app, "echo b", shape="slurm")
+    assert set(app.shapes) == {"login", "slurm"}
+    assert app.shapes["login"].runner is not app.shapes["slurm"].runner
 
 
 async def test_server_registers_run_shell_tool():
@@ -132,9 +158,10 @@ async def test_run_shell_wraps_command_with_session_shim():
     f = FakeFacility()
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile())
-    app.runner = _FakeRunner("fake-eid", _Res(0, "", ""))
+    runner = _FakeRunner("fake-eid", _Res(0, "", ""))
+    app.runner_factory = lambda eid, user_endpoint_config=None: runner
     await _run_shell(app, "make", session_id="s1")
-    sent = app.runner.commands[-1]
+    sent = runner.commands[-1]
     assert "sessions/s1" in sent  # routed through the session dir
     assert ".cwd" in sent  # shim rehydrates/persists cwd
     assert "base64 -d" in sent  # command carried inertly, not raw
@@ -146,9 +173,10 @@ async def test_reset_session_dispatches_reset_command():
     f = FakeFacility()
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile())
-    app.runner = _FakeRunner("fake-eid", _Res(0, "", ""))
+    runner = _FakeRunner("fake-eid", _Res(0, "", ""))
+    app.runner_factory = lambda eid, user_endpoint_config=None: runner
     await _reset_session(app, "s1")
-    sent = app.runner.commands[-1]
+    sent = runner.commands[-1]
     assert sent.startswith("rm -f")
     assert "sessions/s1" in sent
 
@@ -164,7 +192,7 @@ async def test_run_shell_rejects_traversal_session_id():
     f = FakeFacility()
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile())
-    app.runner = _FakeRunner("fake-eid", _Res(0, "", ""))
+    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
     with pytest.raises(ValueError):
         await _run_shell(app, "echo hi", session_id="../../etc")
 
@@ -175,7 +203,7 @@ async def test_byo_endpoint_skips_provisioning():
     f = FakeFacility()
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile(), state=EndpointState(endpoint_id="byo-uuid"))
-    app.runner_factory = lambda eid: _FakeRunner(eid, _Res(0, "", ""))
+    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
     res = await _ensure_endpoint_up(app)
     assert res.status == "up" and res.endpoint_id == "byo-uuid"
     assert f.provisioned is False
@@ -205,7 +233,7 @@ async def test_ensure_endpoint_up_reports_down_on_provision_failure():
 
 
 async def test_stop_endpoint_tears_down_and_resets():
-    from hpc_bridge.server import _stop_endpoint
+    from hpc_bridge.server import ShapeRuntime, _stop_endpoint
 
     class _TeardownFacility(FakeFacility):
         def __init__(self):
@@ -217,11 +245,13 @@ async def test_stop_endpoint_tears_down_and_resets():
 
     f = _TeardownFacility()
     app = AppCtx(facility=f, profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
-    app.runner = _FakeRunner("eid-1", _Res(0, "", ""))
+    app.shapes["slurm"] = ShapeRuntime(
+        user_endpoint_config={}, runner=_FakeRunner("eid-1", _Res(0, "", ""))
+    )
     res = await _stop_endpoint(app)
     assert res.status == "down" and res.block_state == "cold"
     assert f.torn == "eid-1"  # facility teardown called with the live endpoint
-    assert app.runner is None and app.state.endpoint_id is None  # reset for re-provision
+    assert app.shapes == {} and app.state.endpoint_id is None  # reset for re-provision
     assert "released" in (res.notice or "")
 
 
@@ -272,20 +302,22 @@ def test_billing_banks_warm_interval_across_idle_release(monkeypatch):
     # Spend must (a) exclude the idle gap (no over-report) and (b) retain prior warm time
     # (no under-report) — i.e. accrue across intervals.
     import hpc_bridge.server as srv
+    from hpc_bridge.server import ShapeRuntime
 
     clock = {"t": 1000.0}
     monkeypatch.setattr(srv.time, "monotonic", lambda: clock["t"])
     app = AppCtx(facility=FakeFacility(), profile=Profile(nodes_per_block=1), charge_factor=1.0)
+    rt = ShapeRuntime(user_endpoint_config={})
 
-    srv._settle_billing(app, "warm")  # worker confirmed at t=1000
-    assert app.warm_since == 1000.0
+    srv._settle_billing(rt, app, "warm")  # worker confirmed at t=1000
+    assert rt.warm_since == 1000.0
     clock["t"] += 3600  # held warm for 1h
-    srv._settle_billing(app, "provisioning")  # idle release: bank 1.0 node-hour, stop the clock
-    assert app.warm_since is None and abs(app.spend_accrued - 1.0) < 1e-9
+    srv._settle_billing(rt, app, "provisioning")  # idle release: bank 1.0 node-hour, stop the clock
+    assert rt.warm_since is None and abs(rt.spend_accrued - 1.0) < 1e-9
     clock["t"] += 7200  # 2h cold — must NOT be billed
-    srv._settle_billing(app, "warm")  # warm again
+    srv._settle_billing(rt, app, "warm")  # warm again
     clock["t"] += 1800  # +0.5h
-    assert abs(srv._session_spend(app) - 1.5) < 1e-9  # 1.0 banked + 0.5 current; idle gap excluded
+    assert abs(srv._session_spend(rt, app) - 1.5) < 1e-9  # 1.0 banked + 0.5 current; idle gap excluded
 
 
 def test_worker_notice_flags_dill_skew(monkeypatch):
@@ -303,14 +335,15 @@ def test_worker_notice_flags_dill_skew(monkeypatch):
 def test_note_dispatch_refreshes_on_complete_and_voids_on_timeout(monkeypatch):
     import hpc_bridge.server as srv
     from hpc_bridge.models import ShellOutcome
+    from hpc_bridge.server import ShapeRuntime
 
-    app = AppCtx(facility=FakeFacility(), profile=Profile())
-    app.warm_confirmed_at = 5.0
-    srv._note_dispatch(app, ShellOutcome(phase="failed", block_state="warm", exit_code=124))
-    assert app.warm_confirmed_at is None  # a dispatch timeout forces a re-canary next call
+    rt = ShapeRuntime(user_endpoint_config={})
+    rt.warm_confirmed_at = 5.0
+    srv._note_dispatch(rt, ShellOutcome(phase="failed", block_state="warm", exit_code=124))
+    assert rt.warm_confirmed_at is None  # a dispatch timeout forces a re-canary next call
     monkeypatch.setattr(srv.time, "monotonic", lambda: 999.0)
-    srv._note_dispatch(app, ShellOutcome(phase="complete", block_state="warm", exit_code=0))
-    assert app.warm_confirmed_at == 999.0  # a real result refreshes liveness
+    srv._note_dispatch(rt, ShellOutcome(phase="complete", block_state="warm", exit_code=0))
+    assert rt.warm_confirmed_at == 999.0  # a real result refreshes liveness
 
 
 async def test_concurrent_run_shell_serializes_runner_creation():
@@ -323,7 +356,7 @@ async def test_concurrent_run_shell_serializes_runner_creation():
     app = AppCtx(facility=f, profile=Profile())
     created = []
 
-    def factory(eid):
+    def factory(eid, user_endpoint_config=None):
         r = _FakeRunner(eid, _Res(0, "ok\n", ""))
         created.append(r)
         return r
