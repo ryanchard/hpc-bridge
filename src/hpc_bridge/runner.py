@@ -57,19 +57,24 @@ class GlobusRunner:
         executor_factory=None,
         timeout: float = 120.0,
         walltime: float | None = None,
+        user_endpoint_config: dict | None = None,
     ) -> None:
         self.endpoint_id = endpoint_id
         self.timeout = timeout
         # Server-side wall-clock: the worker kills the process and returns 124 at
         # `walltime`, slightly before the client stops waiting at `timeout`.
         self.walltime = walltime if walltime is not None else max(timeout - 10.0, 5.0)
+        self.user_endpoint_config = user_endpoint_config
         self._ex = None
         self._factory = executor_factory or self._default_factory
 
     def _default_factory(self):
         from globus_compute_sdk import Executor
 
-        return Executor(endpoint_id=self.endpoint_id)
+        return Executor(
+            endpoint_id=self.endpoint_id,
+            user_endpoint_config=self.user_endpoint_config,
+        )
 
     def executor(self):
         if self._ex is None:

@@ -124,3 +124,22 @@ async def test_canary_ok_even_without_version_line():
     r = GlobusRunner("eid", executor_factory=lambda: ex)
     res = await r.canary()
     assert res.ok is True and res.worker_python is None
+
+
+def test_runner_passes_user_endpoint_config_to_executor():
+    captured = {}
+
+    def factory():
+        class _Ex:
+            def __init__(self):
+                captured["made"] = True
+
+            def submit(self, fn):  # not exercised here
+                raise AssertionError("not called")
+
+        return _Ex()
+
+    r = GlobusRunner("eid-1", user_endpoint_config={"provider_type": "LocalProvider"})
+    assert r.user_endpoint_config == {"provider_type": "LocalProvider"}
+    r2 = GlobusRunner("eid-1", executor_factory=factory)
+    assert r2.executor() is not None and captured["made"] is True
