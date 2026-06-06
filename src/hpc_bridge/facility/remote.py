@@ -75,12 +75,15 @@ class MachineProfile:
     """Per-facility data: how to reach the endpoint binary and what Slurm to request."""
 
     name: str
-    endpoint_name: str
+    endpoint_name: str      # registration / on-disk dir name (e.g. "hpc-bridge")
     env_setup: str          # bash that puts globus-compute-endpoint on PATH (module + venv)
     interface: str          # address_by_interface ifname for the worker (e.g. ib0)
     partition: str
     account: str
     worker_init: str        # replays env_setup on the compute worker (parsl writes it into sbatch)
+    # Human-readable label shown in the Globus web UI / `gce list` (distinct from the
+    # endpoint_name used for registration). Defaults to endpoint_name when unset.
+    display_name: str | None = None
     walltime: str = "00:30:00"
     max_workers_per_node: int = 2
     amqp_port: int = 443    # facilities firewall the default AMQPS 5671; 443 is allowed
@@ -95,6 +98,7 @@ def anvil_profile(
     partition: str = "debug",
     module: str = "anaconda/2024.02-py311",
     endpoint_name: str = "hpc-bridge",
+    display_name: str = "HPC-Bridge Anvil",
     walltime: str = "00:30:00",
 ) -> MachineProfile:
     """Anvil (Purdue/ACCESS) profile — validated 2026-06-03 (worker on compute node a006)."""
@@ -103,6 +107,7 @@ def anvil_profile(
     return MachineProfile(
         name="anvil",
         endpoint_name=endpoint_name,
+        display_name=display_name,
         env_setup=env,
         interface="ib0",
         partition=partition,
@@ -418,7 +423,11 @@ engine:
         # engine goes in the UEP template (v4 manager+template model). Rewrite both so
         # a re-provision always applies the current profile.
         manager = yaml.safe_dump(
-            {"display_name": name, "amqp_port": self.profile.amqp_port}, sort_keys=False
+            {
+                "display_name": self.profile.display_name or name,
+                "amqp_port": self.profile.amqp_port,
+            },
+            sort_keys=False,
         )
         uep, _defaults = self.config_template(hpc)
         await self.cli.write_config(name, manager, uep)

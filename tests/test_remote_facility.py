@@ -22,6 +22,8 @@ def test_anvil_profile_fields():
     assert "anaconda/2024.02-py311" in p.env_setup and "gce-venv/bin/activate" in p.env_setup
     assert p.scratch_root == "/anvil/scratch/x-amcsweeneyel/.hpc-bridge"
     assert p.worker_init == p.env_setup  # worker replays the same env
+    assert p.endpoint_name == "hpc-bridge"  # registration/dir name
+    assert p.display_name == "HPC-Bridge Anvil"  # human label for the web UI
 
 
 def _render(template_str, user_opts):
@@ -158,6 +160,7 @@ async def test_provision_fresh_configures_writes_and_starts():
     assert ("configure", "hpc-bridge", False) in cli.calls  # forced single-user
     assert ("start", "hpc-bridge") in cli.calls
     assert "amqp_port: 443" in cli.written["manager"]  # firewall-friendly AMQP in manager cfg
+    assert "HPC-Bridge Anvil" in cli.written["manager"]  # human display_name, not the dir name
     assert "provider_type" in cli.written["uep"]  # template references the var, not a literal
 
 
