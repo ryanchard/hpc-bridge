@@ -264,3 +264,20 @@ async def test_seed_storage_db_raises_on_remote_failure(monkeypatch, tmp_path):
     cli = RemoteEndpointCLI(SshTarget("h", "u", "k"), "true")
     with pytest.raises(RuntimeError, match="seed storage.db"):
         await cli.seed_storage_db(db)
+
+
+async def test_hostname_fqdn_reads_login_node(monkeypatch):
+    async def fake_ssh_exec(target, cmd, **kw):
+        assert "hostname -f" in cmd
+        return (0, "login03.anvil.rcac.purdue.edu\n", "")
+
+    monkeypatch.setattr(remote, "ssh_exec", fake_ssh_exec)
+    cli = RemoteEndpointCLI(SshTarget("anvil.rcac.purdue.edu", "u", "k"), "true")
+    assert await cli.hostname_fqdn() == "login03.anvil.rcac.purdue.edu"
+
+
+def test_rebind_points_cli_at_a_specific_host():
+    cli = RemoteEndpointCLI(SshTarget("anvil.rcac.purdue.edu", "u", "k"), "true")
+    cli.rebind("login03.anvil.rcac.purdue.edu")
+    assert cli.target.host == "login03.anvil.rcac.purdue.edu"
+    assert cli.target.user == "u" and cli.target.key_path == "k"  # other fields preserved

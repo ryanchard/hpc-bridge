@@ -12,7 +12,7 @@ import asyncio
 import base64
 import re
 import shlex
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import yaml
@@ -213,6 +213,20 @@ class RemoteEndpointCLI:
                 if m:
                     return m.group(0)
         raise RuntimeError(f"could not find endpoint {name!r} in `list` output")
+
+    async def hostname_fqdn(self) -> str:
+        """The fully-qualified hostname of the login node this SSH connection landed on.
+
+        Anvil-style aliases round-robin; this is how we learn the *specific* node the
+        manager daemon will run on, so we can return to it later."""
+        rc, out, err = await ssh_exec(self.target, "hostname -f")
+        if rc != 0 or not out.strip():
+            raise RuntimeError(f"hostname -f failed: {(err or out).strip()}")
+        return out.strip().splitlines()[0]
+
+    def rebind(self, host: str) -> None:
+        """Re-point this CLI at a specific host (the pinned FQDN) for reconnect."""
+        self.target = replace(self.target, host=host)
 
 
 # ---------------------------------------------------------------- the facility

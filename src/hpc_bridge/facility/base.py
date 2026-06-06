@@ -10,6 +10,7 @@ from ..profile import Profile
 class EndpointHandle:
     endpoint_id: str
     name: str
+    login_host: str | None = None  # resolved FQDN the manager daemon landed on
 
 
 @runtime_checkable
