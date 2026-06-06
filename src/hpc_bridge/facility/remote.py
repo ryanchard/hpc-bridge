@@ -245,52 +245,62 @@ class SlurmFacility:
     def scratch_root(self) -> str | None:
         return self.profile.scratch_root
 
-    def config_template(self, hpc: Profile) -> dict:
-        # interactive => request a block eagerly the moment the UEP starts (init_blocks=1).
-        # NOTE: in the v4 MEP model the UEP only forks on the FIRST task, so this does NOT
-        # pre-warm before provision() returns — the first run_shell still cold-starts. batch
-        # => fully on-demand. min_blocks is ALWAYS 0 so the idle timer can release the compute
-        # node: Parsl never scales below min_blocks, so min_blocks>=1 would bill the allocation
-        # until walltime or an explicit teardown. The block scale-to-zero (min_blocks=0 +
-        # max_idletime) is the cost net — VALIDATED live on Anvil (2026-06-04): the Slurm block
-        # self-released ~1 idle window after the last task, both client-open and client-closed.
-        # (gce's idle_heartbeats_soft, the UEP self-shutdown knob, is deliberately NOT set: live
-        # testing showed it never fires here — the UEP never flags idle once the block is gone —
-        # so it's a no-op footgun. The UEP + manager are free login-node processes, freed by
-        # stop_endpoint / the canary.) CAVEAT: manager_online() sees only the manager, not worker
-        # readiness — so after an idle release the endpoint manager still reads "online" while the
-        # next task cold-starts (confirmed live). The fix is the worker-registration canary, now
-        # IMPLEMENTED in the dispatch layer (runner.GlobusRunner.canary + server._confirm_worker):
-        # warmth requires a worker to actually answer a trivial task, so ensure_endpoint_up reports
-        # "provisioning" (not "up") and run_shell returns cold_start (not a 124) until one does.
-        warm = hpc.mode == "interactive"
+    def config_template(self, hpc: Profile) -> tuple[str, dict]:
+        """Return (jinja_template_str, default_user_opts) for the UEP template.
+
+        ONE template serves every shape: provider.type and resources are Jinja
+        variables rendered per task from user_endpoint_config (see shapes.py). Defaults
+        come from the MachineProfile so a bare submit still resolves. min_blocks is
+        always 0 (+ max_idletime) so an idle slurm block self-releases — the cost net,
+        validated live on Anvil. LocalProvider ignores the slurm keys."""
         p = self.profile
-        provider: dict = {
-            "type": "SlurmProvider",
+        eager = 1 if hpc.mode == "interactive" else 0
+        template = """\
+engine:
+  type: GlobusComputeEngine
+  max_workers_per_node: {{ max_workers_per_node | default(%(maxw)d) }}
+  address:
+    type: address_by_interface
+    ifname: {{ interface | default('%(iface)s') }}
+  job_status_kwargs:
+    max_idletime: %(idle).1f
+    strategy_period: 30
+  provider:
+    type: {{ provider_type | default('SlurmProvider') }}
+{%% if (provider_type | default('SlurmProvider')) == 'SlurmProvider' %%}
+    partition: {{ partition | default('%(partition)s') }}
+    account: {{ account | default('%(account)s') }}
+    walltime: {{ walltime | default('%(walltime)s') }}
+    worker_init: {{ worker_init | default('%(worker_init)s') | tojson }}
+    launcher:
+      type: SrunLauncher
+    init_blocks: {{ init_blocks | default(%(eager)d) }}
+    min_blocks: 0
+    max_blocks: 1
+{%% else %%}
+    init_blocks: 1
+    min_blocks: 0
+    max_blocks: 1
+{%% endif %%}
+""" % {
+            "maxw": p.max_workers_per_node,
+            "iface": p.interface,
+            "idle": float(hpc.max_idletime_s),
             "partition": p.partition,
             "account": p.account,
-            "launcher": {"type": "SrunLauncher"},
-            "worker_init": p.worker_init,
             "walltime": p.walltime,
-            "init_blocks": 1 if warm else 0,
-            "min_blocks": 0,
-            "max_blocks": 1,
+            "worker_init": p.worker_init,
+            "eager": eager,
         }
-        if p.scheduler_options:
-            provider["scheduler_options"] = p.scheduler_options
-        return {
-            "engine": {
-                "type": "GlobusComputeEngine",
-                "max_workers_per_node": p.max_workers_per_node,
-                "address": {"type": "address_by_interface", "ifname": p.interface},
-                # Scale the worker block to zero after max_idletime idle (needs min_blocks=0).
-                "job_status_kwargs": {
-                    "max_idletime": float(hpc.max_idletime_s),
-                    "strategy_period": 30,
-                },
-                "provider": provider,
-            },
+        defaults = {
+            "interface": p.interface,
+            "partition": p.partition,
+            "account": p.account,
+            "walltime": p.walltime,
+            "worker_init": p.worker_init,
+            "max_workers_per_node": p.max_workers_per_node,
         }
+        return template, defaults
 
     async def provision(self, hpc: Profile) -> EndpointHandle:
         # Idempotent: reuse a running endpoint; configure only if it doesn't exist yet
@@ -307,7 +317,7 @@ class SlurmFacility:
         manager = yaml.safe_dump(
             {"display_name": name, "amqp_port": self.profile.amqp_port}, sort_keys=False
         )
-        uep = yaml.safe_dump(self.config_template(hpc), sort_keys=False)
+        uep, _defaults = self.config_template(hpc)
         await self.cli.write_config(name, manager, uep)
         eid = await self.cli.start(name)
         return EndpointHandle(endpoint_id=eid, name=name)

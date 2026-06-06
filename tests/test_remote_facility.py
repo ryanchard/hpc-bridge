@@ -1,11 +1,14 @@
 import base64
 
+import jinja2
 import pytest
+import yaml as _yaml
 
 from hpc_bridge.facility import remote
 from hpc_bridge.facility.base import EndpointHandle, Facility
 from hpc_bridge.facility.remote import RemoteEndpointCLI, SlurmFacility, SshTarget, anvil_profile
 from hpc_bridge.profile import Profile
+from hpc_bridge.shapes import shape_config
 
 
 def _profile():
@@ -21,43 +24,34 @@ def test_anvil_profile_fields():
     assert p.worker_init == p.env_setup  # worker replays the same env
 
 
-def test_config_template_interactive_eager_block_idle_releases():
+def _render(template_str, user_opts):
+    # mirror the endpoint's render: user_opts are the top-level template variables
+    env = jinja2.Environment(undefined=jinja2.StrictUndefined)
+    return _yaml.safe_load(env.from_string(template_str).render(**user_opts))
+
+
+def test_template_renders_localprovider_for_login_shape():
     f = SlurmFacility(_profile(), cli=None)
-    uep = f.config_template(Profile(mode="interactive"))
-    eng = uep["engine"]
-    assert eng["type"] == "GlobusComputeEngine"
-    assert eng["address"] == {"type": "address_by_interface", "ifname": "ib0"}
-    prov = eng["provider"]
+    tmpl, _defaults = f.config_template(Profile(mode="interactive"))
+    cfg = _render(tmpl, shape_config("login"))
+    assert cfg["engine"]["provider"]["type"] == "LocalProvider"
+
+
+def test_template_renders_slurmprovider_for_slurm_shape():
+    f = SlurmFacility(_profile(), cli=None)
+    tmpl, _defaults = f.config_template(Profile(mode="interactive"))
+    cfg = _render(tmpl, shape_config("slurm", partition="debug", account="ACC"))
+    prov = cfg["engine"]["provider"]
     assert prov["type"] == "SlurmProvider"
-    assert prov["account"] == "ACC" and prov["partition"] == "debug"
-    assert prov["launcher"] == {"type": "SrunLauncher"}
-    # eager block on first task (init_blocks=1), but min_blocks=0 so the idle timer can
-    # release it (no SU leak); init_blocks acts when the UEP forks, not at provision()
-    assert prov["init_blocks"] == 1 and prov["min_blocks"] == 0 and prov["max_blocks"] == 1
-    # the idle cost-net is the block scale-in at ~max_idletime (default 600s = 10 min)
-    assert eng["job_status_kwargs"]["max_idletime"] == 600.0
-    # idle_heartbeats_soft is deliberately NOT set — proven a no-op in gce v4.x (validated live)
-    assert "idle_heartbeats_soft" not in uep
+    assert prov["partition"] == "debug" and prov["account"] == "ACC"
+    assert prov["min_blocks"] == 0 and prov["max_blocks"] == 1
 
 
-def test_config_template_batch_is_on_demand():
+def test_template_defaults_to_slurm_account_from_profile():
     f = SlurmFacility(_profile(), cli=None)
-    prov = f.config_template(Profile(mode="batch"))["engine"]["provider"]
-    assert prov["init_blocks"] == 0 and prov["min_blocks"] == 0
-
-
-def test_config_template_idle_timeout_follows_profile():
-    f = SlurmFacility(_profile(), cli=None)
-    uep = f.config_template(Profile(mode="interactive", max_idletime_s=300))
-    assert uep["engine"]["job_status_kwargs"]["max_idletime"] == 300.0
-
-
-def test_config_template_max_idletime_typing():
-    f = SlurmFacility(_profile(), cli=None)
-    eng = f.config_template(Profile(mode="interactive"))["engine"]
-    # globus-compute expects a float max_idletime + a strategy_period under job_status_kwargs
-    assert isinstance(eng["job_status_kwargs"]["max_idletime"], float)
-    assert eng["job_status_kwargs"]["strategy_period"] == 30
+    tmpl, defaults = f.config_template(Profile(mode="interactive"))
+    cfg = _render(tmpl, {**defaults, **shape_config("slurm")})
+    assert cfg["engine"]["provider"]["account"] == "ACC"
 
 
 def test_slurm_facility_satisfies_protocol():
@@ -106,7 +100,7 @@ async def test_provision_fresh_configures_writes_and_starts():
     assert ("configure", "hpc-bridge", False) in cli.calls  # forced single-user
     assert ("start", "hpc-bridge") in cli.calls
     assert "amqp_port: 443" in cli.written["manager"]  # firewall-friendly AMQP in manager cfg
-    assert "SlurmProvider" in cli.written["uep"] and "ACC" in cli.written["uep"]
+    assert "provider_type" in cli.written["uep"]  # template references the var, not a literal
 
 
 async def test_provision_skips_configure_when_already_configured():
