@@ -449,3 +449,31 @@ async def test_login_shell_unavailable_on_local_facility():
 async def test_server_registers_login_shell_tool():
     tools = await mcp.list_tools()
     assert any(t.name == "login_shell" for t in tools)
+
+
+async def test_stop_endpoint_removes_login_node_record(tmp_path):
+    from hpc_bridge.server import ShapeRuntime, _stop_endpoint
+    from hpc_bridge.state import EndpointRecord, LoginNodeStore
+
+    store = LoginNodeStore(tmp_path / "endpoints.json")
+    store.put(EndpointRecord(
+        endpoint_id="eid-1", login_host="login03.x", alias="anvil.x", user="u",
+        key_path="/k", name="hpc-bridge", provisioned_at="2026-06-06T00:00:00Z",
+    ))
+
+    class _Prof:
+        endpoint_name = "hpc-bridge"
+
+    class _Fac(FakeFacility):
+        def __init__(self):
+            super().__init__()
+            self.store = store
+            self.alias = "anvil.x"
+            self.profile = _Prof()
+
+        async def teardown(self, eid):
+            pass
+
+    app = AppCtx(facility=_Fac(), profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
+    await _stop_endpoint(app)
+    assert store.get(alias="anvil.x", name="hpc-bridge") is None  # stale pin cleared

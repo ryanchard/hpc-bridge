@@ -79,6 +79,33 @@ server wraps commands to rehydrate+persist `cwd`/env in `<scratch>/sessions/<id>
 the shared filesystem — a bare `cd build` then `make` just works. `session_id` is
 allowlist-validated and the command is base64-carried so it can't break out of the wrapper.
 
+### Remote bootstrap
+
+**Credential seeding.** On the first connect to a remote facility, hpc-bridge builds a
+minimally-scoped `storage.db` locally — only the Globus Compute and Auth tokens an endpoint
+needs, refresh tokens included — from your existing `globus-compute-endpoint login`, and ships
+it to the remote `~/.globus_compute/storage.db` (directory `0700`, file `0600`). The local
+trimmed copy is written to a temp directory and wiped after transfer. Subsequent sessions reuse
+the remote credential; seeding is skipped if `whoami` succeeds.
+
+**Login-node pinning.** The endpoint manager daemon is a detached process that lives on ONE
+login node, but HPC SSH aliases typically round-robin across many nodes. hpc-bridge records the
+resolved FQDN (captured in the same SSH connection that starts the daemon, before the alias can
+send you elsewhere) in `~/.hpc-bridge/endpoints.json` (`0600`) and reconnects straight to that
+node next session. To reset a stale pin — e.g. after a node goes down — delete that file.
+
+**Resource shapes.** One templatable endpoint serves both `shape="login"` (a `LocalProvider`
+running on the login node — lightweight, no allocation, not billed) and `shape="slurm"` (a
+`SlurmProvider` block — heavy compute, billed, idle-released) via per-task
+`user_endpoint_config`. `run_shell(command, shape=...)` selects the target; sessions (cwd/env)
+persist independently per shape.
+
+**Teardown.** `stop_endpoint` stops the endpoint, releases the Slurm block, and removes the
+login-node pin from `endpoints.json` so a stale FQDN is not reused next session. The seeded
+remote credential (`storage.db`) is kept by default so a later session can reconnect without
+re-seeding; the facility's `teardown` method accepts an opt-in `wipe_credentials=True` to also
+remove it from the remote host.
+
 ### The `Facility` seam
 
 Everything machine-specific sits behind one protocol (`provision` / `manager_online` /

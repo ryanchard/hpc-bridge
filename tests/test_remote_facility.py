@@ -88,6 +88,9 @@ class _FakeRemoteCLI:
         self.calls.append(("login_exec", command))
         return (0, "OUT", "")
 
+    async def wipe_storage_db(self):
+        self.calls.append(("wipe", "hpc-bridge"))
+
 
 def _kinds(cli):
     return [c[0] for c in cli.calls]
@@ -389,3 +392,30 @@ def test_template_survives_special_chars_in_profile():
     cfg = _render(tmpl, {**defaults, **shape_config("slurm")})
     expected = "source it's/venv && export P=50% {ok}"
     assert cfg["engine"]["provider"]["worker_init"] == expected
+
+
+async def test_wipe_storage_db_removes_remote_credential(monkeypatch):
+    wiped = {}
+
+    async def fake_ssh_exec(target, cmd, **kw):
+        if "rm -f" in cmd and "storage.db" in cmd:
+            wiped["yes"] = True
+        return (0, "", "")
+
+    monkeypatch.setattr(remote, "ssh_exec", fake_ssh_exec)
+    cli = RemoteEndpointCLI(SshTarget("h", "u", "k"), "true")
+    await cli.wipe_storage_db()
+    assert wiped.get("yes") is True
+
+
+async def test_teardown_keeps_credentials_by_default():
+    cli = _FakeRemoteCLI()
+    await SlurmFacility(_profile(), cli=cli).teardown("fake-eid")
+    assert ("stop", "hpc-bridge") in cli.calls
+    assert ("wipe", ) not in [(c[0],) for c in cli.calls]  # default keeps creds for reconnect
+
+
+async def test_teardown_wipes_credentials_when_requested():
+    cli = _FakeRemoteCLI()
+    await SlurmFacility(_profile(), cli=cli).teardown("fake-eid", wipe_credentials=True)
+    assert ("wipe", "hpc-bridge") in cli.calls

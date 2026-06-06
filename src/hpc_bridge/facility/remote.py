@@ -224,6 +224,10 @@ class RemoteEndpointCLI:
         # Best-effort: `stop` can throw a psutil traceback yet still cancel the block.
         await self._gce("stop", name)
 
+    async def wipe_storage_db(self) -> None:
+        """Remove the seeded credential from the remote host (best-effort)."""
+        await ssh_exec(self.target, f'rm -f "{self.remote_dir}/storage.db"')
+
     async def endpoint_id(self, name: str) -> str:
         rc, out, err = await self._gce("list")
         if rc != 0:
@@ -404,9 +408,13 @@ engine:
         eid, host = await self.cli.start(name)
         return EndpointHandle(endpoint_id=eid, name=name, login_host=host)
 
-    async def teardown(self, endpoint_id: str) -> None:
-        """Stop the endpoint and cancel its Slurm block(s) — the cost-control exit."""
+    async def teardown(self, endpoint_id: str, *, wipe_credentials: bool = False) -> None:
+        """Stop the endpoint and cancel its Slurm block(s) — the cost-control exit.
+        Credentials are kept by default so a later session can reconnect; pass
+        wipe_credentials=True to also remove the remote storage.db."""
         await self.cli.stop(self.profile.endpoint_name)
+        if wipe_credentials:
+            await self.cli.wipe_storage_db()
 
     async def login_exec(self, command: str) -> tuple[int, str, str]:
         """Read-only login-node command for discovery — no block, no allocation (delegates

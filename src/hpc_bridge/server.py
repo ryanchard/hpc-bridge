@@ -349,6 +349,11 @@ async def _stop_endpoint(app: AppCtx) -> EndpointStatus:
                 notice = "endpoint stopped; compute block released"
             except Exception as exc:  # noqa: BLE001 - report, never crash the tool
                 notice = f"stop attempted; {type(exc).__name__}: {exc}"[:300]
+        store = getattr(app.facility, "store", None)
+        alias = getattr(app.facility, "alias", None)
+        name = getattr(getattr(app.facility, "profile", None), "endpoint_name", None)
+        if store is not None and alias is not None and name is not None:
+            store.remove(alias=alias, name=name)
         for rt in app.shapes.values():
             if rt.runner is not None:
                 rt.runner.close()
