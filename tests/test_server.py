@@ -320,6 +320,40 @@ def test_billing_banks_warm_interval_across_idle_release(monkeypatch):
     assert abs(srv._session_spend(rt, app) - 1.5) < 1e-9  # 1.0 banked + 0.5 current; idle gap excluded
 
 
+def test_login_shape_is_not_billed(monkeypatch):
+    # LocalProvider (login) shapes consume no allocation: the spend clock never starts.
+    import hpc_bridge.server as srv
+    from hpc_bridge.server import ShapeRuntime
+
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(srv.time, "monotonic", lambda: clock["t"])
+    app = AppCtx(facility=FakeFacility(), profile=Profile(nodes_per_block=1), charge_factor=1.0)
+    rt = ShapeRuntime(user_endpoint_config={"provider_type": "LocalProvider"})
+
+    srv._settle_billing(rt, app, "warm")
+    assert rt.warm_since is None  # login never starts the spend clock
+    clock["t"] += 3600
+    assert srv._session_spend(rt, app) == 0.0  # no allocation -> no spend
+
+
+def test_total_session_spend_sums_only_billable_shapes(monkeypatch):
+    import hpc_bridge.server as srv
+    from hpc_bridge.server import ShapeRuntime
+
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(srv.time, "monotonic", lambda: clock["t"])
+    app = AppCtx(facility=FakeFacility(), profile=Profile(nodes_per_block=1), charge_factor=1.0)
+    slurm = ShapeRuntime(user_endpoint_config={"provider_type": "SlurmProvider"})
+    login = ShapeRuntime(user_endpoint_config={"provider_type": "LocalProvider"})
+    app.shapes = {"slurm": slurm, "login": login}
+
+    srv._settle_billing(slurm, app, "warm")
+    srv._settle_billing(login, app, "warm")
+    clock["t"] += 3600  # 1h warm
+    # only the slurm shape bills: 1 node * 1h * charge_factor 1.0 = 1.0
+    assert abs(srv._total_session_spend(app) - 1.0) < 1e-9
+
+
 def test_worker_notice_flags_dill_skew(monkeypatch):
     import hpc_bridge.server as srv
 

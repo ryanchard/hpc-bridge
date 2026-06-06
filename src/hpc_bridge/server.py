@@ -152,10 +152,10 @@ def _shape_runtime(app: AppCtx, shape: str) -> ShapeRuntime:
         defaults: dict = {}
         ct = getattr(app.facility, "config_template", None)
         if ct is not None:
-            try:
-                _tmpl, defaults = ct(app.profile)  # SlurmFacility returns (str, dict)
-            except (TypeError, ValueError):
-                defaults = {}  # LocalFacility/FakeFacility return a plain dict -> no defaults
+            result = ct(app.profile)
+            if isinstance(result, tuple):  # SlurmFacility -> (template_str, defaults)
+                defaults = result[1]
+            # LocalFacility/FakeFacility return a plain dict (rendered engine) -> no UEP defaults
         if not isinstance(defaults, dict):
             defaults = {}
         uec = {**defaults, **shape_config(shape)}
@@ -207,12 +207,18 @@ def _bank_warm_interval(rt: ShapeRuntime, app: AppCtx) -> None:
         rt.warm_since = None
 
 
+def _billable(rt: ShapeRuntime) -> bool:
+    """LocalProvider (login-node) shapes consume no allocation, so they don't bill."""
+    return rt.user_endpoint_config.get("provider_type") != "LocalProvider"
+
+
 def _settle_billing(rt: ShapeRuntime, app: AppCtx, block: str) -> None:
     """Drive the session-spend clock from TRUE worker presence (the canary), not manager
     liveness. Banking on warm->not-warm makes spend survive an idle block release without
     over-counting the idle gap (the clock stays stopped while cold) — closes the over-report
-    without the symmetric under-report of simply resetting."""
-    if block == "warm":
+    without the symmetric under-report of simply resetting. Login (LocalProvider) shapes are
+    not billable, so their clock never starts and nothing accrues."""
+    if block == "warm" and _billable(rt):
         if rt.warm_since is None:
             rt.warm_since = time.monotonic()
     else:
