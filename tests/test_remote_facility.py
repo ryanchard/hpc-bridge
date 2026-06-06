@@ -260,6 +260,29 @@ async def test_status_parses_running_configured_absent(monkeypatch):
     assert await cli.status("hpc-bridge") is None
 
 
+async def test_status_and_endpoint_id_match_name_exactly_not_substring(monkeypatch):
+    # Regression (caught live on Anvil): a pre-existing 'hpc-bridge-login' row contains
+    # the substring 'hpc-bridge', so a naive `name in line` mis-identified it as ours and
+    # skipped configure. status()/endpoint_id() must match the Endpoint Name column exactly.
+    listing = (
+        "+--------------------------------------+---------+------------------+\n"
+        "|             Endpoint ID              | Status  |  Endpoint Name   |\n"
+        "+======================================+=========+==================+\n"
+        "| c76765f0-fcf7-4fce-afa9-2dda47677fcc | Stopped | hpc-bridge-login |\n"
+        "+--------------------------------------+---------+------------------+\n"
+    )
+
+    async def fake_ssh_exec(target, cmd, **kw):
+        return (0, listing, "")
+
+    monkeypatch.setattr(remote, "ssh_exec", fake_ssh_exec)
+    cli = RemoteEndpointCLI(SshTarget("h", "u", "k"), "true")
+    assert await cli.status("hpc-bridge") is None  # must NOT match hpc-bridge-login
+    assert await cli.status("hpc-bridge-login") == "configured"  # exact match works
+    with pytest.raises(RuntimeError, match="could not find"):
+        await cli.endpoint_id("hpc-bridge")  # no exact 'hpc-bridge' row
+
+
 async def test_remote_cli_login_exec_runs_bash_lc_over_ssh(monkeypatch):
     captured = {}
 

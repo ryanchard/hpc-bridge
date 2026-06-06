@@ -151,14 +151,31 @@ class RemoteEndpointCLI:
                 return
             raise RuntimeError(f"remote configure failed: {msg}")
 
+    @staticmethod
+    def _list_rows(out: str) -> list[list[str]]:
+        """Parse `gce list`'s table into [uuid, status, name] cells per data row.
+
+        Matching the Endpoint Name column EXACTLY (not as a substring of the line) is
+        load-bearing: a `hpc-bridge-login` row contains the substring `hpc-bridge`, so a
+        naive `name in line` would mis-identify a *different* endpoint as ours and skip
+        configure — caught live on Anvil."""
+        rows = []
+        for line in out.splitlines():
+            if "|" not in line:
+                continue
+            cells = [c.strip() for c in line.split("|") if c.strip()]
+            if len(cells) >= 3:
+                rows.append(cells)
+        return rows
+
     async def status(self, name: str) -> str | None:
         """'running' | 'configured' | None — drives idempotent (re)provisioning."""
         rc, out, _err = await self._gce("list")
         if rc != 0:
             return None
-        for line in out.splitlines():
-            if name in line:
-                return "running" if "Running" in line else "configured"
+        for cells in self._list_rows(out):
+            if cells[-1] == name:  # exact Endpoint Name match, not a line substring
+                return "running" if "Running" in cells[1] else "configured"
         return None
 
     async def write_config(self, name: str, manager_yaml: str, uep_yaml: str) -> None:
@@ -232,9 +249,9 @@ class RemoteEndpointCLI:
         rc, out, err = await self._gce("list")
         if rc != 0:
             raise RuntimeError(f"remote list failed: {(err or out).strip()}")
-        for line in out.splitlines():
-            if name in line:
-                m = _UUID.search(line)
+        for cells in self._list_rows(out):
+            if cells[-1] == name:  # exact Endpoint Name match, not a line substring
+                m = _UUID.search(cells[0])
                 if m:
                     return m.group(0)
         raise RuntimeError(f"could not find endpoint {name!r} in `list` output")
