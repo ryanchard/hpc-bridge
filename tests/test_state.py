@@ -27,9 +27,11 @@ def test_get_returns_none_when_absent(tmp_path):
 def test_put_is_idempotent_on_alias_name_key(tmp_path):
     store = LoginNodeStore(tmp_path / "endpoints.json")
     store.put(_rec(login_host="login01.anvil.rcac.purdue.edu"))
-    store.put(_rec(login_host="login05.anvil.rcac.purdue.edu"))  # same alias+name -> overwrite
+    # same alias+name -> overwrite
+    store.put(_rec(login_host="login05.anvil.rcac.purdue.edu"))
     assert len(store.all()) == 1
-    assert store.get(alias="anvil.rcac.purdue.edu", name="hpc-bridge").login_host.startswith("login05")
+    got = store.get(alias="anvil.rcac.purdue.edu", name="hpc-bridge")
+    assert got.login_host.startswith("login05")
 
 
 def test_remove(tmp_path):
