@@ -297,6 +297,33 @@ def test_make_facility_defaults_local(monkeypatch):
     assert make_facility().name == "local"
 
 
+def test_make_facility_reconnects_to_pinned_login_node(monkeypatch):
+    import hpc_bridge.state as state_mod
+    from hpc_bridge.state import EndpointRecord
+    from hpc_bridge.server import make_facility
+
+    rec = EndpointRecord(
+        endpoint_id="eid", login_host="login05.anvil.rcac.purdue.edu",
+        alias="anvil.rcac.purdue.edu", user="x-u", key_path="/tmp/k",
+        name="hpc-bridge", provisioned_at="2026-06-06T00:00:00Z",
+    )
+
+    class _FakeStore:
+        def __init__(self, *a, **k):
+            pass
+
+        def get(self, *, alias, name):
+            return rec
+
+    monkeypatch.setattr(state_mod, "LoginNodeStore", _FakeStore)
+    monkeypatch.setenv("HPC_BRIDGE_FACILITY", "anvil")
+    monkeypatch.setenv("HPC_BRIDGE_SSH_USER", "x-u")
+    monkeypatch.setenv("HPC_BRIDGE_SSH_KEY", "/tmp/k")
+    monkeypatch.setenv("HPC_BRIDGE_ACCOUNT", "ACC")
+    fac = make_facility()
+    assert fac.cli.target.host == "login05.anvil.rcac.purdue.edu"  # rebound to pinned node
+
+
 def test_billing_banks_warm_interval_across_idle_release(monkeypatch):
     # The canary makes warm_since track a TRUE worker, so the clock stops on idle release.
     # Spend must (a) exclude the idle gap (no over-report) and (b) retain prior warm time

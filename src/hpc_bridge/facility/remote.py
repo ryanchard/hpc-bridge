@@ -26,7 +26,7 @@ from globus_compute_sdk.sdk.auth.token_storage import (
 
 from ..credentials import build_minimal_storage_db
 from ..profile import Profile
-from ..state import EndpointRecord
+from ..state import EndpointRecord, LoginNodeStore
 from .base import EndpointHandle
 
 # ---------------------------------------------------------------- SSH transport
@@ -202,11 +202,23 @@ class RemoteEndpointCLI:
                 f"seed storage.db (chmod) failed: {(err or out).strip()}"
             )
 
-    async def start(self, name: str) -> str:
-        rc, out, err = await self._gce("start", name, "--detach")
+    async def start(self, name: str) -> tuple[str, str | None]:
+        # Start the daemon AND capture the login node it landed on in the SAME ssh
+        # connection: the alias round-robins, so a separate hostname probe could resolve
+        # a different node than the one now hosting the manager daemon. The sentinel
+        # isolates the FQDN from gce's own stdout.
+        inner = (
+            f"{self.env_setup} && globus-compute-endpoint start {shlex.quote(name)} "
+            f"--detach && echo HPCB_HOST=$(hostname -f)"
+        )
+        rc, out, err = await ssh_exec(self.target, f"bash -lc {shlex.quote(inner)}")
         if rc != 0:
             raise RuntimeError(f"remote start failed: {(err or out).strip()}")
-        return await self.endpoint_id(name)
+        host = None
+        for line in out.splitlines():
+            if line.startswith("HPCB_HOST="):
+                host = line[len("HPCB_HOST=") :].strip() or None
+        return await self.endpoint_id(name), host
 
     async def stop(self, name: str) -> None:
         # Best-effort: `stop` can throw a psutil traceback yet still cancel the block.
@@ -255,8 +267,8 @@ class SlurmFacility:
         cli: RemoteEndpointCLI,
         *,
         client_factory=None,
-        store=None,
-        alias=None,
+        store: LoginNodeStore | None = None,
+        alias: str | None = None,
     ) -> None:
         self.profile = profile
         self.cli = cli
@@ -339,10 +351,14 @@ engine:
         return template, defaults
 
     async def bootstrap(self, hpc: Profile) -> EndpointHandle:
-        """Full first-run bootstrap: ensure remote creds exist, provision, capture the
-        login-node FQDN, and record it so later sessions reconnect direct-to-node.
-        Idempotent: seeds storage.db only if the remote can't already authenticate, and
-        reuses a running endpoint (via provision())."""
+        """Full first-run bootstrap: ensure remote creds, provision, and record the
+        login-node FQDN so later sessions reconnect direct-to-node.
+
+        The FQDN is captured in the same SSH connection that starts the daemon (the
+        alias round-robins, so a separate probe could name the wrong node). A reused
+        already-running endpoint keeps its prior recorded node; reconciling a stale or
+        dead pin is deferred. Idempotent: seeds storage.db only if the remote can't
+        already authenticate, and reuses a running endpoint."""
         if not await self.cli.whoami():
             with tempfile.TemporaryDirectory() as tmp:
                 trimmed = build_minimal_storage_db(
@@ -351,16 +367,12 @@ engine:
                     namespace=_resolve_namespace(),
                 )
                 await self.cli.seed_storage_db(trimmed)
-        fqdn = await self.cli.hostname_fqdn()
         handle = await self.provision(hpc)
-        handle = EndpointHandle(
-            endpoint_id=handle.endpoint_id, name=handle.name, login_host=fqdn
-        )
-        if self.store is not None and self.alias is not None:
+        if handle.login_host is not None and self.store is not None and self.alias is not None:
             self.store.put(
                 EndpointRecord(
                     endpoint_id=handle.endpoint_id,
-                    login_host=fqdn,
+                    login_host=handle.login_host,
                     alias=self.alias,
                     user=self.cli.target.user,
                     key_path=self.cli.target.key_path,
@@ -376,6 +388,8 @@ engine:
         name = self.profile.endpoint_name
         st = await self.cli.status(name)
         if st == "running":
+            # REUSE: we did NOT launch it, so its node is unknown from a fresh
+            # round-robin probe — leave login_host None and keep any prior record.
             return EndpointHandle(endpoint_id=await self.cli.endpoint_id(name), name=name)
         if st is None:
             await self.cli.configure(name)
@@ -387,8 +401,8 @@ engine:
         )
         uep, _defaults = self.config_template(hpc)
         await self.cli.write_config(name, manager, uep)
-        eid = await self.cli.start(name)
-        return EndpointHandle(endpoint_id=eid, name=name)
+        eid, host = await self.cli.start(name)
+        return EndpointHandle(endpoint_id=eid, name=name, login_host=host)
 
     async def teardown(self, endpoint_id: str) -> None:
         """Stop the endpoint and cancel its Slurm block(s) — the cost-control exit."""

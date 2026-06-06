@@ -76,7 +76,7 @@ class _FakeRemoteCLI:
 
     async def start(self, name):
         self.calls.append(("start", name))
-        return "fake-eid"
+        return ("fake-eid", "login03.anvil.rcac.purdue.edu")
 
     async def stop(self, name):
         self.calls.append(("stop", name))
@@ -133,7 +133,7 @@ async def test_bootstrap_skips_seed_when_remote_db_present(monkeypatch, tmp_path
     monkeypatch.setattr(remote, "build_minimal_storage_db", lambda **kw: tmp_path / "x.db")
     handle = await fac.bootstrap(Profile(mode="interactive"))
     assert cli.seeded is None  # already had creds -> no reseed
-    assert handle.login_host == "login03.anvil.rcac.purdue.edu"
+    assert handle.login_host is None  # reused (already-running) endpoint isn't re-probed
 
 
 async def test_bootstrap_records_login_node_in_store(monkeypatch, tmp_path):

@@ -81,6 +81,10 @@ def make_facility() -> Facility:
         store = LoginNodeStore()
         rec = store.get(alias=alias, name=profile.endpoint_name)
         if rec is not None:  # reconnect direct-to-node instead of the round-robin alias
+            # Dead-pin limitation: if the pinned node is down or the endpoint is gone, the
+            # next SSH fails fast (BatchMode) and surfaces as a structured error; clearing
+            # or reconciling a stale pin is deferred (delete ~/.hpc-bridge/endpoints.json
+            # to reset).
             cli.rebind(rec.login_host)
         return SlurmFacility(profile, cli, store=store, alias=alias)
     user_dir = Path(os.environ.get("HPC_BRIDGE_USER_DIR", str(Path.home() / ".globus_compute")))
