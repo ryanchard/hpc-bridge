@@ -1,3 +1,5 @@
+import base64
+
 import pytest
 
 from hpc_bridge.facility import remote
@@ -225,3 +227,37 @@ async def test_slurm_facility_login_exec_delegates_to_cli():
     rc, out, _ = await SlurmFacility(_profile(), cli=cli).login_exec("sinfo -h")
     assert rc == 0 and out == "OUT"
     assert ("login_exec", "sinfo -h") in cli.calls  # discovery routed through the SSH CLI, not _gce
+
+
+async def test_seed_storage_db_streams_b64_and_locks_permissions(monkeypatch, tmp_path):
+    db = tmp_path / "storage.db"
+    db.write_bytes(b"\x00sqlite-bytes\xff")
+    cmds = []
+
+    async def fake_ssh_exec(target, cmd, *, stdin=None, **kw):
+        cmds.append((cmd, stdin))
+        return (0, "", "")
+
+    monkeypatch.setattr(remote, "ssh_exec", fake_ssh_exec)
+    cli = RemoteEndpointCLI(SshTarget("h", "u", "k"), "true")
+    await cli.seed_storage_db(db)
+
+    joined = " ; ".join(c for c, _ in cmds)
+    assert "mkdir -p" in joined and "chmod 700" in joined  # dir locked first
+    assert "base64 -d" in joined and "chmod 600" in joined  # binary streamed, file locked
+    # the base64 payload round-trips to the original bytes
+    payload = next(s for c, s in cmds if "base64 -d" in c)
+    assert base64.b64decode(payload) == b"\x00sqlite-bytes\xff"
+
+
+async def test_seed_storage_db_raises_on_remote_failure(monkeypatch, tmp_path):
+    db = tmp_path / "storage.db"
+    db.write_bytes(b"x")
+
+    async def fake_ssh_exec(target, cmd, *, stdin=None, **kw):
+        return (1, "", "Permission denied")
+
+    monkeypatch.setattr(remote, "ssh_exec", fake_ssh_exec)
+    cli = RemoteEndpointCLI(SshTarget("h", "u", "k"), "true")
+    with pytest.raises(RuntimeError, match="seed storage.db"):
+        await cli.seed_storage_db(db)

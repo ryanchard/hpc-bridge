@@ -9,9 +9,11 @@ easy case; OTP facilities will later route SSH through the credential broker.
 from __future__ import annotations
 
 import asyncio
+import base64
 import re
 import shlex
 from dataclasses import dataclass
+from pathlib import Path
 
 import yaml
 
@@ -161,6 +163,35 @@ class RemoteEndpointCLI:
         rc, out, err = await ssh_exec(self.target, f'cat > "{path}"', stdin=content)
         if rc != 0:
             raise RuntimeError(f"remote write {path} failed: {(err or out).strip()}")
+
+    async def seed_storage_db(self, local_db: Path) -> None:
+        """Ship a (trimmed) storage.db to the remote ~/.globus_compute/storage.db.
+
+        The db is binary SQLite, so it rides stdin base64-encoded and is decoded
+        remotely. The directory is created 0700 and the file chmod'd 0600 — this is a
+        bearer credential. Raises RuntimeError on any remote step failure."""
+        payload = base64.b64encode(Path(local_db).read_bytes()).decode("ascii")
+        gc_dir = self.remote_dir
+        db_path = f"{gc_dir}/storage.db"
+        rc, out, err = await ssh_exec(
+            self.target, f'mkdir -p "{gc_dir}" && chmod 700 "{gc_dir}"'
+        )
+        if rc != 0:
+            raise RuntimeError(
+                f"seed storage.db (mkdir) failed: {(err or out).strip()}"
+            )
+        rc, out, err = await ssh_exec(
+            self.target, f'base64 -d > "{db_path}"', stdin=payload
+        )
+        if rc != 0:
+            raise RuntimeError(
+                f"seed storage.db (write) failed: {(err or out).strip()}"
+            )
+        rc, out, err = await ssh_exec(self.target, f'chmod 600 "{db_path}"')
+        if rc != 0:
+            raise RuntimeError(
+                f"seed storage.db (chmod) failed: {(err or out).strip()}"
+            )
 
     async def start(self, name: str) -> str:
         rc, out, err = await self._gce("start", name, "--detach")
