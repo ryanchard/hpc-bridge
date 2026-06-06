@@ -38,7 +38,9 @@ class MissingCredentials(RuntimeError):
 
 def _open(path: Path, namespace: str) -> SQLiteTokenStorage:
     return SQLiteTokenStorage(
-        filepath=str(path), namespace=namespace, connect_params={"check_same_thread": False}
+        filepath=str(path),
+        namespace=namespace,
+        connect_params={"check_same_thread": False},
     )
 
 
