@@ -286,3 +286,51 @@ def test_rebind_points_cli_at_a_specific_host():
     assert cli.target.host == "login03.anvil.rcac.purdue.edu"
     assert cli.target.user == "u"
     assert cli.target.key_path == "k"  # other fields preserved
+
+
+def test_template_max_idletime_is_float_with_strategy_period():
+    f = SlurmFacility(_profile(), cli=None)
+    tmpl, defaults = f.config_template(Profile(mode="interactive"))
+    cfg = _render(tmpl, {**defaults, **shape_config("slurm")})
+    jsk = cfg["engine"]["job_status_kwargs"]
+    assert isinstance(jsk["max_idletime"], float) and jsk["max_idletime"] == 600.0
+    assert jsk["strategy_period"] == 30
+
+
+def test_template_idle_timeout_follows_profile():
+    f = SlurmFacility(_profile(), cli=None)
+    tmpl, defaults = f.config_template(Profile(mode="interactive", max_idletime_s=300))
+    cfg = _render(tmpl, {**defaults, **shape_config("slurm")})
+    assert cfg["engine"]["job_status_kwargs"]["max_idletime"] == 300.0
+
+
+def test_template_batch_mode_init_blocks_zero_interactive_one():
+    f = SlurmFacility(_profile(), cli=None)
+    tmpl, defaults = f.config_template(Profile(mode="batch"))
+    cfg = _render(tmpl, {**defaults, **shape_config("slurm")})
+    assert cfg["engine"]["provider"]["init_blocks"] == 0
+    tmpl2, defaults2 = f.config_template(Profile(mode="interactive"))
+    cfg2 = _render(tmpl2, {**defaults2, **shape_config("slurm")})
+    assert cfg2["engine"]["provider"]["init_blocks"] == 1
+
+
+def test_template_emits_scheduler_options_when_profile_sets_it():
+    from dataclasses import replace as _dc_replace
+    base = _profile()
+    prof = _dc_replace(base, scheduler_options="#SBATCH --constraint=A100")
+    f = SlurmFacility(prof, cli=None)
+    tmpl, defaults = f.config_template(Profile(mode="interactive"))
+    cfg = _render(tmpl, {**defaults, **shape_config("slurm")})
+    assert cfg["engine"]["provider"]["scheduler_options"] == "#SBATCH --constraint=A100"
+
+
+def test_template_survives_special_chars_in_profile():
+    from dataclasses import replace as _dc_replace
+    base = _profile()
+    # apostrophe, percent, and braces in worker_init must NOT break Jinja compile
+    prof = _dc_replace(base, worker_init="source it's/venv && export P=50% {ok}")
+    f = SlurmFacility(prof, cli=None)
+    tmpl, defaults = f.config_template(Profile(mode="interactive"))
+    cfg = _render(tmpl, {**defaults, **shape_config("slurm")})
+    expected = "source it's/venv && export P=50% {ok}"
+    assert cfg["engine"]["provider"]["worker_init"] == expected

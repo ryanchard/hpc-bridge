@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import re
 import shlex
 from dataclasses import dataclass, replace
@@ -252,47 +253,57 @@ class SlurmFacility:
         variables rendered per task from user_endpoint_config (see shapes.py). Defaults
         come from the MachineProfile so a bare submit still resolves. min_blocks is
         always 0 (+ max_idletime) so an idle slurm block self-releases — the cost net,
-        validated live on Anvil. LocalProvider ignores the slurm keys."""
+        validated live on Anvil. LocalProvider ignores the slurm keys.
+
+        Profile defaults are injected as json.dumps'd literals via sentinel
+        substitution (not %-formatting) so values containing quotes/%/braces can't
+        break Jinja compilation."""
         p = self.profile
         eager = 1 if hpc.mode == "interactive" else 0
         template = """\
 engine:
   type: GlobusComputeEngine
-  max_workers_per_node: {{ max_workers_per_node | default(%(maxw)d) }}
+  max_workers_per_node: {{ max_workers_per_node | default(@@MAXW@@) }}
   address:
     type: address_by_interface
-    ifname: {{ interface | default('%(iface)s') }}
+    ifname: {{ interface | default(@@IFACE@@) }}
   job_status_kwargs:
-    max_idletime: %(idle).1f
+    max_idletime: @@IDLE@@
     strategy_period: 30
   provider:
     type: {{ provider_type | default('SlurmProvider') }}
-{%% if (provider_type | default('SlurmProvider')) == 'SlurmProvider' %%}
-    partition: {{ partition | default('%(partition)s') }}
-    account: {{ account | default('%(account)s') }}
-    walltime: {{ walltime | default('%(walltime)s') }}
-    worker_init: {{ worker_init | default('%(worker_init)s') | tojson }}
+{% if (provider_type | default('SlurmProvider')) == 'SlurmProvider' %}
+    partition: {{ partition | default(@@PARTITION@@) }}
+    account: {{ account | default(@@ACCOUNT@@) }}
+    walltime: {{ walltime | default(@@WALLTIME@@) }}
+    worker_init: {{ worker_init | default(@@WORKER_INIT@@) | tojson }}
     launcher:
       type: SrunLauncher
-    init_blocks: {{ init_blocks | default(%(eager)d) }}
+    init_blocks: {{ init_blocks | default(@@EAGER@@) }}
     min_blocks: 0
     max_blocks: 1
-{%% else %%}
+{% if scheduler_options is defined and scheduler_options %}
+    scheduler_options: {{ scheduler_options | tojson }}
+{% endif %}
+{% else %}
     init_blocks: 1
     min_blocks: 0
     max_blocks: 1
-{%% endif %%}
-""" % {
-            "maxw": p.max_workers_per_node,
-            "iface": p.interface,
-            "idle": float(hpc.max_idletime_s),
-            "partition": p.partition,
-            "account": p.account,
-            "walltime": p.walltime,
-            "worker_init": p.worker_init,
-            "eager": eager,
+{% endif %}
+"""
+        subs = {
+            "@@MAXW@@": str(p.max_workers_per_node),
+            "@@IFACE@@": json.dumps(p.interface),
+            "@@IDLE@@": repr(float(hpc.max_idletime_s)),
+            "@@PARTITION@@": json.dumps(p.partition),
+            "@@ACCOUNT@@": json.dumps(p.account),
+            "@@WALLTIME@@": json.dumps(p.walltime),
+            "@@WORKER_INIT@@": json.dumps(p.worker_init),
+            "@@EAGER@@": str(eager),
         }
-        defaults = {
+        for token, value in subs.items():
+            template = template.replace(token, value)
+        defaults: dict = {
             "interface": p.interface,
             "partition": p.partition,
             "account": p.account,
@@ -300,6 +311,8 @@ engine:
             "worker_init": p.worker_init,
             "max_workers_per_node": p.max_workers_per_node,
         }
+        if p.scheduler_options is not None:
+            defaults["scheduler_options"] = p.scheduler_options
         return template, defaults
 
     async def provision(self, hpc: Profile) -> EndpointHandle:
