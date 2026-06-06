@@ -276,8 +276,19 @@ async def test_hostname_fqdn_reads_login_node(monkeypatch):
     assert await cli.hostname_fqdn() == "login03.anvil.rcac.purdue.edu"
 
 
+async def test_hostname_fqdn_raises_on_remote_failure(monkeypatch):
+    async def fake_ssh_exec(target, cmd, **kw):
+        return (1, "", "ssh: connect to host failed")
+
+    monkeypatch.setattr(remote, "ssh_exec", fake_ssh_exec)
+    cli = RemoteEndpointCLI(SshTarget("anvil.rcac.purdue.edu", "u", "k"), "true")
+    with pytest.raises(RuntimeError, match="hostname -f failed"):
+        await cli.hostname_fqdn()
+
+
 def test_rebind_points_cli_at_a_specific_host():
     cli = RemoteEndpointCLI(SshTarget("anvil.rcac.purdue.edu", "u", "k"), "true")
     cli.rebind("login03.anvil.rcac.purdue.edu")
     assert cli.target.host == "login03.anvil.rcac.purdue.edu"
-    assert cli.target.user == "u" and cli.target.key_path == "k"  # other fields preserved
+    assert cli.target.user == "u"
+    assert cli.target.key_path == "k"  # other fields preserved
