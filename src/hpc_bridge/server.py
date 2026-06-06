@@ -339,20 +339,26 @@ async def _stop_endpoint(app: AppCtx) -> EndpointStatus:
     async with app.lock:  # exclude concurrent dispatch/provision while we tear down
         eid = app.state.endpoint_id
         teardown = getattr(app.facility, "teardown", None)
+        torn_down = False
         if eid is None:
             notice = "no endpoint was up"
+            torn_down = True  # nothing running -> the pin (if any) is safe to clear
         elif teardown is None:
             notice = "this facility has no teardown (local dev)"
         else:
             try:
                 await teardown(eid)
                 notice = "endpoint stopped; compute block released"
+                torn_down = True
             except Exception as exc:  # noqa: BLE001 - report, never crash the tool
                 notice = f"stop attempted; {type(exc).__name__}: {exc}"[:300]
+        # Only drop the login-node pin if the daemon is actually gone. A failed teardown
+        # may leave it running on the pinned node, so we keep the pin for reconnect rather
+        # than orphan it (the exact bug pinning exists to prevent).
         store = getattr(app.facility, "store", None)
         alias = getattr(app.facility, "alias", None)
         name = getattr(getattr(app.facility, "profile", None), "endpoint_name", None)
-        if store is not None and alias is not None and name is not None:
+        if torn_down and store is not None and alias is not None and name is not None:
             store.remove(alias=alias, name=name)
         for rt in app.shapes.values():
             if rt.runner is not None:

@@ -477,3 +477,35 @@ async def test_stop_endpoint_removes_login_node_record(tmp_path):
     app = AppCtx(facility=_Fac(), profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
     await _stop_endpoint(app)
     assert store.get(alias="anvil.x", name="hpc-bridge") is None  # stale pin cleared
+
+
+async def test_stop_endpoint_keeps_pin_when_teardown_fails(tmp_path):
+    # A failed teardown may leave the daemon running on the pinned node, so the pin must
+    # survive — dropping it would orphan the still-running endpoint on reconnect.
+    from hpc_bridge.server import _stop_endpoint
+    from hpc_bridge.state import EndpointRecord, LoginNodeStore
+
+    store = LoginNodeStore(tmp_path / "endpoints.json")
+    store.put(EndpointRecord(
+        endpoint_id="eid-1", login_host="login03.x", alias="anvil.x", user="u",
+        key_path="/k", name="hpc-bridge", provisioned_at="2026-06-06T00:00:00Z",
+    ))
+
+    class _Prof:
+        endpoint_name = "hpc-bridge"
+
+    class _Fac(FakeFacility):
+        def __init__(self):
+            super().__init__()
+            self.store = store
+            self.alias = "anvil.x"
+            self.profile = _Prof()
+
+        async def teardown(self, eid):
+            raise RuntimeError("ssh unreachable")
+
+    app = AppCtx(facility=_Fac(), profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
+    res = await _stop_endpoint(app)
+    assert "stop attempted" in (res.notice or "")
+    rec = store.get(alias="anvil.x", name="hpc-bridge")
+    assert rec is not None and rec.login_host == "login03.x"  # pin kept for reconnect
