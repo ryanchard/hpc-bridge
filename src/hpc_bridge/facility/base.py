@@ -10,6 +10,7 @@ from ..profile import Profile
 class EndpointHandle:
     endpoint_id: str
     name: str
+    login_host: str | None = None  # resolved FQDN the manager daemon landed on
 
 
 @runtime_checkable
@@ -18,4 +19,4 @@ class Facility(Protocol):
 
     async def provision(self, profile: Profile) -> EndpointHandle: ...
     async def manager_online(self, endpoint_id: str) -> bool: ...
-    def config_template(self, profile: Profile) -> dict: ...
+    def config_template(self, profile: Profile) -> dict | tuple[str, dict]: ...

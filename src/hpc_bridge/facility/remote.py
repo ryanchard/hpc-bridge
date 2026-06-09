@@ -9,13 +9,24 @@ easy case; OTP facilities will later route SSH through the credential broker.
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import re
 import shlex
-from dataclasses import dataclass
+import tempfile
+from dataclasses import dataclass, replace
+from datetime import datetime, timezone
+from pathlib import Path
 
 import yaml
+from globus_compute_sdk.sdk.auth.token_storage import (
+    _get_storage_filepath,
+    _resolve_namespace,
+)
 
+from ..credentials import build_minimal_storage_db
 from ..profile import Profile
+from ..state import EndpointRecord, LoginNodeStore
 from .base import EndpointHandle
 
 # ---------------------------------------------------------------- SSH transport
@@ -64,14 +75,20 @@ class MachineProfile:
     """Per-facility data: how to reach the endpoint binary and what Slurm to request."""
 
     name: str
-    endpoint_name: str
+    endpoint_name: str      # registration / on-disk dir name (e.g. "hpc-bridge")
     env_setup: str          # bash that puts globus-compute-endpoint on PATH (module + venv)
     interface: str          # address_by_interface ifname for the worker (e.g. ib0)
     partition: str
     account: str
     worker_init: str        # replays env_setup on the compute worker (parsl writes it into sbatch)
+    # Human-readable label shown in the Globus web UI / `gce list` (distinct from the
+    # endpoint_name used for registration). Defaults to endpoint_name when unset.
+    display_name: str | None = None
     walltime: str = "00:30:00"
-    max_workers_per_node: int = 2
+    max_workers_per_node: int = 2     # parsl workers per node (the engine's slots)
+    nodes_per_block: int = 1          # nodes requested per Slurm block
+    max_blocks: int = 1               # ceiling on concurrent Slurm blocks Parsl may hold
+    available_accelerators: int | list[str] | None = None  # GPU count or device IDs
     amqp_port: int = 443    # facilities firewall the default AMQPS 5671; 443 is allowed
     scheduler_options: str | None = None
     scratch_root: str | None = None  # session-shell root on the shared filesystem
@@ -84,7 +101,12 @@ def anvil_profile(
     partition: str = "debug",
     module: str = "anaconda/2024.02-py311",
     endpoint_name: str = "hpc-bridge",
+    display_name: str = "HPC-Bridge Anvil",
     walltime: str = "00:30:00",
+    max_workers_per_node: int = 2,
+    nodes_per_block: int = 1,
+    max_blocks: int = 1,
+    available_accelerators: int | list[str] | None = None,
 ) -> MachineProfile:
     """Anvil (Purdue/ACCESS) profile — validated 2026-06-03 (worker on compute node a006)."""
     venv = f"/home/{user}/hpc-bridge/gce-venv"
@@ -92,12 +114,17 @@ def anvil_profile(
     return MachineProfile(
         name="anvil",
         endpoint_name=endpoint_name,
+        display_name=display_name,
         env_setup=env,
         interface="ib0",
         partition=partition,
         account=account,
         worker_init=env,
         walltime=walltime,
+        max_workers_per_node=max_workers_per_node,
+        nodes_per_block=nodes_per_block,
+        max_blocks=max_blocks,
+        available_accelerators=available_accelerators,
         scratch_root=f"/anvil/scratch/{user}/.hpc-bridge",
     )
 
@@ -106,6 +133,7 @@ def anvil_profile(
 
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_JOBID = re.compile(r"^\d+(_\d+)?$")  # plain or array slurm job id (guards what we scancel)
 
 
 class RemoteEndpointCLI:
@@ -140,14 +168,31 @@ class RemoteEndpointCLI:
                 return
             raise RuntimeError(f"remote configure failed: {msg}")
 
+    @staticmethod
+    def _list_rows(out: str) -> list[list[str]]:
+        """Parse `gce list`'s table into [uuid, status, name] cells per data row.
+
+        Matching the Endpoint Name column EXACTLY (not as a substring of the line) is
+        load-bearing: a `hpc-bridge-login` row contains the substring `hpc-bridge`, so a
+        naive `name in line` would mis-identify a *different* endpoint as ours and skip
+        configure — caught live on Anvil."""
+        rows = []
+        for line in out.splitlines():
+            if "|" not in line:
+                continue
+            cells = [c.strip() for c in line.split("|") if c.strip()]
+            if len(cells) >= 3:
+                rows.append(cells)
+        return rows
+
     async def status(self, name: str) -> str | None:
         """'running' | 'configured' | None — drives idempotent (re)provisioning."""
         rc, out, _err = await self._gce("list")
         if rc != 0:
             return None
-        for line in out.splitlines():
-            if name in line:
-                return "running" if "Running" in line else "configured"
+        for cells in self._list_rows(out):
+            if cells[-1] == name:  # exact Endpoint Name match, not a line substring
+                return "running" if "Running" in cells[1] else "configured"
         return None
 
     async def write_config(self, name: str, manager_yaml: str, uep_yaml: str) -> None:
@@ -162,26 +207,118 @@ class RemoteEndpointCLI:
         if rc != 0:
             raise RuntimeError(f"remote write {path} failed: {(err or out).strip()}")
 
-    async def start(self, name: str) -> str:
-        rc, out, err = await self._gce("start", name, "--detach")
+    async def seed_storage_db(self, local_db: Path) -> None:
+        """Ship a (trimmed) storage.db to the remote ~/.globus_compute/storage.db.
+
+        The db is binary SQLite, so it rides stdin base64-encoded and is decoded
+        remotely. The directory is created 0700 and the file chmod'd 0600 — this is a
+        bearer credential. Raises RuntimeError on any remote step failure."""
+        payload = base64.b64encode(Path(local_db).read_bytes()).decode("ascii")
+        db_path = f"{self.remote_dir}/storage.db"
+        rc, out, err = await ssh_exec(
+            self.target,
+            f'mkdir -p "{self.remote_dir}" && chmod 700 "{self.remote_dir}"',
+        )
+        if rc != 0:
+            raise RuntimeError(
+                f"seed storage.db (mkdir) failed: {(err or out).strip()}"
+            )
+        rc, out, err = await ssh_exec(
+            self.target, f'base64 -d > "{db_path}"', stdin=payload
+        )
+        if rc != 0:
+            raise RuntimeError(
+                f"seed storage.db (write) failed: {(err or out).strip()}"
+            )
+        rc, out, err = await ssh_exec(self.target, f'chmod 600 "{db_path}"')
+        if rc != 0:
+            raise RuntimeError(
+                f"seed storage.db (chmod) failed: {(err or out).strip()}"
+            )
+
+    async def start(self, name: str) -> tuple[str, str | None]:
+        # Start the daemon AND capture the login node it landed on in the SAME ssh
+        # connection: the alias round-robins, so a separate hostname probe could resolve
+        # a different node than the one now hosting the manager daemon. The sentinel
+        # isolates the FQDN from gce's own stdout.
+        inner = (
+            f"{self.env_setup} && globus-compute-endpoint start {shlex.quote(name)} "
+            f"--detach && echo HPCB_HOST=$(hostname -f)"
+        )
+        rc, out, err = await ssh_exec(self.target, f"bash -lc {shlex.quote(inner)}")
         if rc != 0:
             raise RuntimeError(f"remote start failed: {(err or out).strip()}")
-        return await self.endpoint_id(name)
+        host = None
+        for line in out.splitlines():
+            if line.startswith("HPCB_HOST="):
+                host = line[len("HPCB_HOST=") :].strip() or None
+        return await self.endpoint_id(name), host
 
     async def stop(self, name: str) -> None:
         # Best-effort: `stop` can throw a psutil traceback yet still cancel the block.
         await self._gce("stop", name)
 
+    async def wipe_storage_db(self) -> None:
+        """Remove the seeded credential from the remote host (best-effort)."""
+        await ssh_exec(self.target, f'rm -f "{self.remote_dir}/storage.db"')
+
+    async def cancel_blocks(self, endpoint_id: str) -> list[str]:
+        """Best-effort `scancel` of THIS endpoint's Slurm blocks; returns the cancelled IDs.
+
+        An ungraceful `stop` (it can die on a psutil traceback) won't scale Parsl's block in,
+        so the compute keeps its allocation until walltime. We find our blocks precisely by
+        their StdOut path, which Parsl writes under the endpoint's UEP dir
+        (`uep.<endpoint_id>.*`) — so we never touch another GlobusComputeEngine endpoint's
+        jobs. Never raises: teardown must not crash on a flaky scheduler query."""
+        marker = f"uep.{endpoint_id}"
+        try:
+            squeue = 'squeue -u "$USER" -h -O "JobID:30,StdOut:1024" 2>/dev/null'
+            rc, out, _err = await ssh_exec(self.target, f"bash -lc {shlex.quote(squeue)}")
+        except Exception:  # noqa: BLE001 - scheduler unreachable -> nothing to cancel
+            return []
+        if rc != 0:
+            return []
+        ids = [
+            line.split()[0]
+            for line in out.splitlines()
+            if marker in line and line.split() and _JOBID.match(line.split()[0])
+        ]
+        if ids:
+            try:
+                await ssh_exec(self.target, f"bash -lc {shlex.quote('scancel ' + ' '.join(ids))}")
+            except Exception:  # noqa: BLE001 - best-effort
+                pass
+        return ids
+
     async def endpoint_id(self, name: str) -> str:
         rc, out, err = await self._gce("list")
         if rc != 0:
             raise RuntimeError(f"remote list failed: {(err or out).strip()}")
-        for line in out.splitlines():
-            if name in line:
-                m = _UUID.search(line)
+        for cells in self._list_rows(out):
+            if cells[-1] == name:  # exact Endpoint Name match, not a line substring
+                m = _UUID.search(cells[0])
                 if m:
                     return m.group(0)
         raise RuntimeError(f"could not find endpoint {name!r} in `list` output")
+
+    async def whoami(self) -> bool:
+        """True if the remote endpoint can authenticate (storage.db usable)."""
+        rc, _out, _err = await self._gce("whoami")
+        return rc == 0
+
+    async def hostname_fqdn(self) -> str:
+        """The fully-qualified hostname of the login node this SSH connection landed on.
+
+        Anvil-style aliases round-robin; this is how we learn the *specific* node the
+        manager daemon will run on, so we can return to it later."""
+        rc, out, err = await ssh_exec(self.target, "hostname -f")
+        if rc != 0 or not out.strip():
+            raise RuntimeError(f"hostname -f failed: {(err or out).strip()}")
+        return out.strip().splitlines()[0]
+
+    def rebind(self, host: str) -> None:
+        """Re-point this CLI at a specific host (the pinned FQDN) for reconnect."""
+        self.target = replace(self.target, host=host)
 
 
 # ---------------------------------------------------------------- the facility
@@ -190,62 +327,150 @@ class RemoteEndpointCLI:
 class SlurmFacility:
     """A Globus Compute endpoint on a remote Slurm cluster, provisioned over SSH."""
 
-    def __init__(self, profile: MachineProfile, cli: RemoteEndpointCLI, *, client_factory=None) -> None:
+    def __init__(
+        self,
+        profile: MachineProfile,
+        cli: RemoteEndpointCLI,
+        *,
+        client_factory=None,
+        store: LoginNodeStore | None = None,
+        alias: str | None = None,
+    ) -> None:
         self.profile = profile
         self.cli = cli
         self.name = profile.name
         self._client_factory = client_factory or self._default_client
+        self.store = store
+        self.alias = alias
 
     @property
     def scratch_root(self) -> str | None:
         return self.profile.scratch_root
 
-    def config_template(self, hpc: Profile) -> dict:
-        # interactive => request a block eagerly the moment the UEP starts (init_blocks=1).
-        # NOTE: in the v4 MEP model the UEP only forks on the FIRST task, so this does NOT
-        # pre-warm before provision() returns — the first run_shell still cold-starts. batch
-        # => fully on-demand. min_blocks is ALWAYS 0 so the idle timer can release the compute
-        # node: Parsl never scales below min_blocks, so min_blocks>=1 would bill the allocation
-        # until walltime or an explicit teardown. The block scale-to-zero (min_blocks=0 +
-        # max_idletime) is the cost net — VALIDATED live on Anvil (2026-06-04): the Slurm block
-        # self-released ~1 idle window after the last task, both client-open and client-closed.
-        # (gce's idle_heartbeats_soft, the UEP self-shutdown knob, is deliberately NOT set: live
-        # testing showed it never fires here — the UEP never flags idle once the block is gone —
-        # so it's a no-op footgun. The UEP + manager are free login-node processes, freed by
-        # stop_endpoint / the canary.) CAVEAT: manager_online() sees only the manager, not worker
-        # readiness — so after an idle release the endpoint manager still reads "online" while the
-        # next task cold-starts (confirmed live). The fix is the worker-registration canary, now
-        # IMPLEMENTED in the dispatch layer (runner.GlobusRunner.canary + server._confirm_worker):
-        # warmth requires a worker to actually answer a trivial task, so ensure_endpoint_up reports
-        # "provisioning" (not "up") and run_shell returns cold_start (not a 124) until one does.
-        warm = hpc.mode == "interactive"
+    def config_template(self, hpc: Profile) -> tuple[str, dict]:
+        """Return (jinja_template_str, default_user_opts) for the UEP template.
+
+        ONE template serves every shape: provider.type and resources are Jinja
+        variables rendered per task from user_endpoint_config (see shapes.py). Defaults
+        come from the MachineProfile so a bare submit still resolves. min_blocks is
+        always 0 (+ max_idletime) so an idle slurm block self-releases — the cost net,
+        validated live on Anvil. LocalProvider ignores the slurm keys.
+
+        Profile defaults are injected as json.dumps'd literals via sentinel
+        substitution (not %-formatting) so values containing quotes/%/braces can't
+        break Jinja compilation.
+
+        Two render-time invariants imposed by the endpoint manager (`render_config_user_template`
+        → `_sanitize_user_json`), both learned by live debugging:
+        - It json.dumps's every *string* user_opt, so `"SlurmProvider"` arrives as
+          `'"SlurmProvider"'`. Branch on the BOOLEAN `is_slurm` (bools pass through the
+          sanitizer unchanged), never a string equality — a string compare silently fails
+          and drops the whole provider block.
+        - Because the sanitizer already quotes strings, the template must NOT also `| tojson`
+          a string value (worker_init, scheduler_options) — that double-encodes it (embedded
+          quotes) and breaks the worker. The json.dumps'd defaults are pre-quoted to match."""
         p = self.profile
-        provider: dict = {
-            "type": "SlurmProvider",
+        eager = 1 if hpc.mode == "interactive" else 0
+        template = """\
+engine:
+  type: GlobusComputeEngine
+  max_workers_per_node: {{ max_workers_per_node | default(@@MAXW@@) }}
+  address:
+    type: address_by_interface
+    ifname: {{ interface | default(@@IFACE@@) }}
+{% if available_accelerators is defined and available_accelerators %}
+{% if available_accelerators is iterable and available_accelerators is not string %}
+  available_accelerators: [{{ available_accelerators | join(', ') }}]
+{% else %}
+  available_accelerators: {{ available_accelerators }}
+{% endif %}
+{% endif %}
+  job_status_kwargs:
+    max_idletime: @@IDLE@@
+    strategy_period: 30
+  provider:
+    type: {{ provider_type | default('SlurmProvider') }}
+{% if is_slurm | default(true) %}
+    partition: {{ partition | default(@@PARTITION@@) }}
+    account: {{ account | default(@@ACCOUNT@@) }}
+    walltime: {{ walltime | default(@@WALLTIME@@) }}
+    nodes_per_block: {{ nodes_per_block | default(@@NODES@@) }}
+    worker_init: {{ worker_init | default(@@WORKER_INIT@@) }}
+    launcher:
+      type: SrunLauncher
+    init_blocks: {{ init_blocks | default(@@EAGER@@) }}
+    min_blocks: 0
+    max_blocks: {{ max_blocks | default(@@MAXBLK@@) }}
+{% if scheduler_options is defined and scheduler_options %}
+    scheduler_options: {{ scheduler_options }}
+{% endif %}
+{% else %}
+    init_blocks: 1
+    min_blocks: 0
+    max_blocks: {{ max_blocks | default(@@MAXBLK@@) }}
+{% endif %}
+"""
+        subs = {
+            "@@MAXW@@": str(p.max_workers_per_node),
+            "@@IFACE@@": json.dumps(p.interface),
+            "@@IDLE@@": repr(float(hpc.max_idletime_s)),
+            "@@PARTITION@@": json.dumps(p.partition),
+            "@@ACCOUNT@@": json.dumps(p.account),
+            "@@WALLTIME@@": json.dumps(p.walltime),
+            "@@WORKER_INIT@@": json.dumps(p.worker_init),
+            "@@EAGER@@": str(eager),
+            "@@NODES@@": str(p.nodes_per_block),
+            "@@MAXBLK@@": str(p.max_blocks),
+        }
+        for token, value in subs.items():
+            template = template.replace(token, value)
+        defaults: dict = {
+            "interface": p.interface,
             "partition": p.partition,
             "account": p.account,
-            "launcher": {"type": "SrunLauncher"},
-            "worker_init": p.worker_init,
             "walltime": p.walltime,
-            "init_blocks": 1 if warm else 0,
-            "min_blocks": 0,
-            "max_blocks": 1,
+            "worker_init": p.worker_init,
+            "max_workers_per_node": p.max_workers_per_node,
+            "nodes_per_block": p.nodes_per_block,
+            "max_blocks": p.max_blocks,
         }
-        if p.scheduler_options:
-            provider["scheduler_options"] = p.scheduler_options
-        return {
-            "engine": {
-                "type": "GlobusComputeEngine",
-                "max_workers_per_node": p.max_workers_per_node,
-                "address": {"type": "address_by_interface", "ifname": p.interface},
-                # Scale the worker block to zero after max_idletime idle (needs min_blocks=0).
-                "job_status_kwargs": {
-                    "max_idletime": float(hpc.max_idletime_s),
-                    "strategy_period": 30,
-                },
-                "provider": provider,
-            },
-        }
+        if p.scheduler_options is not None:
+            defaults["scheduler_options"] = p.scheduler_options
+        if p.available_accelerators is not None:
+            defaults["available_accelerators"] = p.available_accelerators
+        return template, defaults
+
+    async def bootstrap(self, hpc: Profile) -> EndpointHandle:
+        """Full first-run bootstrap: ensure remote creds, provision, and record the
+        login-node FQDN so later sessions reconnect direct-to-node.
+
+        The FQDN is captured in the same SSH connection that starts the daemon (the
+        alias round-robins, so a separate probe could name the wrong node). A reused
+        already-running endpoint keeps its prior recorded node; reconciling a stale or
+        dead pin is deferred. Idempotent: seeds storage.db only if the remote can't
+        already authenticate, and reuses a running endpoint."""
+        if not await self.cli.whoami():
+            with tempfile.TemporaryDirectory() as tmp:
+                trimmed = build_minimal_storage_db(
+                    src_path=Path(_get_storage_filepath()),
+                    dst_path=Path(tmp) / "storage.db",
+                    namespace=_resolve_namespace(),
+                )
+                await self.cli.seed_storage_db(trimmed)
+        handle = await self.provision(hpc)
+        if handle.login_host is not None and self.store is not None and self.alias is not None:
+            self.store.put(
+                EndpointRecord(
+                    endpoint_id=handle.endpoint_id,
+                    login_host=handle.login_host,
+                    alias=self.alias,
+                    user=self.cli.target.user,
+                    key_path=self.cli.target.key_path,
+                    name=handle.name,
+                    provisioned_at=datetime.now(timezone.utc).isoformat(),
+                )
+            )
+        return handle
 
     async def provision(self, hpc: Profile) -> EndpointHandle:
         # Idempotent: reuse a running endpoint; configure only if it doesn't exist yet
@@ -253,6 +478,8 @@ class SlurmFacility:
         name = self.profile.endpoint_name
         st = await self.cli.status(name)
         if st == "running":
+            # REUSE: we did NOT launch it, so its node is unknown from a fresh
+            # round-robin probe — leave login_host None and keep any prior record.
             return EndpointHandle(endpoint_id=await self.cli.endpoint_id(name), name=name)
         if st is None:
             await self.cli.configure(name)
@@ -260,16 +487,35 @@ class SlurmFacility:
         # engine goes in the UEP template (v4 manager+template model). Rewrite both so
         # a re-provision always applies the current profile.
         manager = yaml.safe_dump(
-            {"display_name": name, "amqp_port": self.profile.amqp_port}, sort_keys=False
+            {
+                "display_name": self.profile.display_name or name,
+                "amqp_port": self.profile.amqp_port,
+            },
+            sort_keys=False,
         )
-        uep = yaml.safe_dump(self.config_template(hpc), sort_keys=False)
+        uep, _defaults = self.config_template(hpc)
         await self.cli.write_config(name, manager, uep)
-        eid = await self.cli.start(name)
-        return EndpointHandle(endpoint_id=eid, name=name)
+        eid, host = await self.cli.start(name)
+        if host:
+            # Pin the live session to the node the manager daemon actually landed on, so
+            # later control-plane ops — above all teardown — reach THIS node instead of
+            # the round-robin alias. Without this, `stop` hits a different login node,
+            # the daemon survives, and the endpoint is orphaned (the very failure the
+            # login-node pin exists to prevent).
+            self.cli.rebind(host)
+        return EndpointHandle(endpoint_id=eid, name=name, login_host=host)
 
-    async def teardown(self, endpoint_id: str) -> None:
-        """Stop the endpoint and cancel its Slurm block(s) — the cost-control exit."""
+    async def teardown(self, endpoint_id: str, *, wipe_credentials: bool = False) -> None:
+        """Stop the endpoint and cancel its Slurm block(s) — the cost-control exit.
+        Credentials are kept by default so a later session can reconnect; pass
+        wipe_credentials=True to also remove the remote storage.db."""
         await self.cli.stop(self.profile.endpoint_name)
+        # Backstop: `stop` kills the manager, but an ungraceful stop leaves Parsl's block
+        # holding the allocation until walltime (no manager left to scale it in). Explicitly
+        # cancel this endpoint's blocks so "teardown released the compute" is actually true.
+        await self.cli.cancel_blocks(endpoint_id)
+        if wipe_credentials:
+            await self.cli.wipe_storage_db()
 
     async def login_exec(self, command: str) -> tuple[int, str, str]:
         """Read-only login-node command for discovery — no block, no allocation (delegates
