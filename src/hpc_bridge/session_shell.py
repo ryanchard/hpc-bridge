@@ -12,9 +12,11 @@ _VALID_SESSION_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 # (e.g. `$SLURM_JOB_ID` reporting a stale block). Matched against `export -p` output in both
 # bash (`declare -x NAME=`) and POSIX-sh (`export NAME=`) forms. Belt-and-suspenders next to
 # the ambient-diff below: this also self-heals a `.env` already dirtied by older builds.
+# NB: HOSTNAME (scheduler/compute-node injected) is filtered, but NOT bare HOST — that's a
+# common user var (e.g. HOST=0.0.0.0 for a dev server) we must let the session persist.
 _VOLATILE_EXPORT = (
     r"^(declare -x |export )"
-    r"(SLURM[A-Z_]*|HOSTNAME|HOST|PBS_[A-Z_]*|PMI_[A-Z_]*|OMPI_[A-Z_]*|FLUX_[A-Z_]*)="
+    r"(SLURM[A-Z_]*|HOSTNAME|PBS_[A-Z_]*|PMI_[A-Z_]*|OMPI_[A-Z_]*|FLUX_[A-Z_]*)="
 )
 
 
@@ -88,4 +90,5 @@ def wrap(command: str, session: Session) -> str:
 def reset_command(session: Session) -> str:
     """A command that clears the session's persisted cwd/env (fresh slate)."""
     sd = shlex.quote(session.state_dir)
-    return f"rm -f {sd}/.cwd {sd}/.env"
+    # also sweep any .env.base.* snapshot a command leaked by exiting mid-wrapper
+    return f"rm -f {sd}/.cwd {sd}/.env {sd}/.env.base.*"

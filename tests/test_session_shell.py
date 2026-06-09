@@ -70,3 +70,4 @@ def test_reset_command_removes_state_files():
     assert r.startswith("rm -f")
     assert "/scratch/.hpc-bridge/sessions/abc/.cwd" in r
     assert "/scratch/.hpc-bridge/sessions/abc/.env" in r
+    assert "/scratch/.hpc-bridge/sessions/abc/.env.base.*" in r  # sweep leaked snapshots
