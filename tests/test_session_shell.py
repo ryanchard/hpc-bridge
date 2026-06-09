@@ -47,6 +47,18 @@ def test_wrap_first_call_defaults_into_session_dir():
     assert '-n "$__hb_cwd"' in w  # guards the empty-string case
 
 
+def test_wrap_persists_only_command_changed_env_not_runtime_vars():
+    # Scheduler-injected runtime vars (SLURM_JOB_ID, HOSTNAME, SLURM_NODELIST) must NOT be
+    # frozen into .env and replayed into a later, different allocation. The wrapper
+    # snapshots the ambient env first and persists only the diff (what the command set).
+    w = wrap("echo hi", Session("s", "/r"))
+    assert 'export -p > "$__hb_base"' in w  # ambient baseline captured...
+    assert w.index('export -p > "$__hb_base"') < w.index(". /r/sessions/s/.env")  # ...before sourcing
+    assert 'grep -vxF -f "$__hb_base"' in w  # persist only lines NOT in the baseline
+    assert "grep -vE" in w and "SLURM" in w  # ...and drop scheduler runtime vars outright
+    assert 'rm -f "$__hb_base"' in w  # baseline snapshot cleaned up
+
+
 def test_wrap_preserves_exit_code():
     w = wrap("false", Session("s", "/r"))
     assert "__hb_rc=$?" in w
