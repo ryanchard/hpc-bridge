@@ -133,6 +133,7 @@ def anvil_profile(
 
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_JOBID = re.compile(r"^\d+(_\d+)?$")  # plain or array slurm job id (guards what we scancel)
 
 
 class RemoteEndpointCLI:
@@ -260,6 +261,34 @@ class RemoteEndpointCLI:
     async def wipe_storage_db(self) -> None:
         """Remove the seeded credential from the remote host (best-effort)."""
         await ssh_exec(self.target, f'rm -f "{self.remote_dir}/storage.db"')
+
+    async def cancel_blocks(self, endpoint_id: str) -> list[str]:
+        """Best-effort `scancel` of THIS endpoint's Slurm blocks; returns the cancelled IDs.
+
+        An ungraceful `stop` (it can die on a psutil traceback) won't scale Parsl's block in,
+        so the compute keeps its allocation until walltime. We find our blocks precisely by
+        their StdOut path, which Parsl writes under the endpoint's UEP dir
+        (`uep.<endpoint_id>.*`) — so we never touch another GlobusComputeEngine endpoint's
+        jobs. Never raises: teardown must not crash on a flaky scheduler query."""
+        marker = f"uep.{endpoint_id}"
+        try:
+            squeue = 'squeue -u "$USER" -h -O "JobID:30,StdOut:1024" 2>/dev/null'
+            rc, out, _err = await ssh_exec(self.target, f"bash -lc {shlex.quote(squeue)}")
+        except Exception:  # noqa: BLE001 - scheduler unreachable -> nothing to cancel
+            return []
+        if rc != 0:
+            return []
+        ids = [
+            line.split()[0]
+            for line in out.splitlines()
+            if marker in line and line.split() and _JOBID.match(line.split()[0])
+        ]
+        if ids:
+            try:
+                await ssh_exec(self.target, f"bash -lc {shlex.quote('scancel ' + ' '.join(ids))}")
+            except Exception:  # noqa: BLE001 - best-effort
+                pass
+        return ids
 
     async def endpoint_id(self, name: str) -> str:
         rc, out, err = await self._gce("list")
@@ -481,6 +510,10 @@ engine:
         Credentials are kept by default so a later session can reconnect; pass
         wipe_credentials=True to also remove the remote storage.db."""
         await self.cli.stop(self.profile.endpoint_name)
+        # Backstop: `stop` kills the manager, but an ungraceful stop leaves Parsl's block
+        # holding the allocation until walltime (no manager left to scale it in). Explicitly
+        # cancel this endpoint's blocks so "teardown released the compute" is actually true.
+        await self.cli.cancel_blocks(endpoint_id)
         if wipe_credentials:
             await self.cli.wipe_storage_db()
 

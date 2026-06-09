@@ -188,6 +188,10 @@ class _FakeRemoteCLI:
     async def wipe_storage_db(self):
         self.calls.append(("wipe", "hpc-bridge"))
 
+    async def cancel_blocks(self, endpoint_id):
+        self.calls.append(("cancel_blocks", endpoint_id))
+        return []
+
     def rebind(self, host):
         self.calls.append(("rebind", host))
 
@@ -290,6 +294,52 @@ async def test_teardown_stops_endpoint():
     cli = _FakeRemoteCLI()
     await SlurmFacility(_profile(), cli=cli).teardown("fake-eid")
     assert ("stop", "hpc-bridge") in cli.calls
+
+
+async def test_teardown_cancels_blocks_as_backstop():
+    # an ungraceful stop can orphan the running block until walltime -> teardown must scancel
+    cli = _FakeRemoteCLI()
+    await SlurmFacility(_profile(), cli=cli).teardown("eid-123")
+    assert ("stop", "hpc-bridge") in cli.calls
+    assert ("cancel_blocks", "eid-123") in cli.calls  # cancel this endpoint's blocks
+    assert _kinds(cli).index("cancel_blocks") > _kinds(cli).index("stop")  # after stop
+
+
+async def test_cancel_blocks_targets_only_this_endpoints_jobs(monkeypatch):
+    # precision: match blocks by StdOut path under uep.<endpoint_id>, never another
+    # GlobusComputeEngine endpoint's jobs sharing the parsl job-name prefix.
+    eid = "8791269d-47f4-47f7-91a6-3485b4289269"
+    other = "c5fd7ad7-0b92-4b50-83e1-56f7b9c1f91d"
+    seen = []
+
+    async def fake_ssh(target, cmd, **kw):
+        seen.append(cmd)
+        if "squeue" in cmd:
+            return (
+                0,
+                f"111   /home/u/.globus_compute/uep.{eid}.aaa/submit_scripts/x.stdout\n"
+                f"222   /home/u/.globus_compute/uep.{other}.bbb/submit_scripts/y.stdout\n"
+                f"333   /home/u/.globus_compute/uep.{eid}.ccc/submit_scripts/z.stdout\n",
+                "",
+            )
+        return (0, "", "")
+
+    monkeypatch.setattr(remote, "ssh_exec", fake_ssh)
+    cli = remote.RemoteEndpointCLI(SshTarget("h", "u", "k"), "env")
+    cancelled = await cli.cancel_blocks(eid)
+    assert cancelled == ["111", "333"]  # ours only; 222 (other endpoint) untouched
+    scancel = [c for c in seen if "scancel" in c]
+    assert len(scancel) == 1
+    assert "111" in scancel[0] and "333" in scancel[0] and "222" not in scancel[0]
+
+
+async def test_cancel_blocks_no_jobs_is_noop(monkeypatch):
+    async def fake_ssh(target, cmd, **kw):
+        return (0, "", "") if "squeue" in cmd else (0, "", "")
+
+    monkeypatch.setattr(remote, "ssh_exec", fake_ssh)
+    cli = remote.RemoteEndpointCLI(SshTarget("h", "u", "k"), "env")
+    assert await cli.cancel_blocks("any-eid") == []  # nothing matched -> no scancel
 
 
 async def test_manager_online_uses_injected_client():
