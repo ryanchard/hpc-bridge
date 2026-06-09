@@ -329,7 +329,17 @@ class SlurmFacility:
 
         Profile defaults are injected as json.dumps'd literals via sentinel
         substitution (not %-formatting) so values containing quotes/%/braces can't
-        break Jinja compilation."""
+        break Jinja compilation.
+
+        Two render-time invariants imposed by the endpoint manager (`render_config_user_template`
+        → `_sanitize_user_json`), both learned by live debugging:
+        - It json.dumps's every *string* user_opt, so `"SlurmProvider"` arrives as
+          `'"SlurmProvider"'`. Branch on the BOOLEAN `is_slurm` (bools pass through the
+          sanitizer unchanged), never a string equality — a string compare silently fails
+          and drops the whole provider block.
+        - Because the sanitizer already quotes strings, the template must NOT also `| tojson`
+          a string value (worker_init, scheduler_options) — that double-encodes it (embedded
+          quotes) and breaks the worker. The json.dumps'd defaults are pre-quoted to match."""
         p = self.profile
         eager = 1 if hpc.mode == "interactive" else 0
         template = """\
@@ -340,26 +350,30 @@ engine:
     type: address_by_interface
     ifname: {{ interface | default(@@IFACE@@) }}
 {% if available_accelerators is defined and available_accelerators %}
-  available_accelerators: {{ available_accelerators | tojson }}
+{% if available_accelerators is iterable and available_accelerators is not string %}
+  available_accelerators: [{{ available_accelerators | join(', ') }}]
+{% else %}
+  available_accelerators: {{ available_accelerators }}
+{% endif %}
 {% endif %}
   job_status_kwargs:
     max_idletime: @@IDLE@@
     strategy_period: 30
   provider:
     type: {{ provider_type | default('SlurmProvider') }}
-{% if (provider_type | default('SlurmProvider')) == 'SlurmProvider' %}
+{% if is_slurm | default(true) %}
     partition: {{ partition | default(@@PARTITION@@) }}
     account: {{ account | default(@@ACCOUNT@@) }}
     walltime: {{ walltime | default(@@WALLTIME@@) }}
     nodes_per_block: {{ nodes_per_block | default(@@NODES@@) }}
-    worker_init: {{ worker_init | default(@@WORKER_INIT@@) | tojson }}
+    worker_init: {{ worker_init | default(@@WORKER_INIT@@) }}
     launcher:
       type: SrunLauncher
     init_blocks: {{ init_blocks | default(@@EAGER@@) }}
     min_blocks: 0
     max_blocks: {{ max_blocks | default(@@MAXBLK@@) }}
 {% if scheduler_options is defined and scheduler_options %}
-    scheduler_options: {{ scheduler_options | tojson }}
+    scheduler_options: {{ scheduler_options }}
 {% endif %}
 {% else %}
     init_blocks: 1

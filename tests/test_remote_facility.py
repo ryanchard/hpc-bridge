@@ -26,10 +26,34 @@ def test_anvil_profile_fields():
     assert p.display_name == "HPC-Bridge Anvil"  # human label for the web UI
 
 
+def _sanitize_user_json(opts):
+    """Mirror the endpoint manager's `_sanitize_user_json`: json.dumps every string (its
+    YAML-injection guard), which QUOTES strings ("x" -> '"x"'). Tests MUST apply this or
+    they miss the whole class of bug where a quoted string breaks an in-template compare or
+    gets double-encoded by `| tojson` (both shipped to Anvil before being caught)."""
+    import json
+
+    def inner(v):
+        if isinstance(v, dict):
+            return {k: inner(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [inner(x) for x in v]
+        if isinstance(v, str):
+            return json.dumps(v)
+        if isinstance(v, (int, float)):  # bool is an int -> passes through unchanged
+            return v
+        if v is None:
+            return "null"
+        return v
+
+    return inner(opts)
+
+
 def _render(template_str, user_opts):
-    # mirror the endpoint's render: user_opts are the top-level template variables
+    # Faithfully mirror render_config_user_template: sanitize user_opts (json.dumps strings)
+    # THEN render with StrictUndefined, exactly as the endpoint manager does.
     env = jinja2.Environment(undefined=jinja2.StrictUndefined)
-    return _yaml.safe_load(env.from_string(template_str).render(**user_opts))
+    return _yaml.safe_load(env.from_string(template_str).render(**_sanitize_user_json(user_opts)))
 
 
 def test_template_renders_localprovider_for_login_shape():
@@ -54,6 +78,29 @@ def test_template_defaults_to_slurm_account_from_profile():
     tmpl, defaults = f.config_template(Profile(mode="interactive"))
     cfg = _render(tmpl, {**defaults, **shape_config("slurm")})
     assert cfg["engine"]["provider"]["account"] == "ACC"
+
+
+def test_slurm_provider_params_survive_the_manager_sanitizer():
+    # Regression: the manager json.dumps's string user_opts, so a template `{% if
+    # provider_type == 'SlurmProvider' %}` saw '"SlurmProvider"' and fell through to the
+    # else branch, dropping partition/account/walltime entirely (the job then ran on the
+    # facility default partition with no account). The bool `is_slurm` guard fixes it.
+    f = SlurmFacility(_profile(), cli=None)
+    tmpl, defaults = f.config_template(Profile(mode="interactive"))
+    prov = _render(tmpl, {**defaults, **shape_config("slurm")})["engine"]["provider"]
+    assert prov["partition"] == "debug" and prov["account"] == "ACC"
+    assert prov["walltime"] and "launcher" in prov  # full slurm block, not the else branch
+
+
+def test_worker_init_not_double_encoded_through_sanitizer():
+    # Regression: the sanitizer already quotes strings, so an extra `| tojson` on worker_init
+    # double-encoded it ('"module load ..."' with literal quotes), and the worker tried to run
+    # the whole quoted string as one command. worker_init must be the bare command.
+    f = SlurmFacility(_profile(), cli=None)
+    tmpl, defaults = f.config_template(Profile(mode="interactive"))
+    wi = _render(tmpl, {**defaults, **shape_config("slurm")})["engine"]["provider"]["worker_init"]
+    assert wi == _profile().worker_init  # exact command, no wrapping quotes
+    assert not wi.startswith('"')
 
 
 def test_template_max_blocks_and_nodes_per_block_default_and_override():

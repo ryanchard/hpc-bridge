@@ -18,13 +18,20 @@ def shape_config(shape: str, **overrides: Any) -> dict[str, Any]:
 
     The keys here MUST match the Jinja variables in the UEP template (see
     SlurmFacility.config_template). Raises ValueError for an unknown shape."""
+    # `is_slurm` is a BOOLEAN discriminator the template branches on. It must be a bool,
+    # not a string compared in-template: the endpoint manager runs user_opts through
+    # `_sanitize_user_json`, which json.dumps's every string (so "SlurmProvider" becomes
+    # '"SlurmProvider"') — a template `{% if provider_type == 'SlurmProvider' %}` then
+    # silently fails and drops the whole provider block. Bools pass through the sanitizer
+    # unchanged, so the branch is reliable.
     if shape == "login":
         base: dict[str, Any] = {
             "provider_type": "LocalProvider",
             "max_workers_per_node": 1,
+            "is_slurm": False,
         }
     elif shape == "slurm":
-        base = {"provider_type": "SlurmProvider"}
+        base = {"provider_type": "SlurmProvider", "is_slurm": True}
     else:
         raise ValueError(f"unknown shape {shape!r}: expected one of {SHAPES}")
     base.update({k: v for k, v in overrides.items() if v is not None})
