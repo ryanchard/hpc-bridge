@@ -452,7 +452,7 @@ async def test_server_registers_login_shell_tool():
 
 
 async def test_stop_endpoint_removes_login_node_record(tmp_path):
-    from hpc_bridge.server import ShapeRuntime, _stop_endpoint
+    from hpc_bridge.server import _stop_endpoint
     from hpc_bridge.state import EndpointRecord, LoginNodeStore
 
     store = LoginNodeStore(tmp_path / "endpoints.json")

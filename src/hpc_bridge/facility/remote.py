@@ -453,6 +453,13 @@ engine:
         uep, _defaults = self.config_template(hpc)
         await self.cli.write_config(name, manager, uep)
         eid, host = await self.cli.start(name)
+        if host:
+            # Pin the live session to the node the manager daemon actually landed on, so
+            # later control-plane ops — above all teardown — reach THIS node instead of
+            # the round-robin alias. Without this, `stop` hits a different login node,
+            # the daemon survives, and the endpoint is orphaned (the very failure the
+            # login-node pin exists to prevent).
+            self.cli.rebind(host)
         return EndpointHandle(endpoint_id=eid, name=name, login_host=host)
 
     async def teardown(self, endpoint_id: str, *, wipe_credentials: bool = False) -> None:

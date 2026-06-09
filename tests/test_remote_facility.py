@@ -141,6 +141,9 @@ class _FakeRemoteCLI:
     async def wipe_storage_db(self):
         self.calls.append(("wipe", "hpc-bridge"))
 
+    def rebind(self, host):
+        self.calls.append(("rebind", host))
+
 
 def _kinds(cli):
     return [c[0] for c in cli.calls]
@@ -163,9 +166,6 @@ class _BootstrapCLI(_FakeRemoteCLI):
 
     async def hostname_fqdn(self):
         return self.fqdn
-
-    def rebind(self, host):
-        self.calls.append(("rebind", host))
 
 
 async def test_bootstrap_seeds_when_remote_db_absent(monkeypatch, tmp_path):
@@ -225,6 +225,18 @@ async def test_provision_reuses_running_endpoint():
     handle = await SlurmFacility(_profile(), cli=cli).provision(Profile(mode="interactive"))
     assert handle.endpoint_id == "running-eid"
     assert "configure" not in _kinds(cli) and "start" not in _kinds(cli)  # reuse, don't restart
+    assert "rebind" not in _kinds(cli)  # nothing was (re)started -> stay on the current host
+
+
+async def test_provision_rebinds_cli_to_the_node_the_daemon_landed_on():
+    # After `start` captures the manager's real login node, the live CLI must repoint
+    # there so later control-plane ops (esp. teardown) reach THIS node instead of the
+    # round-robin alias — otherwise stop hits the wrong node and orphans the daemon.
+    cli = _FakeRemoteCLI(status=None)
+    handle = await SlurmFacility(_profile(), cli=cli).provision(Profile(mode="interactive"))
+    assert ("rebind", "login03.anvil.rcac.purdue.edu") in cli.calls
+    assert _kinds(cli).index("rebind") > _kinds(cli).index("start")  # rebind AFTER start
+    assert handle.login_host == "login03.anvil.rcac.purdue.edu"
 
 
 async def test_teardown_stops_endpoint():
