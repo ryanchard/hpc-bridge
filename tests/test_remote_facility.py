@@ -397,6 +397,40 @@ async def test_endpoint_id_parses_list_and_picks_named_row(monkeypatch):
         await cli.endpoint_id("nope")
 
 
+async def test_list_parse_fails_loud_on_unrecognized_format(monkeypatch):
+    # A gce version/format change away from the pipe table must NOT read as "no endpoints"
+    # (silent mis-provision); it must raise a clear, actionable error (issue #8).
+    borderless = (
+        "Endpoint ID                           Status   Endpoint Name\n"
+        "358c89fb-2774-4a5c-8dc5-da2406ccdc9c  Running  hpc-bridge\n"
+    )
+
+    async def fake_ssh_exec(target, cmd, **kw):
+        return (0, borderless, "")
+
+    monkeypatch.setattr(remote, "ssh_exec", fake_ssh_exec)
+    cli = RemoteEndpointCLI(SshTarget("h", "u", "k"), "true")
+    with pytest.raises(RuntimeError, match="could not parse"):
+        await cli.status("hpc-bridge")
+    with pytest.raises(RuntimeError, match="could not parse"):
+        await cli.endpoint_id("hpc-bridge")
+
+
+async def test_list_no_endpoints_is_not_a_parse_error(monkeypatch):
+    # The legitimate "nothing configured" message must stay quiet: status -> None,
+    # endpoint_id -> the normal "could not find", NOT the parse-error path.
+    empty = "No endpoints configured!\n\n (Hint: globus-compute-endpoint configure)\n"
+
+    async def fake_ssh_exec(target, cmd, **kw):
+        return (0, empty, "")
+
+    monkeypatch.setattr(remote, "ssh_exec", fake_ssh_exec)
+    cli = RemoteEndpointCLI(SshTarget("h", "u", "k"), "true")
+    assert await cli.status("hpc-bridge") is None
+    with pytest.raises(RuntimeError, match="could not find"):
+        await cli.endpoint_id("hpc-bridge")
+
+
 async def test_write_file_lets_remote_expand_home(monkeypatch):
     # Regression: shlex.quote single-quoted the path, so `~`/$HOME never expanded
     # remotely and the write hit a literal path → "No such file or directory".

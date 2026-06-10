@@ -196,12 +196,28 @@ class RemoteEndpointCLI:
                 rows.append(cells)
         return rows
 
+    @classmethod
+    def _parsed_rows(cls, out: str) -> list[list[str]]:
+        """`_list_rows`, but fail LOUD when `list` clearly emitted an endpoint table we could
+        NOT parse (a gce version/format/locale change away from the pipe table) — otherwise an
+        unparsed listing reads as "no endpoints" and the caller silently mis-provisions or
+        can't find a live endpoint. The legitimate empty case ("No endpoints configured")
+        still returns []. See issue #8 (the robust fix is the SDK's get_endpoints())."""
+        rows = cls._list_rows(out)
+        low = out.lower()
+        if not rows and "endpoint" in low and "no endpoint" not in low:
+            raise RuntimeError(
+                "could not parse `globus-compute-endpoint list` output "
+                f"(gce version/format change?); raw output:\n{out.strip()[:500]}"
+            )
+        return rows
+
     async def status(self, name: str) -> str | None:
         """'running' | 'configured' | None — drives idempotent (re)provisioning."""
         rc, out, _err = await self._gce("list")
         if rc != 0:
             return None
-        for cells in self._list_rows(out):
+        for cells in self._parsed_rows(out):
             if cells[-1] == name:  # exact Endpoint Name match, not a line substring
                 return "running" if "Running" in cells[1] else "configured"
         return None
@@ -305,7 +321,7 @@ class RemoteEndpointCLI:
         rc, out, err = await self._gce("list")
         if rc != 0:
             raise RuntimeError(f"remote list failed: {(err or out).strip()}")
-        for cells in self._list_rows(out):
+        for cells in self._parsed_rows(out):
             if cells[-1] == name:  # exact Endpoint Name match, not a line substring
                 m = _UUID.search(cells[0])
                 if m:
