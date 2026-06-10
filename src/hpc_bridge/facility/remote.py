@@ -63,7 +63,18 @@ async def ssh_exec(
         stderr=asyncio.subprocess.PIPE,
     )
     payload = stdin.encode() if stdin is not None else None
-    out, err = await asyncio.wait_for(proc.communicate(payload), timeout)
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(payload), timeout)
+    except BaseException:  # noqa: BLE001 - timeout OR cancellation: wait_for abandons the
+        # ssh child still running; kill + reap it so we don't leak the process and its 3 pipe
+        # FDs (bites when a *connected* session wedges mid-command past `timeout`). Then re-raise.
+        if proc.returncode is None:
+            proc.kill()
+            try:
+                await proc.wait()
+            except Exception:  # noqa: BLE001 - best-effort reap
+                pass
+        raise
     return proc.returncode or 0, out.decode(errors="replace"), err.decode(errors="replace")
 
 

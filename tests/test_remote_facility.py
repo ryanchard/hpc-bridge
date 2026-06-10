@@ -1,3 +1,4 @@
+import asyncio
 import base64
 
 import jinja2
@@ -13,6 +14,34 @@ from hpc_bridge.shapes import shape_config
 
 def _profile():
     return anvil_profile(account="ACC", user="x-u")
+
+
+async def test_ssh_exec_kills_child_on_timeout(monkeypatch):
+    # A connected ssh session that wedges mid-command must not leak: on timeout the child is
+    # killed and reaped (else process + 3 pipe FDs leak per stuck control-plane call).
+    state = {"killed": False, "waited": False}
+
+    class _HangingProc:
+        returncode = None
+
+        async def communicate(self, payload=None):
+            await asyncio.sleep(30)  # never returns within the test timeout
+
+        def kill(self):
+            state["killed"] = True
+            self.returncode = -9
+
+        async def wait(self):
+            state["waited"] = True
+            return -9
+
+    async def _fake_create(*_a, **_k):
+        return _HangingProc()
+
+    monkeypatch.setattr(remote.asyncio, "create_subprocess_exec", _fake_create)
+    with pytest.raises(TimeoutError):
+        await remote.ssh_exec(SshTarget("h", "u", "/k"), "hang", timeout=0.05)
+    assert state["killed"] and state["waited"]  # child killed + reaped, not abandoned
 
 
 def test_anvil_profile_fields():
