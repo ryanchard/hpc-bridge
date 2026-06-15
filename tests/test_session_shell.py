@@ -1,6 +1,29 @@
+import os
+import shutil
+import subprocess
+
 import pytest
 
 from hpc_bridge.session_shell import Session, reset_command, wrap
+
+bash_only = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash to execute the wrapper")
+
+
+def _run_session(steps, root):
+    """Execute a sequence of (command, ambient_env_overrides) through the wrapper IN BASH
+    (ShellFunction runs under /bin/bash). Returns [(stdout, persisted_.env_text), ...]."""
+    sess = Session("default", root)
+    sd = f"{root}/sessions/default"
+    os.makedirs(sd, exist_ok=True)
+    out = []
+    for cmd, amb in steps:
+        r = subprocess.run(
+            ["bash", "-c", wrap(cmd, sess)], capture_output=True, text=True,
+            env={**os.environ, **amb},
+        )
+        env_text = open(f"{sd}/.env").read() if os.path.exists(f"{sd}/.env") else ""
+        out.append((r.stdout, env_text))
+    return out
 
 
 def test_session_state_dir():
@@ -36,7 +59,7 @@ def test_wrap_hardens_permissions_and_persists_state():
     assert f"mkdir -p {sd}" in w
     assert f"{sd}/.cwd" in w and f"{sd}/.env" in w
     assert f"pwd > {sd}/.cwd" in w
-    assert "export -p >" in w
+    assert f"> {sd}/.env 2>/dev/null" in w  # env persisted
 
 
 def test_wrap_first_call_defaults_into_session_dir():
@@ -48,15 +71,64 @@ def test_wrap_first_call_defaults_into_session_dir():
 
 
 def test_wrap_persists_only_command_changed_env_not_runtime_vars():
-    # Scheduler-injected runtime vars (SLURM_JOB_ID, HOSTNAME, SLURM_NODELIST) must NOT be
-    # frozen into .env and replayed into a later, different allocation. The wrapper
-    # snapshots the ambient env first and persists only the diff (what the command set).
+    # Scheduler-injected runtime vars (SLURM_JOB_ID, HOSTNAME, ...) must NOT be frozen into
+    # .env and replayed into a later, different allocation. The wrapper fingerprints the
+    # ambient env first and persists only what differs (and never the volatile names).
     w = wrap("echo hi", Session("s", "/r"))
-    assert 'export -p > "$__hb_base"' in w  # ambient baseline captured...
-    assert w.index('export -p > "$__hb_base"') < w.index(". /r/sessions/s/.env")  # ...before sourcing
-    assert 'grep -vxF -f "$__hb_base"' in w  # persist only lines NOT in the baseline
-    assert "grep -vE" in w and "SLURM" in w  # ...and drop scheduler runtime vars outright
+    assert '__hb_snap > "$__hb_base"' in w  # ambient fingerprint captured...
+    assert w.index('__hb_snap > "$__hb_base"') < w.index(". /r/sessions/s/.env")  # ...before sourcing
+    assert "compgen -A export" in w  # per-var enumeration (record-safe, not a line diff)
+    assert 'grep -qxF "$__hb_n=$__hb_v" "$__hb_base"' in w  # skip vars unchanged vs ambient
+    assert "SLURM*|HOSTNAME" in w  # drop scheduler runtime vars by name
+    assert r"printf 'export %s=%q\n'" in w  # single-line, re-sourceable (multi-line safe)
     assert 'rm -f "$__hb_base"' in w  # baseline snapshot cleaned up
+
+
+@bash_only
+def test_behaviour_scheduler_vars_dropped_user_vars_persist(tmp_path):
+    # A user var persists across calls; the live $SLURM_JOB_ID flows through (not frozen);
+    # scheduler vars never land in .env.
+    (out1, env1), (out2, out2env) = _run_session(
+        [
+            ('export DEMO=keep; echo "JOB=$SLURM_JOB_ID"', {"SLURM_JOB_ID": "L1", "HOSTNAME": "n1"}),
+            ('echo "JOB=$SLURM_JOB_ID DEMO=$DEMO"', {"SLURM_JOB_ID": "L2", "HOSTNAME": "n2"}),
+        ],
+        str(tmp_path),
+    )
+    assert "SLURM_JOB_ID" not in env1 and "HOSTNAME" not in env1  # scheduler vars dropped
+    assert "DEMO" in env1  # user var kept
+    assert "JOB=L2" in out2  # live value, not the frozen L1
+    assert "DEMO=keep" in out2  # user var persisted
+
+
+@bash_only
+def test_behaviour_multiline_var_mutation_does_not_corrupt_env(tmp_path):
+    # Regression: mutating a MULTI-LINE ambient var used to leave an orphan line that broke
+    # the next `. .env` (silently swallowed), dropping the WHOLE persisted session env.
+    ml = "line1\nline2\nline3"
+    res = _run_session(
+        [
+            ("export USERVAR=keep; echo set", {"ML": ml}),
+            ('export ML="line1\nCHANGED"; echo mutated', {"ML": ml}),
+            ('echo "USERVAR=[$USERVAR]"', {"ML": ml}),
+        ],
+        str(tmp_path),
+    )
+    assert "USERVAR=[keep]" in res[2][0]  # survived the multi-line mutation (was empty pre-fix)
+
+
+@bash_only
+def test_behaviour_user_modified_ambient_var_persists(tmp_path):
+    # A user change to an ambient var (PATH) must carry forward, even though PATH exists in
+    # the baseline — the diff is by value, not just name.
+    res = _run_session(
+        [
+            ('export PATH="$PATH:/hpcb-demo"; echo set', {}),
+            ('echo "P=$PATH"', {}),
+        ],
+        str(tmp_path),
+    )
+    assert "/hpcb-demo" in res[1][0]  # the PATH change persisted
 
 
 def test_wrap_preserves_exit_code():

@@ -33,7 +33,7 @@ Companion docs: [`agent-tool-boundary.md`](./agent-tool-boundary.md) (tool vs ag
 | Provision the endpoint + submit the Slurm block | ✅ **live** | `SlurmFacility.provision` over SSH; idempotent (reuse running / configure-if-absent). |
 | Confirm **warm** | ✅ **live** | The worker **canary** — warmth = a worker answered a trivial task, not merely manager-online. |
 | Version-skew **preflight** | ⬜ | Skew is caught at *dispatch* (the canary parses worker py/dill); the cheaper *provision-time* preflight (compare local SDK vs remote `gce --version` first) is designed, not built. |
-| Login-node **pinning** | ⬜ | The round-robin teardown bug (manager pinned to one node; the alias can hit the wrong one) is known, unfixed. |
+| Login-node **pinning** | ✅ **live** | The manager's FQDN is captured at `start`, recorded, and the CLI rebinds to it so later control-plane ops reach the right node. Fixes the round-robin teardown bug (manager was orphaned when the alias hit the wrong node). |
 
 ## Phase 3 — Work
 
@@ -47,7 +47,7 @@ Companion docs: [`agent-tool-boundary.md`](./agent-tool-boundary.md) (tool vs ag
 | Step | Status | Notes / gap |
 |---|---|---|
 | Idle **auto-release** | ✅ **live** | `min_blocks=0` + `max_idletime` — the block (the SU charge) self-releases when idle. The load-bearing cost net. |
-| Explicit teardown | ✅ | `stop_endpoint` — stop + release the block, reset session state. |
+| Explicit teardown | ✅ **live** | `stop_endpoint` — stop the manager on the pinned node, **scancel the endpoint's Slurm block** (backstop so an ungraceful stop can't orphan held compute), reset session state. |
 
 ## Cross-cutting (not yet built)
 
@@ -65,7 +65,7 @@ Companion docs: [`agent-tool-boundary.md`](./agent-tool-boundary.md) (tool vs ag
 
 1. **Close the partition loop** — wire the gate's *selection* → provisioning (`ensure_endpoint_up(partition=…)` + the skill sequencing *select → provision*). Smallest change with the biggest payoff: turns the dry-run gate into a real, still-gated, end-to-end stand-up.
 2. **Budget as a second gate** — a `mybalance` recipe → present/confirm before provisioning, and re-add the deterministic **floor** (hard stop) with the *response* left to the agent. Cheap, no new credentials, reuses what's already tested.
-3. **The Stage-2 robustness slice** — version-skew preflight, login-node pinning, `$SCRATCH` discovery. Fixes real bugs we've already diagnosed and exercises the discovery pattern against the current structure (which then *shows* what the `Facility` seam should become).
+3. **The Stage-2 robustness slice** — version-skew preflight and `$SCRATCH` discovery (login-node pinning is now done). Exercises the discovery pattern against the current structure (which then *shows* what the `Facility` seam should become).
 4. **`FacilityProbe` + the source map** — a structured discovery record (provenance) and the multi-source selection heuristic; then the ACCESS catalog as a discovery seed.
 5. **(Later, earned)** discovery-*derived* profiles (generalization to unseen facilities), self-heal, multi-facility selection, and the credential broker.
 

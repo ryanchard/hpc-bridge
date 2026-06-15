@@ -63,7 +63,18 @@ async def ssh_exec(
         stderr=asyncio.subprocess.PIPE,
     )
     payload = stdin.encode() if stdin is not None else None
-    out, err = await asyncio.wait_for(proc.communicate(payload), timeout)
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(payload), timeout)
+    except BaseException:  # noqa: BLE001 - timeout OR cancellation: wait_for abandons the
+        # ssh child still running; kill + reap it so we don't leak the process and its 3 pipe
+        # FDs (bites when a *connected* session wedges mid-command past `timeout`). Then re-raise.
+        if proc.returncode is None:
+            proc.kill()
+            try:
+                await proc.wait()
+            except Exception:  # noqa: BLE001 - best-effort reap
+                pass
+        raise
     return proc.returncode or 0, out.decode(errors="replace"), err.decode(errors="replace")
 
 
@@ -185,12 +196,28 @@ class RemoteEndpointCLI:
                 rows.append(cells)
         return rows
 
+    @classmethod
+    def _parsed_rows(cls, out: str) -> list[list[str]]:
+        """`_list_rows`, but fail LOUD when `list` clearly emitted an endpoint table we could
+        NOT parse (a gce version/format/locale change away from the pipe table) — otherwise an
+        unparsed listing reads as "no endpoints" and the caller silently mis-provisions or
+        can't find a live endpoint. The legitimate empty case ("No endpoints configured")
+        still returns []. See issue #8 (the robust fix is the SDK's get_endpoints())."""
+        rows = cls._list_rows(out)
+        low = out.lower()
+        if not rows and "endpoint" in low and "no endpoint" not in low:
+            raise RuntimeError(
+                "could not parse `globus-compute-endpoint list` output "
+                f"(gce version/format change?); raw output:\n{out.strip()[:500]}"
+            )
+        return rows
+
     async def status(self, name: str) -> str | None:
         """'running' | 'configured' | None — drives idempotent (re)provisioning."""
         rc, out, _err = await self._gce("list")
         if rc != 0:
             return None
-        for cells in self._list_rows(out):
+        for cells in self._parsed_rows(out):
             if cells[-1] == name:  # exact Endpoint Name match, not a line substring
                 return "running" if "Running" in cells[1] else "configured"
         return None
@@ -294,7 +321,7 @@ class RemoteEndpointCLI:
         rc, out, err = await self._gce("list")
         if rc != 0:
             raise RuntimeError(f"remote list failed: {(err or out).strip()}")
-        for cells in self._list_rows(out):
+        for cells in self._parsed_rows(out):
             if cells[-1] == name:  # exact Endpoint Name match, not a line substring
                 m = _UUID.search(cells[0])
                 if m:
