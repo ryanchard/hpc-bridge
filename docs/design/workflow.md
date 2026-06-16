@@ -29,7 +29,7 @@ Companion docs: [`agent-tool-boundary.md`](./agent-tool-boundary.md) (tool vs ag
 
 | Step | Status | Notes / gap |
 |---|---|---|
-| **Feed the gated selection → provision** | ⬜ | **The gap that closes the loop.** `config_template` accepts a partition (via the profile/env), but there is **no path to pass the gate's selection into provisioning** — `ensure_endpoint_up` provisions with the *fixed* profile partition. Need: a selection→provision wiring (e.g. `ensure_endpoint_up(partition=…)` or a per-call profile override) **and** the skill sequencing *select → provision* instead of stopping. |
+| **Feed the gated selection → provision** | ✅ **live-proven on Anvil** | **The loop is closed.** `ensure_endpoint_up(partition=…)` overrides the shape's `user_endpoint_config` partition (validated at the boundary, runner rebuilt on change so the Executor doesn't carry a stale partition); the choice **persists for the session**. The `driving-hpc` skill now sequences *discover → gate → provision-onto-selection* (was "stop at the gate"). Live-proven: agent gated to `shared`, block provisioned + ran on `shared` (job 18223506, node a110), not the `debug` default. Unit-covered (`test_server.py`). |
 | Provision the endpoint + submit the Slurm block | ✅ **live** | `SlurmFacility.provision` over SSH; idempotent (reuse running / configure-if-absent). |
 | Confirm **warm** | ✅ **live** | The worker **canary** — warmth = a worker answered a trivial task, not merely manager-online. |
 | Version-skew **preflight** | ⬜ | Skew is caught at *dispatch* (the canary parses worker py/dill); the cheaper *provision-time* preflight (compare local SDK vs remote `gce --version` first) is designed, not built. |
@@ -63,10 +63,10 @@ Companion docs: [`agent-tool-boundary.md`](./agent-tool-boundary.md) (tool vs ag
 
 ## What to build next (prioritized)
 
-1. **Close the partition loop** — wire the gate's *selection* → provisioning (`ensure_endpoint_up(partition=…)` + the skill sequencing *select → provision*). Smallest change with the biggest payoff: turns the dry-run gate into a real, still-gated, end-to-end stand-up.
+1. ~~**Close the partition loop**~~ ✅ **done, live-proven on Anvil** — `ensure_endpoint_up(partition=…)` + the skill sequencing *discover → gate → provision*. Turned the dry-run gate into a real, still-gated stand-up (gated to `shared`, block ran there, not the `debug` default).
 2. **Budget as a second gate** — a `mybalance` recipe → present/confirm before provisioning, and re-add the deterministic **floor** (hard stop) with the *response* left to the agent. Cheap, no new credentials, reuses what's already tested.
 3. **The Stage-2 robustness slice** — version-skew preflight and `$SCRATCH` discovery (login-node pinning is now done). Exercises the discovery pattern against the current structure (which then *shows* what the `Facility` seam should become).
 4. **`FacilityProbe` + the source map** — a structured discovery record (provenance) and the multi-source selection heuristic; then the ACCESS catalog as a discovery seed.
 5. **(Later, earned)** discovery-*derived* profiles (generalization to unseen facilities), self-heal, multi-facility selection, and the credential broker.
 
-The throughline: the **core runtime is built and live-proven** (provision → canary → dispatch → idle-release → teardown), and the **first policy gate** (discover → present partitions) is built and live-proven but **stops before provisioning**. Everything past "present the gate" — toward an automated, multi-source, multi-facility, self-healing agent — is designed and on the record, not yet built. Item 1 is the seam between the two.
+The throughline: the **core runtime is built and live-proven** (provision → canary → dispatch → idle-release → teardown), and the **first policy gate** now runs end to end — discover → present partitions → **provision onto the selection** (item 1, closed and live-proven on Anvil). Everything past the gate — toward an automated, multi-source, multi-facility, self-healing agent — is designed and on the record, not yet built. Item 2 (budget gate) is next.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import sys
 import time
 from collections.abc import AsyncIterator, Callable
@@ -36,6 +37,9 @@ class ShapeRuntime:
     warm_confirmed_at: float | None = None
     spend_accrued: float = 0.0
     last_canary: CanaryResult | None = None
+    # Set when user_endpoint_config changed under a live runner (e.g. a new partition): the
+    # cached Executor captured the old config at build time, so _runner_for must rebuild it.
+    runner_stale: bool = False
 
 
 @dataclass
@@ -180,11 +184,12 @@ def _runner_for(app: AppCtx, shape: str) -> GlobusRunner:
     new endpoint voids the prior worker confirmation and banks the old endpoint's spend."""
     rt = _shape_runtime(app, shape)
     eid = app.state.endpoint_id
-    if rt.runner is None or rt.runner.endpoint_id != eid:
+    if rt.runner is None or rt.runner.endpoint_id != eid or rt.runner_stale:
         if rt.runner is not None:
             rt.runner.close()
             _bank_warm_interval(rt, app)
         rt.runner = app.runner_factory(eid, user_endpoint_config=rt.user_endpoint_config)
+        rt.runner_stale = False
         rt.warm_confirmed_at = None
     return rt.runner
 
@@ -302,8 +307,48 @@ async def _provision(app: AppCtx, shape: str, *, force_canary: bool = False) -> 
     return block
 
 
-async def _ensure_endpoint_up(app: AppCtx, shape: str = DEFAULT_SHAPE) -> EndpointStatus:
+# Partition names come from the discovery gate (agent/user-supplied), then flow into a Jinja
+# template rendered on the login node — so validate the token at the boundary (no shell/YAML
+# metacharacters). Slurm partition names are short identifiers; this allowlist covers real ones
+# (letters, digits, '_', '-', '.', ':') without admitting an injection vector.
+_VALID_PARTITION = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
+
+
+def _apply_partition(rt: ShapeRuntime, partition: str | None) -> None:
+    """Point this shape's next provision at `partition`, invalidating a stale runner.
+
+    No-op when `partition` is None (keep the facility/profile default) or unchanged, or for a
+    non-Slurm (login) shape, which has no partition. A real change means a different Slurm block,
+    so we mark the cached runner stale (its Executor captured the old partition at build time —
+    _runner_for rebuilds it and banks the prior warm interval) and drop the warm confirmation;
+    the old block idle-releases on its own (min_blocks=0). The selection persists in
+    user_endpoint_config for the rest of the session."""
+    if partition is None or not rt.user_endpoint_config.get("is_slurm"):
+        return
+    if rt.user_endpoint_config.get("partition") == partition:
+        return
+    rt.user_endpoint_config["partition"] = partition
+    rt.runner_stale = True
+    rt.warm_confirmed_at = None
+
+
+async def _ensure_endpoint_up(
+    app: AppCtx, shape: str = DEFAULT_SHAPE, partition: str | None = None
+) -> EndpointStatus:
+    if partition is not None and not _VALID_PARTITION.match(partition):
+        return EndpointStatus(
+            status="down",
+            block_state="cold",
+            endpoint_id=app.state.endpoint_id,
+            notice=f"invalid partition {partition!r}: must match [A-Za-z0-9_.:-]{{1,64}}",
+        )
     async with app.lock:  # serialize provisioning/state mutation across concurrent tool calls
+        rt = _shape_runtime(app, shape)
+        # A login shape has no partition; surface that we ignored a supplied one rather than
+        # silently dropping the user's selection.
+        ignored = partition is not None and not rt.user_endpoint_config.get("is_slurm")
+        _apply_partition(rt, partition)
+        active_partition = rt.user_endpoint_config.get("partition")
         try:
             # force_canary: a status probe must re-verify the worker (and kick a cold block),
             # never trust the TTL — that's exactly the cold-start gap callers are asking about.
@@ -313,25 +358,36 @@ async def _ensure_endpoint_up(app: AppCtx, shape: str = DEFAULT_SHAPE) -> Endpoi
                 status="down",
                 block_state="cold",
                 endpoint_id=app.state.endpoint_id,
+                partition=active_partition,
                 notice=f"hpc-bridge error: {type(exc).__name__}: {exc}"[:500],
             )
         if block == "warm":
-            status, notice = "up", _worker_notice(_shape_runtime(app, shape).last_canary)
+            status, notice = "up", _worker_notice(rt.last_canary)
         else:
-            status, notice = "provisioning", "allocating nodes…"
+            status = "provisioning"
+            notice = f"allocating nodes on {active_partition!r}…" if active_partition else "allocating nodes…"
+        if ignored:
+            notice = f"{notice} (login shape has no partition; ignored {partition!r})"
         return EndpointStatus(
             status=status,
             block_state=block,
             endpoint_id=app.state.endpoint_id,
             session_spend=_total_session_spend(app),
+            partition=active_partition,
             notice=notice,
         )
 
 
 @mcp.tool()
-async def ensure_endpoint_up(ctx: Context, shape: str = "slurm") -> EndpointStatus:
-    """Ensure the personal HPC endpoint is up; report whether its pilot block is warm."""
-    return await _ensure_endpoint_up(ctx.request_context.lifespan_context, shape)
+async def ensure_endpoint_up(
+    ctx: Context, shape: str = "slurm", partition: str | None = None
+) -> EndpointStatus:
+    """Ensure the personal HPC endpoint is up; report whether its pilot block is warm.
+
+    Pass `partition` (from the discovery selection gate) to provision the Slurm block onto that
+    partition; the choice persists for the session until changed. Omit it to keep the facility
+    default. Ignored for shape="login" (a login-node LocalProvider has no partition)."""
+    return await _ensure_endpoint_up(ctx.request_context.lifespan_context, shape, partition)
 
 
 async def _stop_endpoint(app: AppCtx) -> EndpointStatus:

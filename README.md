@@ -14,7 +14,7 @@ the runtime that makes a batch supercomputer feel like a REPL.
 
 Actively developed. **Proven end-to-end on a real facility (Purdue Anvil / Slurm)** and on a
 local dev endpoint. The agent stands up an Anvil endpoint over key-based SSH, runs commands on
-a compute node, and tears it down — releasing the allocation. Suite: **148 passed, 2 skipped**,
+a compute node, and tears it down — releasing the allocation. Suite: **155 passed, 2 skipped**,
 ruff clean.
 
 Current direction is **discovery-first** (the agent probes a facility and derives its config,
@@ -135,7 +135,7 @@ Requires Python ≥3.11 and [`uv`](https://docs.astral.sh/uv/). Globus Compute i
 
 ```bash
 uv sync --extra dev
-uv run pytest -q                 # 148 passed, 2 skipped
+uv run pytest -q                 # 155 passed, 2 skipped
 uv run hpc-bridge                # run the MCP server standalone (stdio)
 claude --plugin-dir .            # install into Claude Code for local testing
 ```

@@ -26,6 +26,9 @@ class EndpointStatus(BaseModel):
     endpoint_id: str | None = None
     session_spend: NodeHours = 0.0
     cert_expires_in: str | None = None
+    # Slurm partition this shape will provision onto (from the discovery selection gate, or
+    # the facility default). None for non-Slurm shapes (login/local).
+    partition: str | None = None
     notice: str | None = None
 
 

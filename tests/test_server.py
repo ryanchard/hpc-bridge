@@ -255,6 +255,87 @@ async def test_stop_endpoint_tears_down_and_resets():
     assert "released" in (res.notice or "")
 
 
+# --- partition loop: the discovery gate's selection -> provisioning -------------------------
+
+
+async def test_ensure_endpoint_up_provisions_onto_selected_partition():
+    # The gate's selection flows into the shape's user_endpoint_config (the per-task render var)
+    # and is echoed back on the status.
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
+    res = await _ensure_endpoint_up(app, partition="shared")
+    assert res.partition == "shared"
+    assert app.shapes["slurm"].user_endpoint_config["partition"] == "shared"
+
+
+async def test_partition_change_invalidates_runner():
+    # Changing partition means a different Slurm block: the cached Executor captured the old
+    # partition at build time, so the runner must be rebuilt (and the old one torn down).
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    built = []
+
+    def factory(eid, user_endpoint_config=None):
+        r = _FakeRunner(eid, _Res(0, "", ""))
+        built.append(r)
+        return r
+
+    app.runner_factory = factory
+    await _ensure_endpoint_up(app, partition="shared")
+    r1 = app.shapes["slurm"].runner
+    await _ensure_endpoint_up(app, partition="gpu")
+    r2 = app.shapes["slurm"].runner
+    assert r2 is not r1  # runner rebuilt for the new partition
+    assert r1.closed  # old runner torn down (its block idle-releases via min_blocks=0)
+    assert app.shapes["slurm"].user_endpoint_config["partition"] == "gpu"
+
+
+async def test_no_partition_is_noop_and_persists_previous_selection():
+    # Omitting partition keeps the prior selection (or facility default) and does NOT churn the
+    # runner — the selection persists for the session.
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
+    await _ensure_endpoint_up(app, partition="debug")
+    r1 = app.shapes["slurm"].runner
+    res = await _ensure_endpoint_up(app)  # no partition -> no-op
+    assert app.shapes["slurm"].runner is r1  # runner NOT rebuilt
+    assert not r1.closed
+    assert app.shapes["slurm"].user_endpoint_config["partition"] == "debug"  # selection persisted
+    assert res.partition == "debug"
+
+
+async def test_ensure_endpoint_up_rejects_invalid_partition():
+    # A partition is agent/user-supplied and renders into a remote Jinja template -> reject any
+    # token with shell/YAML metacharacters at the boundary, before touching any state.
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    res = await _ensure_endpoint_up(app, partition="bad; rm -rf /")
+    assert res.status == "down"
+    assert res.notice and "invalid partition" in res.notice
+    assert not f.provisioned  # rejected before any provisioning
+    assert "slurm" not in app.shapes  # no shape state was mutated
+
+
+async def test_login_shape_ignores_partition():
+    # A LocalProvider (login) shape has no partition: a supplied one is ignored (not forced onto
+    # the config) and the status says so.
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
+    res = await _ensure_endpoint_up(app, shape="login", partition="shared")
+    uec = app.shapes["login"].user_endpoint_config
+    assert "partition" not in uec  # not forced onto a LocalProvider config
+    assert res.partition is None
+    assert res.notice and "login shape has no partition" in res.notice
+
+
 async def test_stop_endpoint_noop_when_nothing_up():
     from hpc_bridge.server import _stop_endpoint
 
