@@ -14,7 +14,7 @@ the runtime that makes a batch supercomputer feel like a REPL.
 
 Actively developed. **Proven end-to-end on a real facility (Purdue Anvil / Slurm)** and on a
 local dev endpoint. The agent stands up an Anvil endpoint over key-based SSH, runs commands on
-a compute node, and tears it down — releasing the allocation. Suite: **155 passed, 2 skipped**,
+a compute node, and tears it down — releasing the allocation. Suite: **160 passed, 2 skipped**,
 ruff clean.
 
 Current direction is **discovery-first** (the agent probes a facility and derives its config,
@@ -29,7 +29,7 @@ crashes.
 
 | Tool | What it does |
 |---|---|
-| `ensure_endpoint_up()` | Provision/probe the personal endpoint. Reports `up` only once a **worker answers a canary** (not merely that the manager is online); otherwise `provisioning` (and the probe kicks a cold block). |
+| `ensure_endpoint_up(shape, partition=…, confirm_spend=…)` | Provision/probe the personal endpoint. Reports `up` only once a **worker answers a canary** (not merely that the manager is online); otherwise `provisioning` (and the probe kicks a cold block). A billed Slurm block won't start until `confirm_spend=True` (the budget floor) → otherwise `needs_confirmation`; `partition` (from the discovery gate) selects the target and persists for the session. |
 | `run_shell(command, session_id="default")` | Run a shell command on the warm compute block → `{phase, exit_code, stdout, stderr_snippet, block_state, session_spend}`. Cold endpoint → `cold_start` (no hang). |
 | `reset_session(session_id="default")` | Clear a session's persisted working directory + environment. |
 | `stop_endpoint()` | Tear down the endpoint, release its Slurm block, reset session state. |
@@ -73,6 +73,13 @@ allocation — self-releases after the last task (validated live on Anvil). A sp
 (`session_spend`, driven by true worker presence and accrued across warm intervals) is surfaced
 on every result; `stop_endpoint` is the explicit exit. `charge_factor` defaults to `0.0` (free
 local dev).
+
+The complementary net on the *front* end is a **deterministic spend floor**: a billed Slurm
+block will not start until the caller passes `confirm_spend=True` (after the `driving-hpc` skill
+surfaces the live allocation balance via `login_shell("mybalance")`/`xdusage`). Until then,
+`ensure_endpoint_up`/`run_shell` return `needs_confirmation` and provision nothing — the floor is
+deterministic, the *response* (confirm / downgrade to the free `login` shape / stop) is the
+agent's. The balance itself stays a per-facility **recipe** (live, not a cached server value).
 
 **Session continuity.** `ShellFunction` runs each command in a fresh subprocess, so the
 server wraps commands to rehydrate+persist `cwd`/env in `<scratch>/sessions/<id>/{.cwd,.env}` on
@@ -135,7 +142,7 @@ Requires Python ≥3.11 and [`uv`](https://docs.astral.sh/uv/). Globus Compute i
 
 ```bash
 uv sync --extra dev
-uv run pytest -q                 # 155 passed, 2 skipped
+uv run pytest -q                 # 160 passed, 2 skipped
 uv run hpc-bridge                # run the MCP server standalone (stdio)
 claude --plugin-dir .            # install into Claude Code for local testing
 ```

@@ -40,6 +40,10 @@ class ShapeRuntime:
     # Set when user_endpoint_config changed under a live runner (e.g. a new partition): the
     # cached Executor captured the old config at build time, so _runner_for must rebuild it.
     runner_stale: bool = False
+    # Deterministic spend floor: a billed (Slurm) shape may not start a block until spend is
+    # explicitly acknowledged via ensure_endpoint_up(confirm_spend=True). Persists for the
+    # session once given (no re-nagging); cleared on stop/reset when the shape state is dropped.
+    spend_confirmed: bool = False
 
 
 @dataclass
@@ -290,17 +294,28 @@ def _note_dispatch(rt: ShapeRuntime, out: ShellOutcome) -> None:
         rt.warm_confirmed_at = None
 
 
-async def _provision(app: AppCtx, shape: str, *, force_canary: bool = False) -> str:
+async def _provision(
+    app: AppCtx, shape: str, *, force_canary: bool = False, confirm_spend: bool = False
+) -> str:
     """Provision/probe under the session profile and update the spend clock. Returns the
     block state. 'warm' means a WORKER answered a canary — not merely that the manager is
-    online; that distinction is the cold-start gap this closes."""
+    online; that distinction is the cold-start gap this closes.
+
+    Deterministic spend floor: a billed (Slurm) shape returns 'needs_confirmation' and starts
+    NOTHING until spend is acknowledged (confirm_spend=True, or already confirmed this session).
+    The carve-out only applies to billable shapes — a login (LocalProvider) shape is free and
+    provisions straight through."""
+    rt = _shape_runtime(app, shape)
+    if _billable(rt) and not rt.spend_confirmed:
+        if not confirm_spend:
+            return "needs_confirmation"  # gate BEFORE bootstrap/probe/canary — no block, no charge
+        rt.spend_confirmed = True  # ack persists for the session
     if app.state.endpoint_id is None:
         bootstrap = getattr(app.facility, "bootstrap", None)
         if bootstrap is not None:
             handle = await bootstrap(app.profile)
             app.state = EndpointState(endpoint_id=handle.endpoint_id)
     block, app.state = await ensure_warm(app.facility, app.profile, app.state)
-    rt = _shape_runtime(app, shape)
     if block == "warm":  # manager online -> confirm a worker is actually live
         block = await _confirm_worker(app, shape, force=force_canary)
     _settle_billing(rt, app, block)
@@ -333,7 +348,10 @@ def _apply_partition(rt: ShapeRuntime, partition: str | None) -> None:
 
 
 async def _ensure_endpoint_up(
-    app: AppCtx, shape: str = DEFAULT_SHAPE, partition: str | None = None
+    app: AppCtx,
+    shape: str = DEFAULT_SHAPE,
+    partition: str | None = None,
+    confirm_spend: bool = False,
 ) -> EndpointStatus:
     if partition is not None and not _VALID_PARTITION.match(partition):
         return EndpointStatus(
@@ -352,7 +370,7 @@ async def _ensure_endpoint_up(
         try:
             # force_canary: a status probe must re-verify the worker (and kick a cold block),
             # never trust the TTL — that's exactly the cold-start gap callers are asking about.
-            block = await _provision(app, shape, force_canary=True)
+            block = await _provision(app, shape, force_canary=True, confirm_spend=confirm_spend)
         except Exception as exc:  # noqa: BLE001 - provisioning unavailable (e.g. non-Linux host)
             return EndpointStatus(
                 status="down",
@@ -360,6 +378,20 @@ async def _ensure_endpoint_up(
                 endpoint_id=app.state.endpoint_id,
                 partition=active_partition,
                 notice=f"hpc-bridge error: {type(exc).__name__}: {exc}"[:500],
+            )
+        if block == "needs_confirmation":  # the deterministic spend floor — nothing was started
+            where = f" on {active_partition!r}" if active_partition else ""
+            return EndpointStatus(
+                status="needs_confirmation",
+                block_state="cold",
+                endpoint_id=app.state.endpoint_id,
+                partition=active_partition,
+                notice=(
+                    f"billed Slurm block{where} ({app.profile.nodes_per_block} node(s)): spend "
+                    "not yet confirmed. Surface the allocation balance (e.g. login_shell('mybalance')) "
+                    "and re-call ensure_endpoint_up(confirm_spend=True) to proceed — or use "
+                    "shape='login' for free login-node work."
+                ),
             )
         if block == "warm":
             status, notice = "up", _worker_notice(rt.last_canary)
@@ -380,14 +412,21 @@ async def _ensure_endpoint_up(
 
 @mcp.tool()
 async def ensure_endpoint_up(
-    ctx: Context, shape: str = "slurm", partition: str | None = None
+    ctx: Context, shape: str = "slurm", partition: str | None = None, confirm_spend: bool = False
 ) -> EndpointStatus:
     """Ensure the personal HPC endpoint is up; report whether its pilot block is warm.
 
     Pass `partition` (from the discovery selection gate) to provision the Slurm block onto that
     partition; the choice persists for the session until changed. Omit it to keep the facility
-    default. Ignored for shape="login" (a login-node LocalProvider has no partition)."""
-    return await _ensure_endpoint_up(ctx.request_context.lifespan_context, shape, partition)
+    default. Ignored for shape="login" (a login-node LocalProvider has no partition).
+
+    `confirm_spend` is the deterministic budget floor: a billed Slurm block will not start until
+    you pass confirm_spend=True (after surfacing the allocation balance to the user — see the
+    driving-hpc skill). Without it the call returns status="needs_confirmation" and provisions
+    nothing. The acknowledgement persists for the session. Not needed for shape="login" (free)."""
+    return await _ensure_endpoint_up(
+        ctx.request_context.lifespan_context, shape, partition, confirm_spend
+    )
 
 
 async def _stop_endpoint(app: AppCtx) -> EndpointStatus:
@@ -470,6 +509,20 @@ def _cold_outcome(block: str) -> ShellOutcome:
     )
 
 
+def _needs_confirmation_outcome() -> ShellOutcome:
+    """A billed shape whose spend wasn't acknowledged: the command is NOT dispatched and no
+    block is started. The agent must run the budget gate and confirm via ensure_endpoint_up."""
+    return ShellOutcome(
+        phase="needs_confirmation",
+        block_state="cold",
+        notice=(
+            "billed Slurm shape: spend not confirmed, so nothing ran. Surface the allocation "
+            "balance (login_shell('mybalance')) and call ensure_endpoint_up(confirm_spend=True) "
+            "before running work — or use shape='login' for free login-node work."
+        ),
+    )
+
+
 async def _ensure_warm_runner(app: AppCtx, shape: str) -> str | None:
     """Ensure a worker is live and the shape's runner is bound to it; returns the block state
     if NOT warm (caller returns a cold_start), else None. _provision -> _confirm_worker
@@ -490,6 +543,8 @@ async def _run_shell(
     async with app.lock:  # provision + bind the runner atomically (no race with a concurrent stop)
         not_warm = await _ensure_warm_runner(app, shape)
         runner = _shape_runtime(app, shape).runner
+    if not_warm == "needs_confirmation":  # billed shape, spend not acknowledged -> don't dispatch
+        return _needs_confirmation_outcome()
     if not_warm is not None:
         return _cold_outcome(not_warm)
     wrapped = session_shell.wrap(command, session)
@@ -508,6 +563,8 @@ async def _reset_session(
     async with app.lock:
         not_warm = await _ensure_warm_runner(app, shape)
         runner = _shape_runtime(app, shape).runner
+    if not_warm == "needs_confirmation":  # billed shape, spend not acknowledged -> don't dispatch
+        return _needs_confirmation_outcome()
     if not_warm is not None:
         return _cold_outcome(not_warm)
     cmd = session_shell.reset_command(session)

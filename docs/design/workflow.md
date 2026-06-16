@@ -14,14 +14,14 @@ Companion docs: [`agent-tool-boundary.md`](./agent-tool-boundary.md) (tool vs ag
 |---|---|---|
 | Reach the login node (SSH control channel) | ✅ **live** | `login_shell` — read-only, credential-isolated (key stays in the MCP server). |
 | Discover facility **shape** (partitions, accounts, scheduler config) | 🔶 | ✅ the agent gathers via `login_shell` + the `sinfo`/`sacctmgr` recipe (live-proven). ⬜ Not built: the multi-source **source map** + selection heuristic (catalog vs live probe), the **ACCESS Operations API** catalog seed, a structured **`FacilityProbe`** record (gather is currently freeform, unrecorded), and a discovery-**derived** profile (`anvil_profile` is still hand-authored). |
-| Discover **budget** | 🔶 | ✅ `login_shell("mybalance")` works as a gather (live-proven). ⬜ Not wired as a *gate* (Phase 1). |
+| Discover **budget** | ✅ | `login_shell("mybalance")` / `xdusage` is the gather (live-proven), now **wired into the gate**: the `driving-hpc` skill surfaces the live balance + block cost in the `AskUserQuestion` before provisioning. Balance stays a per-facility **recipe**, not a server API. |
 
 ## Phase 1 — Policy gates (decide *how* to provision)
 
 | Step | Status | Notes / gap |
 |---|---|---|
 | **Partition gate** | ✅ **live** | Discover → present partitions (node size, **live idle count**, caveats) via `AskUserQuestion`; user picks. 🔶 Currently **stops at selection** — does not yet feed provisioning (deliberate, for the dry-run test). |
-| **Budget gate** | ⬜ | Budget is discoverable but no gate presents/decides on it before provisioning, and the deterministic cost **floor** was removed in the subtraction pass — to be re-added per the boundary doc (hard floor + agent-owned response). |
+| **Budget gate** | ✅ | The skill surfaces the balance + block cost and the human decides; **and** the deterministic floor is back as an *enforced confirmation*: a billed Slurm block returns `needs_confirmation` and starts nothing until `ensure_endpoint_up(confirm_spend=True)` — covering `run_shell` too (its canary would otherwise kick a block). The *response* (confirm / downgrade to `login` / stop) is the agent's. Not a re-added inert `allocation_remaining`: load-bearing regardless of `charge_factor`. |
 | Other selectors (account, walltime, nodes) | ⬜ | Mostly should be **sensible-defaulted, not gated** ("gate, not interrogation"). |
 | The human↔agent **gradient** | 🔶 | Rung 1 (human picks) built for partitions; rungs 2–4 (agent proposes → confirms → decides clear cases → always-gate-irreversible) not built. |
 
@@ -40,7 +40,7 @@ Companion docs: [`agent-tool-boundary.md`](./agent-tool-boundary.md) (tool vs ag
 | Step | Status | Notes / gap |
 |---|---|---|
 | Dispatch to the warm block | ✅ **live** | `run_shell` (Globus AMQP), session shell (cwd/env persist), structured outcomes, concurrency lock. |
-| Cost tracking | ✅ | `session_spend` on every result (idle-aware billing clock). 🔶 No budget *enforcement* (the floor was removed). |
+| Cost tracking | ✅ | `session_spend` on every result (idle-aware billing clock). Budget **enforcement** is back: a billed block won't start without `confirm_spend=True` (the deterministic floor). |
 
 ## Phase 4 — Release
 
@@ -64,9 +64,9 @@ Companion docs: [`agent-tool-boundary.md`](./agent-tool-boundary.md) (tool vs ag
 ## What to build next (prioritized)
 
 1. ~~**Close the partition loop**~~ ✅ **done, live-proven on Anvil** — `ensure_endpoint_up(partition=…)` + the skill sequencing *discover → gate → provision*. Turned the dry-run gate into a real, still-gated stand-up (gated to `shared`, block ran there, not the `debug` default).
-2. **Budget as a second gate** — a `mybalance` recipe → present/confirm before provisioning, and re-add the deterministic **floor** (hard stop) with the *response* left to the agent. Cheap, no new credentials, reuses what's already tested.
+2. ~~**Budget as a second gate**~~ ✅ **done** (unit-covered; live Anvil proof pending) — `mybalance`/`xdusage` recipe in the skill → present balance + cost in the gate, and the deterministic **floor** re-added as an enforced `confirm_spend` (a billed block won't start without it). Response (confirm / downgrade to `login` / stop) left to the agent.
 3. **The Stage-2 robustness slice** — version-skew preflight and `$SCRATCH` discovery (login-node pinning is now done). Exercises the discovery pattern against the current structure (which then *shows* what the `Facility` seam should become).
 4. **`FacilityProbe` + the source map** — a structured discovery record (provenance) and the multi-source selection heuristic; then the ACCESS catalog as a discovery seed.
 5. **(Later, earned)** discovery-*derived* profiles (generalization to unseen facilities), self-heal, multi-facility selection, and the credential broker.
 
-The throughline: the **core runtime is built and live-proven** (provision → canary → dispatch → idle-release → teardown), and the **first policy gate** now runs end to end — discover → present partitions → **provision onto the selection** (item 1, closed and live-proven on Anvil). Everything past the gate — toward an automated, multi-source, multi-facility, self-healing agent — is designed and on the record, not yet built. Item 2 (budget gate) is next.
+The throughline: the **core runtime is built and live-proven** (provision → canary → dispatch → idle-release → teardown), and the **first policy gate** now runs end to end — discover → present partitions → **provision onto the selection** (item 1, closed and live-proven on Anvil). The second gate (budget) is now enforced too — discover balance → present cost → `confirm_spend` before a billed block starts. Everything past the gates — toward an automated, multi-source, multi-facility, self-healing agent — is designed and on the record, not yet built. Item 3 (the Stage-2 robustness slice: version-skew preflight + `$SCRATCH` discovery) is next.
