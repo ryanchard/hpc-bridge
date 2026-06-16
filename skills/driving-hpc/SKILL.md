@@ -18,6 +18,9 @@ When asked to **start / provision / spin up a compute node** on a facility, do *
    - The command is a **recipe, not a rule** — if `sinfo` isn't found (non-Slurm), adapt: `scontrol show partition`, or PBS `qstat -Q`; `module load` first if a binary is missing.
 2. **Mind the gotchas:** partition `timelimit` may read `infinite` because the real cap is per-**QOS** — if walltime matters, also `login_shell("sacctmgr -nP show qos format=Name,MaxWall")`.
 3. **Present the gate** with `AskUserQuestion`: each option a partition, its description carrying node size + **live idle count** + any caveat (saturated → would queue; a GPU partition needs the `-gpu` account). Recommend the cheapest/fastest sensible default (usually a shared/sub-node partition that has idle nodes now).
-4. **Stop at the gate.** Report the user's selection. Provisioning the node *from* the chosen partition is the next milestone — do **not** call `ensure_endpoint_up` from this flow yet.
+4. **Provision onto the selection.** Pass the chosen partition straight into provisioning: `ensure_endpoint_up(partition="<choice>")`. The choice **persists for the session** (later `run_shell`/`ensure_endpoint_up` calls reuse it) until you pass a different partition or call `stop_endpoint`. A first call returning `provisioning` is normal — the block is allocating on that partition; retry shortly. The returned status echoes the active `partition`.
 
-This is a *policy gate*: discovery surfaces the options, the human picks.
+This is a *policy gate*: discovery surfaces the options, the human picks, and the pick drives provisioning.
+
+- **Gate, not interrogation:** only the partition is gated (it's the consequential, cost-bearing choice); account/walltime/nodes are sensible-defaulted. Don't prompt for the unambiguous.
+- **Headless fallback:** if you can't prompt (autonomous mode), skip the gate and call `ensure_endpoint_up()` with no partition — the facility default is the safe choice.
