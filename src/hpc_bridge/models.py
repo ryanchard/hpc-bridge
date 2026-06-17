@@ -8,7 +8,9 @@ NodeHours = float
 
 
 class ShellOutcome(BaseModel):
-    phase: Literal["complete", "cold_start", "failed"]
+    # needs_confirmation: a billed (Slurm) shape whose spend hasn't been acknowledged — the
+    # command was NOT dispatched and no block was started (run ensure_endpoint_up(confirm_spend=True)).
+    phase: Literal["complete", "cold_start", "failed", "needs_confirmation"]
     exit_code: int | None = None
     stdout: str = ""
     stderr_snippet: str = ""
@@ -21,7 +23,9 @@ class ShellOutcome(BaseModel):
 
 
 class EndpointStatus(BaseModel):
-    status: Literal["up", "provisioning", "down"]
+    # needs_confirmation: a billed (Slurm) block was requested without an explicit spend
+    # acknowledgement — nothing was provisioned; re-call with confirm_spend=True to proceed.
+    status: Literal["up", "provisioning", "down", "needs_confirmation"]
     block_state: Literal["warm", "cold", "provisioning"]
     endpoint_id: str | None = None
     session_spend: NodeHours = 0.0

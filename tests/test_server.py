@@ -1,8 +1,14 @@
 from hpc_bridge.lifecycle import EndpointState
 from hpc_bridge.profile import Profile
 from hpc_bridge.runner import CanaryResult
-from hpc_bridge.server import AppCtx, _ensure_endpoint_up, _run_shell, mcp
+from hpc_bridge.server import AppCtx, _ensure_endpoint_up, _run_shell, _shape_runtime, mcp
 from tests.fakes import FakeFacility
+
+
+def _confirm_slurm(app):
+    """Acknowledge spend for the default billed (slurm) shape, as the budget gate would — so
+    run_shell/reset tests exercise dispatch rather than tripping the deterministic spend floor."""
+    _shape_runtime(app, "slurm").spend_confirmed = True
 
 
 class _Res:
@@ -42,7 +48,7 @@ async def test_ensure_endpoint_up_reports_up_when_warm():
     f.workers = 1  # manager online; the canary (below) confirms a live worker
     app = AppCtx(facility=f, profile=Profile())
     app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
-    res = await _ensure_endpoint_up(app)
+    res = await _ensure_endpoint_up(app, confirm_spend=True)
     assert res.status == "up" and res.block_state == "warm"
     assert res.endpoint_id == "fake-eid"
     assert res.notice and "worker live" in res.notice  # warm => a worker answered, not just the manager
@@ -57,7 +63,7 @@ async def test_ensure_endpoint_up_provisioning_when_manager_up_but_worker_cold()
     app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(
         eid, _Res(0, "", ""), canary_result=CanaryResult(ok=False, error="timeout")
     )
-    res = await _ensure_endpoint_up(app)
+    res = await _ensure_endpoint_up(app, confirm_spend=True)
     assert res.status == "provisioning" and res.block_state == "provisioning"
     assert res.notice and "allocating" in res.notice.lower()
 
@@ -66,7 +72,7 @@ async def test_ensure_endpoint_up_reports_provisioning_when_cold():
     f = FakeFacility()
     f.workers = 0
     app = AppCtx(facility=f, profile=Profile())
-    res = await _ensure_endpoint_up(app)
+    res = await _ensure_endpoint_up(app, confirm_spend=True)
     assert res.status == "provisioning"
     assert res.notice and "allocating" in res.notice.lower()
 
@@ -81,6 +87,7 @@ async def test_run_shell_warm_returns_complete_outcome():
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile())
     app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "hi\n", ""))
+    _confirm_slurm(app)
     out = await _run_shell(app, "echo hi")
     assert out.phase == "complete"
     assert out.exit_code == 0 and out.stdout == "hi\n"
@@ -91,6 +98,7 @@ async def test_run_shell_cold_returns_cold_start():
     f = FakeFacility()
     f.workers = 0
     app = AppCtx(facility=f, profile=Profile())
+    _confirm_slurm(app)  # spend ack'd, so we reach the cold-block path (not the spend floor)
     out = await _run_shell(app, "echo hi")
     assert out.phase == "cold_start"
     assert out.notice and "allocating" in out.notice.lower()
@@ -104,6 +112,7 @@ async def test_run_shell_cold_start_when_worker_not_registered():
     app = AppCtx(facility=f, profile=Profile())
     runner = _FakeRunner("fake-eid", _Res(0, "", ""), canary_result=CanaryResult(ok=False, error="timeout"))
     app.runner_factory = lambda eid, user_endpoint_config=None: runner
+    _confirm_slurm(app)
     out = await _run_shell(app, "echo hi")
     assert out.phase == "cold_start"
     assert runner.canaries == 1 and runner.commands == []  # canaried, never dispatched
@@ -117,6 +126,7 @@ async def test_canary_ttl_skips_repeat_canary_on_hot_path():
     app = AppCtx(facility=f, profile=Profile())
     runner = _FakeRunner("fake-eid", _Res(0, "ok\n", ""))
     app.runner_factory = lambda eid, user_endpoint_config=None: runner
+    _confirm_slurm(app)
     await _run_shell(app, "echo a")
     await _run_shell(app, "echo b")
     assert runner.canaries == 1  # second call skipped the canary
@@ -160,6 +170,7 @@ async def test_run_shell_wraps_command_with_session_shim():
     app = AppCtx(facility=f, profile=Profile())
     runner = _FakeRunner("fake-eid", _Res(0, "", ""))
     app.runner_factory = lambda eid, user_endpoint_config=None: runner
+    _confirm_slurm(app)
     await _run_shell(app, "make", session_id="s1")
     sent = runner.commands[-1]
     assert "sessions/s1" in sent  # routed through the session dir
@@ -175,6 +186,7 @@ async def test_reset_session_dispatches_reset_command():
     app = AppCtx(facility=f, profile=Profile())
     runner = _FakeRunner("fake-eid", _Res(0, "", ""))
     app.runner_factory = lambda eid, user_endpoint_config=None: runner
+    _confirm_slurm(app)
     await _reset_session(app, "s1")
     sent = runner.commands[-1]
     assert sent.startswith("rm -f")
@@ -204,7 +216,7 @@ async def test_byo_endpoint_skips_provisioning():
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile(), state=EndpointState(endpoint_id="byo-uuid"))
     app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
-    res = await _ensure_endpoint_up(app)
+    res = await _ensure_endpoint_up(app, confirm_spend=True)
     assert res.status == "up" and res.endpoint_id == "byo-uuid"
     assert f.provisioned is False
 
@@ -227,7 +239,7 @@ async def test_ensure_endpoint_up_reports_down_on_provision_failure():
             raise RuntimeError("globus-compute-endpoint runs only on Linux")
 
     app = AppCtx(facility=BoomFacility(), profile=Profile())  # cold -> provisions -> boom
-    res = await _ensure_endpoint_up(app)
+    res = await _ensure_endpoint_up(app, confirm_spend=True)
     assert res.status == "down"
     assert res.notice and "Linux" in res.notice
 
@@ -265,7 +277,7 @@ async def test_ensure_endpoint_up_provisions_onto_selected_partition():
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile())
     app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
-    res = await _ensure_endpoint_up(app, partition="shared")
+    res = await _ensure_endpoint_up(app, partition="shared", confirm_spend=True)
     assert res.partition == "shared"
     assert app.shapes["slurm"].user_endpoint_config["partition"] == "shared"
 
@@ -284,9 +296,9 @@ async def test_partition_change_invalidates_runner():
         return r
 
     app.runner_factory = factory
-    await _ensure_endpoint_up(app, partition="shared")
+    await _ensure_endpoint_up(app, partition="shared", confirm_spend=True)
     r1 = app.shapes["slurm"].runner
-    await _ensure_endpoint_up(app, partition="gpu")
+    await _ensure_endpoint_up(app, partition="gpu", confirm_spend=True)
     r2 = app.shapes["slurm"].runner
     assert r2 is not r1  # runner rebuilt for the new partition
     assert r1.closed  # old runner torn down (its block idle-releases via min_blocks=0)
@@ -300,9 +312,9 @@ async def test_no_partition_is_noop_and_persists_previous_selection():
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile())
     app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
-    await _ensure_endpoint_up(app, partition="debug")
+    await _ensure_endpoint_up(app, partition="debug", confirm_spend=True)
     r1 = app.shapes["slurm"].runner
-    res = await _ensure_endpoint_up(app)  # no partition -> no-op
+    res = await _ensure_endpoint_up(app)  # no partition, already confirmed -> no-op
     assert app.shapes["slurm"].runner is r1  # runner NOT rebuilt
     assert not r1.closed
     assert app.shapes["slurm"].user_endpoint_config["partition"] == "debug"  # selection persisted
@@ -504,6 +516,7 @@ async def test_concurrent_run_shell_serializes_runner_creation():
         return r
 
     app.runner_factory = factory
+    _confirm_slurm(app)
     outs = await asyncio.gather(_run_shell(app, "echo a"), _run_shell(app, "echo b"))
     assert all(o.phase == "complete" for o in outs)
     assert len(created) == 1  # the second call reused the runner instead of racing a new one
@@ -590,3 +603,82 @@ async def test_stop_endpoint_keeps_pin_when_teardown_fails(tmp_path):
     assert "stop attempted" in (res.notice or "")
     rec = store.get(alias="anvil.x", name="hpc-bridge")
     assert rec is not None and rec.login_host == "login03.x"  # pin kept for reconnect
+
+
+# --- budget gate: the deterministic spend floor (confirm before a billed block) -------------
+
+
+async def test_billed_provision_needs_confirmation():
+    # A billed (Slurm) shape must not start a block until spend is acknowledged. Without
+    # confirm_spend the call returns needs_confirmation and provisions NOTHING.
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    created = []
+
+    def factory(eid, user_endpoint_config=None):
+        r = _FakeRunner(eid, _Res(0, "", ""))
+        created.append(r)
+        return r
+
+    app.runner_factory = factory
+    res = await _ensure_endpoint_up(app)  # no confirm_spend
+    assert res.status == "needs_confirmation" and res.block_state == "cold"
+    assert res.notice and "confirm_spend=True" in res.notice and "balance" in res.notice
+    assert f.provisioned is False  # nothing started
+    assert created == []  # no runner built, no canary, no block kicked
+    assert app.shapes["slurm"].spend_confirmed is False
+
+
+async def test_confirm_spend_provisions_and_persists_for_session():
+    # confirm_spend=True provisions and records the ack; a later call needs no re-confirmation.
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
+    res = await _ensure_endpoint_up(app, confirm_spend=True)
+    assert res.status == "up"
+    assert app.shapes["slurm"].spend_confirmed is True
+    res2 = await _ensure_endpoint_up(app)  # no confirm_spend, but ack persists
+    assert res2.status == "up"  # NOT needs_confirmation
+
+
+async def test_login_shape_never_needs_confirmation():
+    # A login (LocalProvider) shape is free: it provisions without a spend ack.
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
+    res = await _ensure_endpoint_up(app, shape="login")  # no confirm_spend
+    assert res.status == "up"
+
+
+async def test_run_shell_blocked_until_spend_confirmed():
+    # The floor covers run_shell too (its canary submit would otherwise kick a billed block):
+    # an unconfirmed billed shape returns needs_confirmation and dispatches nothing.
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    created = []
+
+    def factory(eid, user_endpoint_config=None):
+        r = _FakeRunner(eid, _Res(0, "", ""))
+        created.append(r)
+        return r
+
+    app.runner_factory = factory
+    out = await _run_shell(app, "echo hi")
+    assert out.phase == "needs_confirmation"
+    assert created == []  # no runner, no canary, no block — the command never dispatched
+    assert f.provisioned is False
+
+
+async def test_run_shell_runs_after_spend_confirmed():
+    # Once ensure_endpoint_up(confirm_spend=True) acknowledges spend, run_shell dispatches.
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "hi\n", ""))
+    await _ensure_endpoint_up(app, confirm_spend=True)
+    out = await _run_shell(app, "echo hi")
+    assert out.phase == "complete" and out.stdout == "hi\n"
