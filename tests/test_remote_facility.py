@@ -229,6 +229,28 @@ def _kinds(cli):
     return [c[0] for c in cli.calls]
 
 
+class _FakeGCClient:
+    """Stand-in for the Globus Compute web Client (get_endpoints / get_endpoint_status)."""
+
+    def __init__(self, endpoints=(), statuses=None, raises=False):
+        self._endpoints = list(endpoints)
+        self._statuses = statuses or {}
+        self._raises = raises
+
+    def get_endpoints(self, role=None):
+        if self._raises:
+            raise RuntimeError("web boom")
+        return self._endpoints
+
+    def get_endpoint_status(self, eid):
+        return {"status": self._statuses.get(eid, "offline")}
+
+
+def _no_endpoints():
+    """client_factory that reports no reusable endpoint -> bootstrap takes the SSH path."""
+    return _FakeGCClient()
+
+
 class _BootstrapCLI(_FakeRemoteCLI):
     def __init__(self, status=None, remote_db_present=False):
         super().__init__(status=status)
@@ -250,7 +272,7 @@ class _BootstrapCLI(_FakeRemoteCLI):
 
 async def test_bootstrap_seeds_when_remote_db_absent(monkeypatch, tmp_path):
     cli = _BootstrapCLI(status=None, remote_db_present=False)
-    fac = SlurmFacility(_profile(), cli=cli)
+    fac = SlurmFacility(_profile(), cli=cli, client_factory=_no_endpoints)
     made = tmp_path / "trimmed.db"
     made.write_bytes(b"db")
     monkeypatch.setattr(remote, "build_minimal_storage_db", lambda **kw: made)
@@ -262,7 +284,7 @@ async def test_bootstrap_seeds_when_remote_db_absent(monkeypatch, tmp_path):
 
 async def test_bootstrap_skips_seed_when_remote_db_present(monkeypatch, tmp_path):
     cli = _BootstrapCLI(status="running", remote_db_present=True)
-    fac = SlurmFacility(_profile(), cli=cli)
+    fac = SlurmFacility(_profile(), cli=cli, client_factory=_no_endpoints)
     monkeypatch.setattr(remote, "build_minimal_storage_db", lambda **kw: tmp_path / "x.db")
     handle = await fac.bootstrap(Profile(mode="interactive"))
     assert cli.seeded is None  # already had creds -> no reseed
@@ -274,11 +296,56 @@ async def test_bootstrap_records_login_node_in_store(monkeypatch, tmp_path):
 
     cli = _BootstrapCLI(status=None, remote_db_present=True)  # present -> no seed needed
     store = LoginNodeStore(tmp_path / "endpoints.json")
-    fac = SlurmFacility(_profile(), cli=cli, store=store, alias="anvil.rcac.purdue.edu")
+    fac = SlurmFacility(
+        _profile(), cli=cli, store=store, alias="anvil.rcac.purdue.edu", client_factory=_no_endpoints
+    )
     await fac.bootstrap(Profile(mode="interactive"))
     rec = store.get(alias="anvil.rcac.purdue.edu", name="hpc-bridge")
     assert rec is not None and rec.login_host == "login03.anvil.rcac.purdue.edu"
     assert rec.user == "x-u" and rec.key_path == "/tmp/k"
+
+
+# --- SSH-once: reuse an already-online endpoint over the web, no SSH -------------------------
+
+
+async def test_find_online_endpoint_returns_uuid_when_owned_and_online():
+    client = _FakeGCClient(
+        endpoints=[{"name": "other", "uuid": "x"}, {"name": "hpc-bridge", "uuid": "ours"}],
+        statuses={"ours": "online"},
+    )
+    f = SlurmFacility(_profile(), cli=None, client_factory=lambda: client)
+    assert await f.find_online_endpoint("hpc-bridge") == "ours"
+
+
+async def test_find_online_endpoint_none_when_offline_or_name_mismatch():
+    offline = SlurmFacility(
+        _profile(), cli=None,
+        client_factory=lambda: _FakeGCClient([{"name": "hpc-bridge", "uuid": "ep"}], {"ep": "offline"}),
+    )
+    assert await offline.find_online_endpoint("hpc-bridge") is None  # registered but not online
+    mismatch = SlurmFacility(
+        _profile(), cli=None,
+        client_factory=lambda: _FakeGCClient([{"name": "other", "uuid": "ep"}], {"ep": "online"}),
+    )
+    assert await mismatch.find_online_endpoint("hpc-bridge") is None  # not ours by name
+
+
+async def test_find_online_endpoint_swallows_web_error():
+    # A web/auth failure must not crash provisioning — return None and let the SSH path run.
+    f = SlurmFacility(_profile(), cli=None, client_factory=lambda: _FakeGCClient(raises=True))
+    assert await f.find_online_endpoint("hpc-bridge") is None
+
+
+async def test_bootstrap_reuses_online_endpoint_without_any_ssh():
+    # The SSH-once keystone: a web-online endpoint we own is reused over AMQP and NOT a single
+    # SSH op (status/configure/start/whoami/seed) runs.
+    cli = _BootstrapCLI(status=None, remote_db_present=False)
+    client = _FakeGCClient([{"name": "hpc-bridge", "uuid": "reused-eid"}], {"reused-eid": "online"})
+    fac = SlurmFacility(_profile(), cli=cli, client_factory=lambda: client)
+    handle = await fac.bootstrap(Profile(mode="interactive"))
+    assert handle.endpoint_id == "reused-eid"
+    assert cli.calls == []  # zero SSH: no status/configure/start/login_exec
+    assert cli.seeded is None  # and no credential seeding
 
 
 async def test_provision_fresh_configures_writes_and_starts():

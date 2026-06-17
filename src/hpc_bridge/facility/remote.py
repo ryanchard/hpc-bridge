@@ -13,6 +13,7 @@ import base64
 import json
 import re
 import shlex
+import sys
 import tempfile
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -475,7 +476,16 @@ engine:
         alias round-robins, so a separate probe could name the wrong node). A reused
         already-running endpoint keeps its prior recorded node; reconciling a stale or
         dead pin is deferred. Idempotent: seeds storage.db only if the remote can't
-        already authenticate, and reuses a running endpoint."""
+        already authenticate, and reuses a running endpoint.
+
+        SSH-once: before any SSH, ask the Globus web service whether an endpoint we own is
+        already online and reuse it over AMQP — zero SSH, so an MFA facility isn't re-auth'd.
+        Only when none is online do we fall through to the one allowed SSH bootstrap below.
+        (Caveat: a web 'online' that's actually a stale registration is reused as-is; the
+        canary then can't warm it — re-bootstrap-on-stale is a deferred follow-up.)"""
+        reused = await self.find_online_endpoint(self.profile.endpoint_name)
+        if reused is not None:
+            return EndpointHandle(endpoint_id=reused, name=self.profile.endpoint_name)
         if not await self.cli.whoami():
             with tempfile.TemporaryDirectory() as tmp:
                 trimmed = build_minimal_storage_db(
@@ -555,6 +565,30 @@ engine:
         client = self._client_factory()
         status = await asyncio.to_thread(client.get_endpoint_status, endpoint_id)
         return status.get("status") == "online"
+
+    async def find_online_endpoint(self, name: str) -> str | None:
+        """UUID of an *online* endpoint we own named `name`, else None — via the Globus web
+        service, NO SSH. This is the SSH-once keystone: a fresh session reuses a still-running
+        endpoint from a prior session over AMQP, instead of re-SSHing the login node (which on
+        an MFA facility could force a re-auth). Bootstrap (the one allowed SSH) is the fallback.
+
+        Web errors (e.g. the local Globus identity isn't logged in) are swallowed to None so we
+        fall through to the SSH path, which surfaces the auth problem with a clearer error."""
+        client = self._client_factory()
+        try:
+            endpoints = await asyncio.to_thread(client.get_endpoints, "owner")
+        except Exception as exc:  # noqa: BLE001 - web/auth failure -> can't reuse, fall back to SSH
+            print(f"hpc-bridge: endpoint reuse check failed ({type(exc).__name__}: {exc}); "
+                  "falling back to SSH bootstrap", file=sys.stderr)
+            return None
+        for ep in endpoints or []:
+            ep_name = ep.get("name") or ep.get("display_name")
+            ep_id = ep.get("uuid") or ep.get("endpoint_uuid") or ep.get("id")
+            if ep_name != name or not ep_id:
+                continue
+            if await self.manager_online(ep_id):  # confirm it's actually online, not just registered
+                return ep_id
+        return None
 
     def _default_client(self):
         from globus_compute_sdk import Client

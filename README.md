@@ -14,7 +14,7 @@ the runtime that makes a batch supercomputer feel like a REPL.
 
 Actively developed. **Proven end-to-end on a real facility (Purdue Anvil / Slurm)** and on a
 local dev endpoint. The agent stands up an Anvil endpoint over key-based SSH, runs commands on
-a compute node, and tears it down — releasing the allocation. Suite: **160 passed, 2 skipped**,
+a compute node, and tears it down — releasing the allocation. Suite: **164 passed, 2 skipped**,
 ruff clean.
 
 Current direction is **discovery-first** (the agent probes a facility and derives its config,
@@ -88,6 +88,14 @@ allowlist-validated and the command is base64-carried so it can't break out of t
 
 ### Remote bootstrap
 
+**Endpoint reuse (SSH-once).** SSH is treated as a one-time bootstrap, not a channel: each new
+SSH risks an interactive re-auth on an MFA facility, so we minimize it to a single connection.
+Before any SSH, `bootstrap` asks the Globus **web** service whether an endpoint we own is already
+online (`get_endpoints` → `get_endpoint_status`) and, if so, reuses it over AMQP — **zero SSH this
+session**. Only when none is online do we fall through to the one SSH bootstrap below. (A web
+`online` that's a stale registration is reused as-is for now; re-bootstrapping a reused endpoint
+that never warms is a deferred follow-up.)
+
 **Credential seeding.** On the first connect to a remote facility, hpc-bridge builds a
 minimally-scoped `storage.db` locally — only the Globus Compute and Auth tokens an endpoint
 needs, refresh tokens included — from your existing `globus-compute-endpoint login`, and ships
@@ -142,7 +150,7 @@ Requires Python ≥3.11 and [`uv`](https://docs.astral.sh/uv/). Globus Compute i
 
 ```bash
 uv sync --extra dev
-uv run pytest -q                 # 160 passed, 2 skipped
+uv run pytest -q                 # 164 passed, 2 skipped
 uv run hpc-bridge                # run the MCP server standalone (stdio)
 claude --plugin-dir .            # install into Claude Code for local testing
 ```
