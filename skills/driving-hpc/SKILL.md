@@ -1,36 +1,51 @@
 ---
-description: How to drive HPC well through hpc-bridge. Before provisioning/starting a compute node on a facility, discover its partitions AND the allocation balance, present them as a selection+budget gate, then provision with confirm_spend=True (a billed Slurm block won't start without it). You have a persistent per-session shell (relative paths work; call reset_session for a clean slate); redirect verbose output to a file and read it back in bounded chunks (10 MB result cap); a cold first call means nodes are being allocated.
+description: How to drive HPC well through hpc-bridge. SSH is a one-time bootstrap: stand up (or reuse) a Globus Compute endpoint on the login node ONCE, then do everything — discovery AND compute — THROUGH the endpoint via run_shell, never a fresh SSH (which can force a re-auth on MFA facilities). Flow to bring up a node: establish the endpoint (shape="login") → discover partitions+balance via run_shell(shape="login") → present a selection+budget gate → provision the billed block with confirm_spend=True → wait by polling squeue through the endpoint. Persistent per-session shell; 10 MB result cap; a cold first call means a worker is still warming.
 ---
 
 # Driving HPC with hpc-bridge
 
 - You have a **persistent session shell**: `cd` and relative paths carry across turns. Call `reset_session` for a clean slate.
-- The endpoint may be **cold** on first use — `ensure_endpoint_up` reporting `provisioning` means nodes are being allocated; retry shortly.
-- Results are capped at ~10 MB: for verbose commands, redirect to a file and read it back in chunks.
+- A call may be **cold** on first use — `ensure_endpoint_up`/`run_shell` reporting `provisioning`/`cold_start` means a worker is still warming (a Slurm block may be allocating); retry shortly.
+- Results are capped at ~10 MB: for verbose commands, redirect to a file and read it back in bounded chunks.
 
-## Before starting a node: discover partitions + budget, then gate, then provision
+## SSH once, then work through the endpoint
 
-When asked to **start / provision / spin up a compute node** on a facility, do **not** provision blind. A Slurm block **spends your allocation**, so first *discover* what's available **and what it costs you**, let the user choose, then provision. Discovery is a read-only login-node probe that costs nothing (no block, no allocation):
+hpc-bridge stands up a personal Globus Compute endpoint on the login node. Reaching it costs **one** SSH bootstrap — and often **zero**, because a still-running endpoint from a prior session is reused over the network. **Treat SSH as that one-time bootstrap, not a channel:** once the endpoint is up, do *everything* through it — discovery as well as compute — via `run_shell`. Every fresh SSH risks an interactive re-auth on a multi-factor (Duo/MFA) facility, so we avoid it.
 
-1. **Gather** (Slurm facilities) with the `login_shell` tool — it runs on the login node and starts nothing:
-   - Partitions: `login_shell("sinfo -h -o '%P|%a|%l|%D|%c|%m|%F'")` → `name|avail|timelimit|nodes|cores|mem_MB|A/I/O/T-nodes`. The **I** (idle) in the last field is *live* availability — a partition with 0 idle will queue.
-   - Accounts: `login_shell("sacctmgr -nP show assoc where user=$USER format=Account,QOS,Partition")`.
-   - **Allocation balance** (so the human spends with the number in view): `login_shell("mybalance")` on Anvil; elsewhere on ACCESS `login_shell("xdusage -p <project>")`. This is **live remaining SUs** — the authoritative budget number, read fresh each time (not cached, not a server API).
-   - Each command is a **recipe, not a rule** — if `sinfo`/`mybalance` isn't found (non-Slurm, or a facility with a different balance tool), adapt: `scontrol show partition` / `qstat -Q`; the facility's own allocation tool; `module load` first if a binary is missing; if there's no balance tool, say so and let the human decide.
-2. **Mind the gotchas:** partition `timelimit` may read `infinite` because the real cap is per-**QOS** — if walltime matters, also `login_shell("sacctmgr -nP show qos format=Name,MaxWall")`.
-3. **Present the gate** with `AskUserQuestion`: each option a partition, its description carrying node size + **live idle count** + any caveat (saturated → would queue; a GPU partition needs the `-gpu` account). Put the **remaining balance and the rough cost of the block** (≈ nodes × walltime × the facility's SU rate) in the question text so the choice is made against the budget. Recommend the cheapest/fastest sensible default (usually a shared/sub-node partition with idle nodes now).
-4. **Provision onto the selection, confirming spend.** Once the human has seen the balance and chosen, call `ensure_endpoint_up(partition="<choice>", confirm_spend=True)`. Both **persist for the session** (later `run_shell`/`ensure_endpoint_up` calls reuse them) until you change the partition or `stop_endpoint`. A first call returning `provisioning` is normal — the block is allocating; retry shortly. The status echoes the active `partition`.
+Concretely: the **`login` shape** runs commands on the **login node** through the endpoint (a free `LocalProvider` — no allocation, no cost) — that's your no-SSH channel for discovery (`sinfo`, `mybalance`, `squeue`). The **`slurm` shape** runs on a billed compute block. `login_shell` (raw SSH) is a **cold-start escape hatch only** — see the end.
+
+## Bringing up a compute node: establish → discover → gate → provision → wait
+
+A Slurm block **spends your allocation**, so don't provision blind. Discover what's available and what it costs, let the user choose, then provision — all through the endpoint.
+
+**0. Establish the endpoint (the control channel) first.** `ensure_endpoint_up(shape="login")`. This stands up — or **reuses, with zero SSH** — the endpoint manager, plus a free login-node worker. No allocation, no `confirm_spend` (the login shape is free). This is the **only** step that may SSH, and only once (a single bootstrap if no endpoint is already online). Wait for `up`.
+
+**1. Discover THROUGH the endpoint** (over the network, no SSH) with `run_shell(..., shape="login")`:
+   - Partitions: `run_shell("sinfo -h -o '%P|%a|%l|%D|%c|%m|%F'", shape="login")` → `name|avail|timelimit|nodes|cores|mem_MB|A/I/O/T-nodes`. The **I** (idle) in the last field is *live* availability — 0 idle will queue.
+   - Accounts: `run_shell("sacctmgr -nP show assoc where user=$USER format=Account,QOS,Partition", shape="login")`.
+   - **Allocation balance:** `run_shell("mybalance", shape="login")` on Anvil; elsewhere on ACCESS `run_shell("xdusage -p <project>", shape="login")`. Live remaining SUs — the authoritative budget number, read fresh each time.
+   - **Recipe, not rule:** if a tool isn't found, adapt (`scontrol show partition` / `qstat -Q`; the facility's own balance tool; `module load` first if a binary is missing; if there's no balance tool, say so and let the human decide). The first `shape="login"` call may return `cold_start` while the login worker warms — just retry.
+   - **Gotcha:** partition `timelimit` may read `infinite` because the real cap is per-**QOS** — if walltime matters, also `run_shell("sacctmgr -nP show qos format=Name,MaxWall", shape="login")`.
+
+**2. Present the gate** with `AskUserQuestion`: each option a partition, its description carrying node size + **live idle count** + any caveat (saturated → would queue; a GPU partition needs the `-gpu` account). Put the **remaining balance and the rough block cost** (≈ nodes × walltime × the facility's SU rate) in the question text so the choice is made against the budget. Recommend the cheapest/fastest sensible default (usually a shared/sub-node partition with idle nodes now).
+
+**3. Provision the billed block, confirming spend.** `ensure_endpoint_up(shape="slurm", partition="<choice>", confirm_spend=True)`. The manager is already up from step 0, so this just kicks the Slurm block. The partition and the spend acknowledgement **persist for the session** (later `run_shell`/`ensure_endpoint_up` calls reuse them) until you change the partition or `stop_endpoint`. A first call returning `provisioning` is normal.
+
+**4. Wait THROUGH the endpoint.** Poll `run_shell("squeue -u $USER -h -o '%i|%P|%T|%r'", shape="login")` — over the network, no SSH — for the pilot's state (`PENDING`→`RUNNING`) and *why* it pends (`Priority`, `Resources`). Wait for `RUNNING`, then call `ensure_endpoint_up(shape="slurm")` **once** to confirm the worker registered (`up`).
+   - **Between polls, don't foreground-`sleep`** (the harness blocks a standalone `sleep`). The queue state comes from the `run_shell` **MCP tool**, so a `Monitor`/`until <check>` loop can't drive the wait (it tests a *local shell* condition, not a tool call). Instead background a short wait (Claude Code: `run_in_background: true` on a `sleep`) and re-poll when it elapses — relaxed cadence (~20–30 s, escalate if it stays pending), and don't hammer `ensure_endpoint_up`.
+   - A pend can be seconds (node booting) or many minutes (queued behind priority) — the `squeue` reason tells you which, so you can tell the user instead of polling blindly.
 
 This is a *policy gate*: discovery surfaces the options + the budget, the human picks, and the pick drives provisioning.
 
-- **The spend floor is enforced, not advisory.** `ensure_endpoint_up`/`run_shell` on a billed Slurm shape **without** `confirm_spend=True` return `needs_confirmation` and start **nothing** — that's the deterministic budget floor. Only set `confirm_spend=True` *after* surfacing the balance to the user; it is your acknowledgement on their behalf, not a default to sprinkle on.
+- **The spend floor is enforced, not advisory.** A billed Slurm shape **without** `confirm_spend=True` returns `needs_confirmation` and starts **nothing**. Only set `confirm_spend=True` *after* surfacing the balance to the user — it is your acknowledgement on their behalf, not a default to sprinkle on.
 - **Gate, not interrogation:** only the partition + the spend confirmation are gated (the consequential, cost-bearing choices); account/walltime/nodes are sensible-defaulted. Don't prompt for the unambiguous.
-- **Headless fallback (can't prompt):** prefer `shape="login"` — a free login-node `LocalProvider` that never needs `confirm_spend`. Only auto-confirm a billed block in autonomous mode if you have an explicit budget signal; otherwise stay on the free login shape rather than spend unattended.
+- **Headless fallback (can't prompt):** stay on `shape="login"` (free, read-only) rather than spend unattended; only auto-confirm a billed block in autonomous mode with an explicit budget signal.
 
-## Waiting for the block to warm (don't busy-wait)
+## When to use `login_shell` (raw SSH) instead
 
-After `ensure_endpoint_up` returns `provisioning`, the Slurm block is queued. Wait cheaply:
+`login_shell` runs on the login node over a **fresh SSH connection** — reserve it for:
 
-- **Poll the queue, not the endpoint.** `login_shell("squeue -u $USER -h -o '%i|%P|%T|%r'")` is a fast login-node read showing the pilot's state (`PENDING`→`RUNNING`) and *why* it pends (`Priority`, `Resources`). Re-calling `ensure_endpoint_up` instead pays an ~8 s worker-canary timeout per poll. Wait for `RUNNING`, then call `ensure_endpoint_up` **once** to confirm the worker registered (`up`).
-- **Between polls, wait *without* a foreground `sleep`** (the harness blocks a standalone `sleep`). The queue state is read through the `login_shell` **MCP tool**, so a `Monitor`/`until <check>` loop **can't drive this wait** — that loop tests a *local shell* condition, not a tool call. Instead run a short wait in the background (Claude Code: `run_in_background: true` on a `sleep`), then re-poll `squeue` when it elapses. Use a relaxed cadence — start ~20–30 s, escalate if it stays pending — and don't hammer `ensure_endpoint_up`.
-- A pend can be seconds (node booting) or many minutes (queued behind priority) — the `squeue` reason tells you which, so you can tell the user instead of polling blindly.
+- the **cold start** where no endpoint exists yet and you specifically *don't* want to stand one up (a quick one-off peek), or
+- a **fallback** if the `login` shape can't come up.
+
+On an MFA facility **every `login_shell` may trigger a re-auth**, so for the provisioning flow above prefer the endpoint path (`run_shell(shape="login")`), which authenticates once at bootstrap and then runs over the network.

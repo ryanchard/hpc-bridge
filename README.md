@@ -30,17 +30,20 @@ crashes.
 | Tool | What it does |
 |---|---|
 | `ensure_endpoint_up(shape, partition=…, confirm_spend=…)` | Provision/probe the personal endpoint. Reports `up` only once a **worker answers a canary** (not merely that the manager is online); otherwise `provisioning` (and the probe kicks a cold block). A billed Slurm block won't start until `confirm_spend=True` (the budget floor) → otherwise `needs_confirmation`; `partition` (from the discovery gate) selects the target and persists for the session. |
-| `run_shell(command, session_id="default")` | Run a shell command on the warm compute block → `{phase, exit_code, stdout, stderr_snippet, block_state, session_spend}`. Cold endpoint → `cold_start` (no hang). |
+| `run_shell(command, session_id="default", shape="slurm")` | Run a shell command on the endpoint → `{phase, exit_code, stdout, stderr_snippet, block_state, session_spend}`. `shape="slurm"` = the billed compute block; **`shape="login"` = the login node** (free `LocalProvider`) — the no-SSH channel for *discovery* (`sinfo`, `mybalance`, `squeue`). Cold endpoint → `cold_start` (no hang). |
 | `reset_session(session_id="default")` | Clear a session's persisted working directory + environment. |
 | `stop_endpoint()` | Tear down the endpoint, release its Slurm block, reset session state. |
-| `login_shell(command)` | Run a **read-only** command on the login node over SSH for *discovery* (`sinfo`, `sacctmgr`, `module avail`) — no block, no allocation, no cost. SSH facility only. |
+| `login_shell(command)` | Run a **read-only** command on the login node over a **fresh SSH** connection — the **cold-start escape hatch** for discovery before any endpoint exists. Once an endpoint is up, prefer `run_shell(shape="login")` (same command, over the network, no re-SSH). SSH facility only. |
 
 ---
 
 ## How it works
 
-Two channels, by design: **SSH is control-plane only** (bootstrap/teardown); the **work hot
-path is Globus Compute over AMQP** (a scoped Globus Auth token, never SSH material).
+Two channels, by design: **SSH is a one-time bootstrap** (stand up — or reuse, zero-SSH — the
+endpoint), and **everything after rides Globus Compute over AMQP** (a scoped Globus Auth token,
+never SSH material) — not just compute, but *discovery* too (`sinfo`/`mybalance`/`squeue` via
+`run_shell(shape="login")` on the login node). Minimizing SSH to the bootstrap is what keeps a
+multi-factor (Duo/MFA) facility from re-authenticating mid-session.
 
 ```
 Claude Code (laptop)

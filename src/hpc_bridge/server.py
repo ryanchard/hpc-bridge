@@ -492,11 +492,14 @@ async def _login_shell(app: AppCtx, command: str) -> LoginShellResult:
 
 @mcp.tool()
 async def login_shell(command: str, ctx: Context) -> LoginShellResult:
-    """Run a READ-ONLY command on the HPC login node over SSH — for facility *discovery*
-    (e.g. `sinfo`, `sacctmgr`, `module avail`, `echo $SCRATCH`). It runs on the login node,
-    NOT a compute block: it provisions nothing, starts no Slurm job, and costs no allocation.
-    Use it to learn what a facility offers (partitions, accounts, modules) before provisioning.
-    Only available for an SSH facility (HPC_BRIDGE_FACILITY=anvil), not local dev."""
+    """Run a READ-ONLY command on the HPC login node over a FRESH SSH connection — the
+    cold-start discovery escape hatch (`sinfo`, `sacctmgr`, `echo $SCRATCH`) for when no
+    endpoint exists yet. It provisions nothing, starts no Slurm job, costs no allocation.
+
+    Prefer `run_shell(command, shape="login")` once an endpoint is up: that runs the same
+    login-node command THROUGH the endpoint (over the network), avoiding a fresh SSH — which
+    on an MFA facility can force a re-auth. SSH is meant to be a one-time bootstrap, not a
+    channel. Only available for an SSH facility (HPC_BRIDGE_FACILITY=anvil), not local dev."""
     return await _login_shell(ctx.request_context.lifespan_context, command)
 
 
