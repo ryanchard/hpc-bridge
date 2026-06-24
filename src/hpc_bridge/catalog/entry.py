@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import datetime
 import uuid
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, field_validator
 
@@ -32,7 +32,7 @@ class Compute(BaseModel):
     scratch_root: str  # session-shell root on the shared filesystem; {user} templated
     endpoint_name: str = "hpc-bridge"  # registration / on-disk dir name
     amqp_port: int = 443  # facilities firewall AMQPS 5671; 443 is the near-universal allowed port
-    scheduler_options: str | None = None  # optional machine #SBATCH constraints
+    scheduler_options: str | None = None  # raw scheduler directives, verbatim (e.g. #SBATCH for Slurm, #PBS for PBS)
 
 
 class Defaults(BaseModel):
@@ -54,7 +54,7 @@ class CatalogSummary(BaseModel):
     facility: str
     description: str
     display_name: str
-    provenance: str
+    provenance: Literal["curated", "community", "scraped", "plugin-validated"]
     last_validated: datetime.date
 
 
@@ -89,8 +89,7 @@ class CatalogEntry(BaseModel):
     def _valid_uuid(cls, v: str | None) -> str | None:
         if v is None:
             return v
-        uuid.UUID(v)  # raises ValueError -> ValidationError on a malformed UUID
-        return v
+        return str(uuid.UUID(v))  # normalize to canonical lowercase hyphenated form
 
     @property
     def subject(self) -> str:
@@ -107,11 +106,14 @@ class CatalogEntry(BaseModel):
             last_validated=self.last_validated,
         )
 
-    def profile_kwargs(self) -> dict:
+    def profile_kwargs(self) -> dict[str, Any]:
         """Constructor kwargs for MachineProfile (Plan 2 builds the profile from these).
 
         `account` is intentionally absent — it is per-user, from allocation selection.
         `worker_init` is absent — in the code it is derived as `= env_setup`.
+        `ssh_host`, `auth_method`, and `compute.scheduler` are also absent — they are
+        consumed by the transport layer (SshTarget / auth broker / facility selection),
+        not MachineProfile.
         """
         return {
             "name": self.id,

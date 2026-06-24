@@ -4,7 +4,7 @@ import datetime
 import pytest
 from pydantic import ValidationError
 
-from hpc_bridge.catalog.entry import CatalogEntry
+from hpc_bridge.catalog.entry import CatalogEntry, CatalogSummary
 
 VALID_UUID = "11111111-2222-3333-4444-555555555555"
 
@@ -54,6 +54,10 @@ def test_summary_is_agent_safe_subset():
     assert s.display_name == "HPC-Bridge Anvil"
     # summary must NOT leak executable config
     assert not hasattr(s, "env_setup")
+    assert set(CatalogSummary.model_fields) == {
+        "subject", "id", "facility", "description", "display_name",
+        "provenance", "last_validated",
+    }
 
 
 def test_bad_uuid_rejected():
@@ -66,6 +70,13 @@ def test_unknown_parser_rejected():
         CatalogEntry.model_validate(
             _entry(allocation={"command": "x", "parser": "bogus"})
         )
+
+
+def test_uuid_is_normalized_to_canonical_form():
+    e = CatalogEntry.model_validate(_entry(
+        transfer_endpoint_uuid="11111111222233334444555555555555"  # no dashes
+    ))
+    assert e.transfer_endpoint_uuid == "11111111-2222-3333-4444-555555555555"
 
 
 def test_profile_kwargs_maps_every_machineprofile_field():
