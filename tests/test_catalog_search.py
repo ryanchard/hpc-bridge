@@ -27,6 +27,13 @@ class _FakeSearchClient:
             return {"entries": []}  # a simple miss
         return _gmeta(self._subjects[subject])
 
+    def post_search(self, index_id, query):
+        self.calls.append((index_id, query))
+        if self._fail:
+            raise RuntimeError("search offline")
+        return {"gmeta": [{"entries": [{"content": json.loads(e.model_dump_json())}]}
+                          for e in self._subjects.values()]}
+
 
 async def test_search_get_hits_live_and_writes_through_cache(tmp_path):
     e = fake_entry(id="anvil", facility_key="purdue")
@@ -64,3 +71,21 @@ async def test_search_miss_returns_none(tmp_path):
     c = SearchCatalog(index_id="idx", client=client,
                       fallback=FakeCatalog([]), cache_dir=tmp_path)
     assert await c.get("purdue:absent") is None
+
+
+async def test_search_discover_maps_summaries(tmp_path):
+    e = fake_entry(id="anvil", facility_key="purdue")
+    client = _FakeSearchClient(subjects={"purdue:anvil": e})
+    c = SearchCatalog(index_id="idx", client=client,
+                      fallback=FakeCatalog([]), cache_dir=tmp_path)
+    got = await c.discover("anvil")
+    assert {s.id for s in got} == {"anvil"}
+
+
+async def test_search_discover_falls_back_on_error(tmp_path):
+    e = fake_entry(id="anvil", facility_key="purdue")
+    client = _FakeSearchClient(fail=True)
+    c = SearchCatalog(index_id="idx", client=client,
+                      fallback=FakeCatalog([e]), cache_dir=tmp_path)
+    got = await c.discover("")
+    assert {s.id for s in got} == {"anvil"}

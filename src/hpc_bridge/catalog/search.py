@@ -25,7 +25,8 @@ class SearchCatalog:
         self._cache_dir.mkdir(parents=True, exist_ok=True)
 
     def _cache_file(self, subject: str) -> Path:
-        return self._cache_dir / f"{subject}.json"
+        safe = subject.replace("/", "%2F")  # flatten any slash so the cache stays one file per subject
+        return self._cache_dir / f"{safe}.json"
 
     async def get(self, machine_id: str) -> CatalogEntry | None:
         subject = machine_id  # exact-subject lookup; id/alias resolution is a discover concern
@@ -43,7 +44,10 @@ class SearchCatalog:
     async def _from_cache_or_fallback(self, subject: str, machine_id: str) -> CatalogEntry | None:
         cached = self._cache_file(subject)
         if cached.exists():
-            return CatalogEntry.model_validate(json.loads(cached.read_text()))
+            try:
+                return CatalogEntry.model_validate(json.loads(cached.read_text()))
+            except Exception:
+                pass  # corrupt/stale cache — fall through to the bundled fallback
         return await self._fallback.get(machine_id)
 
     async def discover(self, query: str) -> list[CatalogSummary]:
@@ -55,6 +59,8 @@ class SearchCatalog:
             return await self._fallback.discover(query)
         out = []
         for gmeta in resp.get("gmeta", []):
-            content = gmeta["entries"][0]["content"]
-            out.append(CatalogEntry.model_validate(content).summary())
+            entries = gmeta.get("entries") or []
+            if not entries:
+                continue
+            out.append(CatalogEntry.model_validate(entries[0]["content"]).summary())
         return out
