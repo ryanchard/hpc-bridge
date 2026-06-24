@@ -71,7 +71,7 @@ class FakeCatalog:
         q = query.lower().strip()
         out = []
         for e in self._by_id.values():
-            hay = f"{e.id} {e.facility} {e.description} {e.display_name}".lower()
+            hay = f"{e.id} {e.facility_key} {e.facility} {e.description} {e.display_name}".lower()
             if not q or q in hay:
                 out.append(e.summary())
         return out

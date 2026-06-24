@@ -36,7 +36,12 @@ class BundledCatalog:
 
     @staticmethod
     def _load_raw(path: Path) -> list[dict]:
-        files = sorted(path.glob("*.yaml")) if path.is_dir() else [path]
+        if path.is_dir():
+            files = sorted(path.glob("*.yaml"))
+        elif path.exists():
+            files = [path]
+        else:
+            files = []  # path not present (e.g. seed dir not populated) -> empty catalog, not a crash
         out: list[dict] = []
         for f in files:
             loaded = yaml.safe_load(f.read_text()) or []
