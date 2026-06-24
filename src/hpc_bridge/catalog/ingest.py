@@ -40,13 +40,15 @@ def main(argv: list[str] | None = None) -> int:
 
     from globus_compute_sdk import Client
     from globus_sdk import SearchClient
+    from globus_sdk.scopes import SearchScopes
 
-    # This is the interactive curator path, so an interactive login is correct: constructing
-    # SearchClient(app=...) registers the search.api.globus.org scope, and login() grants it once
-    # (the Compute app does not hold it by default — spec §8). After this, the token is cached and
-    # the server-side SearchCatalog reads work without prompting.
+    # Interactive curator path, so an interactive login is correct. SearchClient(app=...) registers
+    # only the READ scope (:search); ingest is a WRITE, so additionally require :all (the Compute app
+    # holds neither by default — spec §8). login() grants both in one consent; after that the token
+    # is cached and the server-side SearchCatalog reads work without prompting.
     app = Client().app
     client = SearchClient(app=app)
+    app.add_scope_requirements({SearchScopes.resource_server: SearchScopes.all})
     if app.login_required():
         app.login()
     n = ingest(index_id=args.index_id, seed_path=args.seed_path, client=client)

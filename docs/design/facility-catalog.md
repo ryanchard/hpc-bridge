@@ -279,19 +279,21 @@ tool rather than hidden multi-phase state inside `ensure_endpoint_up`.
     fall back to the cache only on error. No TTL, no staleness window to reason
     about in v1.
   - *The `search.api.globus.org` scope / second-login question* — **answered live
-    (2026-06-25): a second login IS required.** The Compute SDK's `GlobusApp` does
-    not hold the search scope by default, so `app.get_authorizer("search.api.globus.org")`
-    has no token and triggers a fresh login. The fix is to construct
-    `SearchClient(app=Client().app)` (which *registers* the scope on the app) and grant
-    it via **one interactive login** — done once by the curator running
-    `hpc-bridge-catalog` (which calls `app.login()` when `app.login_required()`). After
-    that the token is cached and reuse is silent. The server-side `_make_search_client`
-    **never** prompts: it checks `app.login_required()` and raises so `make_catalog()`
-    falls back to the bundled catalog (a blocking prompt on the MCP stdio channel would
-    hang the server). Verified against a live index (`6ff95fb8-…`, "hpc-bridge-test"):
-    the data round-trip (serialize → `GMetaList` → ingest → query) works; the
-    `transfer_endpoint_uuid` in the seed is still the placeholder and must be replaced
-    before the entry is treated as production.
+    (2026-06-25): a second login IS required, and the scope is operation-specific.**
+    The Compute SDK's `GlobusApp` holds no search scope by default. Two grades matter:
+    the **read** path (`get_subject`/`post_search`) needs `…:search`, which
+    `SearchClient(app=…)` registers by default; the **ingest** path (write) needs
+    `…:ingest` or `…:all` — a read-only `…:search` token gets a `403 InsufficientScopes`
+    (observed live). So `_make_search_client` (server, read) registers only `:search`,
+    while `ingest.main` additionally `add_scope_requirements({…: SearchScopes.all})`.
+    The curator grants both via **one interactive login** when running `hpc-bridge-catalog`
+    (`app.login()` when `app.login_required()`); after that the token is cached and reuse
+    is silent. The server-side path **never** prompts: it checks `app.login_required()`
+    and raises so `make_catalog()` falls back to the bundled catalog (a blocking prompt on
+    the MCP stdio channel would hang the server). Verified against a live index
+    (`6ff95fb8-…`, "hpc-bridge-test"): the data round-trip (serialize → `GMetaList` →
+    ingest → query) works; the seed's `transfer_endpoint_uuid` is still the placeholder
+    and must be replaced before the entry is treated as production.
 - **Open / verify at implementation:**
   - Wiring `SearchCatalog` into the server lifespan (Plan 2) must keep the
     non-interactive guarantee above: the read path may need a cached search token, and
