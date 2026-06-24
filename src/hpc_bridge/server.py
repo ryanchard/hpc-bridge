@@ -99,6 +99,51 @@ def make_facility() -> Facility:
     return LocalFacility(EndpointCLI(user_dir=user_dir))
 
 
+def _make_search_client():
+    """Build a Globus SearchClient reusing the Compute SDK's identity.
+
+    Spec §8 open item: confirm `search.api.globus.org` composes with the Compute SDK token
+    cache and triggers NO second login. Isolated here so make_catalog() can fall back if it
+    fails, and so tests can substitute it.
+    """
+    from globus_compute_sdk import Client
+    from globus_sdk import SearchClient
+
+    authorizer = Client().login_manager.get_authorizer("search.api.globus.org")
+    return SearchClient(authorizer=authorizer)
+
+
+def make_catalog():
+    """Select the catalog provider from env, mirroring make_facility().
+
+    HPC_BRIDGE_SEARCH_INDEX set -> SearchCatalog (Globus Search) with bundled+cache fallback.
+    Otherwise, or if the Search client can't be built -> BundledCatalog (the packaged seed YAML).
+    """
+    from .catalog.bundled import BundledCatalog
+
+    index = os.environ.get("HPC_BRIDGE_SEARCH_INDEX", "").strip()
+    if not index:
+        return BundledCatalog()
+
+    from .catalog.search import SearchCatalog
+
+    try:
+        client = _make_search_client()
+    except Exception as exc:  # noqa: BLE001 - never crash startup on a Search/auth problem
+        print(
+            f"hpc-bridge: Globus Search unavailable ({type(exc).__name__}: {exc}); "
+            "using bundled catalog",
+            file=sys.stderr,
+        )
+        return BundledCatalog()
+
+    cache_dir = (
+        Path(os.environ.get("CLAUDE_PLUGIN_DATA", str(Path.home() / ".hpc-bridge")))
+        / "catalog-cache"
+    )
+    return SearchCatalog(index_id=index, client=client, fallback=BundledCatalog(), cache_dir=cache_dir)
+
+
 def _env_float(name: str, default: float) -> float:
     raw = os.environ.get(name)
     if raw is None or raw.strip() == "":
