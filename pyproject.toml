@@ -26,9 +26,6 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/hpc_bridge"]
 
-[tool.hatch.build.targets.wheel.force-include]
-"src/hpc_bridge/catalog/seed" = "hpc_bridge/catalog/seed"
-
 # This plugin launches via `uvx --from <repo> hpc-bridge`. uv's default cache heuristic
 # rebuilds a local dir dependency only when pyproject.toml/setup.py/setup.cfg or the
 # top-level `src/` dir changes — NOT when files *inside* src/ change. That let a stale
