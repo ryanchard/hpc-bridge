@@ -1,6 +1,11 @@
 # tests/test_catalog_bundled.py
+from pathlib import Path
+
 from hpc_bridge.catalog.base import CatalogProvider
+from hpc_bridge.catalog.bundled import BundledCatalog
 from tests.fakes import FakeCatalog, fake_entry
+
+FIX = Path(__file__).parent / "catalog_fixtures"
 
 
 async def test_fake_catalog_satisfies_protocol():
@@ -27,3 +32,33 @@ async def test_fake_catalog_discover_filters_by_query():
     got = {s.id for s in await c.discover("gpu")}
     assert got == {"polaris"}
     assert {s.id for s in await c.discover("")} == {"anvil", "polaris"}
+
+
+async def test_bundled_loads_dir_and_gets_by_subject_id_alias():
+    c = BundledCatalog(FIX / "two_machines.yaml")
+    assert (await c.get("anvil")).compute.interface == "ib0"
+    assert (await c.get("purdue:anvil")).id == "anvil"
+    assert (await c.get("anvil.rcac.purdue.edu")).id == "anvil"   # alias
+    assert await c.get("absent") is None
+
+
+async def test_bundled_discover_filters():
+    c = BundledCatalog(FIX / "two_machines.yaml")
+    assert {s.id for s in await c.discover("gpu")} == {"polaris"}
+    assert {s.id for s in await c.discover("")} == {"anvil", "polaris"}
+
+
+async def test_bundled_discover_by_facility_key():
+    c = BundledCatalog(FIX / "two_machines.yaml")
+    assert {s.id for s in await c.discover("alcf")} == {"polaris"}
+
+
+async def test_bundled_rejects_a_malformed_entry():
+    import pytest
+    bad = FIX / "bad.yaml"
+    bad.write_text("- id: x\n")  # missing required fields
+    try:
+        with pytest.raises(Exception):
+            BundledCatalog(bad)
+    finally:
+        bad.unlink()
