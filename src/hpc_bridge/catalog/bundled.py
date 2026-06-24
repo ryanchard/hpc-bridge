@@ -48,6 +48,10 @@ class BundledCatalog:
             out.extend(loaded if isinstance(loaded, list) else [loaded])
         return out
 
+    def entries(self) -> list[CatalogEntry]:
+        """All loaded, validated entries (ingest source / introspection)."""
+        return list(self._by_subject.values())
+
     async def get(self, machine_id: str) -> CatalogEntry | None:
         if machine_id in self._by_subject:
             return self._by_subject[machine_id]

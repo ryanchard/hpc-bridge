@@ -18,6 +18,7 @@ integration = [
 
 [project.scripts]
 hpc-bridge = "hpc_bridge.server:main"
+hpc-bridge-catalog = "hpc_bridge.catalog.ingest:main"
 
 [build-system]
 requires = ["hatchling"]
