@@ -100,18 +100,26 @@ def make_facility() -> Facility:
 
 
 def _make_search_client():
-    """Build a Globus SearchClient reusing the Compute SDK's identity.
+    """Build a Globus SearchClient that reuses the Compute SDK's GlobusApp identity.
 
-    Spec §8 open item — VERIFY LIVE: confirm the GlobusApp already holds the
-    `search.api.globus.org` scope so get_authorizer() does NOT trigger a second login.
-    Isolated here so make_catalog() falls back to bundled if it doesn't, and so tests can
-    substitute it.
+    Constructing ``SearchClient(app=...)`` registers the ``search.api.globus.org`` scope on the
+    app. Spec §8 — confirmed live (2026-06-25): the Compute app does NOT already hold the search
+    scope, so it must be granted once by an interactive login (run ``hpc-bridge-catalog``). We
+    never trigger that login from here — a server runs non-interactively, and a blocking prompt
+    on the MCP stdio channel would hang it — so if the scope isn't granted yet we raise and
+    make_catalog() falls back to the bundled catalog. Once granted, the token is cached and this
+    returns a ready client with no further prompts. Isolated so tests can substitute it.
     """
     from globus_compute_sdk import Client
     from globus_sdk import SearchClient
 
-    authorizer = Client().app.get_authorizer("search.api.globus.org")
-    return SearchClient(authorizer=authorizer)
+    app = Client().app
+    client = SearchClient(app=app)  # registers the search scope requirement on the app
+    if app.login_required():  # non-prompting check; the scope hasn't been granted yet
+        raise RuntimeError(
+            "Globus Search scope not granted; run `hpc-bridge-catalog <index> <seed>` once to log in"
+        )
+    return client
 
 
 def make_catalog():
