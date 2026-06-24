@@ -3,7 +3,7 @@ name = "hpc-bridge"
 version = "0.1.0"
 description = "Extend AI coding agents into HPC via Globus Compute"
 requires-python = ">=3.11"
-dependencies = ["mcp>=1.23,<2", "pydantic>=2", "pyyaml>=6", "globus-sdk>=3,<4"]
+dependencies = ["mcp>=1.23,<2", "pydantic>=2", "pyyaml>=6", "globus-sdk>=4.4,<5"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "jinja2>=3"]

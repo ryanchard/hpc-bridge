@@ -355,7 +355,7 @@ wheels = [
 
 [[package]]
 name = "globus-compute-endpoint"
-version = "4.6.0"
+version = "4.13.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cachetools" },
@@ -378,14 +378,14 @@ dependencies = [
     { name = "texttable" },
     { name = "types-cachetools" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f2/dd/8acf9c7cb1f67d9cb5d807974a6bf8073c1749dccf892b08f986bf0554a7/globus_compute_endpoint-4.6.0.tar.gz", hash = "sha256:e890a56432bb747ee68a70c87fe7510eae3ef4dafbb7a9df985f7a3087ac9c91", size = 119318, upload-time = "2026-02-18T13:40:22.464Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/44/20/19426517848f1c203994fd1c900bb9610e2ed5e312e53f2e5a81d9e9c079/globus_compute_endpoint-4.13.0.tar.gz", hash = "sha256:cc726f5670130e3020b34ed2961f8cfa206535e220f9a64f431115670f0451b2", size = 116521, upload-time = "2026-06-17T21:10:45.055Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b8/86/01864d5bb5ed6fbe82a6521403b0a3e050336151e4a84a0b83c06f829203/globus_compute_endpoint-4.6.0-py3-none-any.whl", hash = "sha256:dc0827a5d8c921a559d90c54e67fb31d14ec7639fd2a87e25ae8ce233f5391e6", size = 145423, upload-time = "2026-02-18T13:40:20.456Z" },
+    { url = "https://files.pythonhosted.org/packages/ca/dd/6f69a10238098678c5135b9334dc914c005b404e75e8db12c894dfc1136b/globus_compute_endpoint-4.13.0-py3-none-any.whl", hash = "sha256:2654fdd282cb2bf9eccbb3c49436910738ccd14e7f0fa420ae6a819c7da86c2e", size = 141763, upload-time = "2026-06-17T21:10:43.731Z" },
 ]
 
 [[package]]
 name = "globus-compute-sdk"
-version = "4.6.0"
+version = "4.13.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "colorama" },
@@ -395,15 +395,14 @@ dependencies = [
     { name = "globus-sdk" },
     { name = "packaging" },
     { name = "pika" },
-    { name = "psutil" },
     { name = "requests" },
     { name = "rich" },
     { name = "tblib" },
     { name = "texttable" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/92/a2/a8ceb01400122d41ffb286b841dd92f5abab16ac3799ea9367562bcd6579/globus_compute_sdk-4.6.0.tar.gz", hash = "sha256:e6354eeae6d156dae509d20b3e5d6cbe7de7764e01b686f0a32f518f29177521", size = 71949, upload-time = "2026-02-18T13:40:14.394Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8b/f8/0fa235455c154e01b452d3c6b6e278602d24fb430d3ead88beba4473831b/globus_compute_sdk-4.13.0.tar.gz", hash = "sha256:a46e4a885de39617f042cbf0a250b4a15795b5c5a63c7dbbc0048acae8a02ea3", size = 65652, upload-time = "2026-06-17T21:10:40.345Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/49/60/ccfc5c9c8c1966a11aed2a4e017848c07962ef6a496ae7e3ae14e8eb82ff/globus_compute_sdk-4.6.0-py3-none-any.whl", hash = "sha256:19dc7a01f66061d6f74823c50c102f5fec28addbe6568705917c30661f5405cd", size = 84718, upload-time = "2026-02-18T13:40:12.614Z" },
+    { url = "https://files.pythonhosted.org/packages/df/b9/5c726b501dcefb0c636a29e8b5906bf72465ce8dbbc9992d77b850749241/globus_compute_sdk-4.13.0-py3-none-any.whl", hash = "sha256:6f843f9f720f7513415288cd873c48212a6df65289db8db43970b74bb9cbc656", size = 74849, upload-time = "2026-06-17T21:10:38.883Z" },
 ]
 
 [[package]]
@@ -423,16 +422,16 @@ wheels = [
 
 [[package]]
 name = "globus-sdk"
-version = "3.65.0"
+version = "4.8.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
     { name = "pyjwt", extra = ["crypto"] },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/49/93/a6f6686bb2beb038047abe203b48c7f995f6a96884679eedf7e9aa34300b/globus_sdk-3.65.0.tar.gz", hash = "sha256:a4b350b980809e86d768c8e327de9ddee4405b60cfb83429cdf831ac0c63d763", size = 275365, upload-time = "2025-10-03T01:56:45.402Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4d/5e/0624d1361b3f9685a97c0123d8bb94f2038441f09fa40c87719789947728/globus_sdk-4.8.1.tar.gz", hash = "sha256:564b168e6fdcac2fe96b1e9a76ebd05666be84d34748315b579b0ecf9956e21a", size = 284145, upload-time = "2026-06-16T16:42:17.836Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e0/cd/f89c1d66a678d456887d305669ad929cb3ea742be1f563899a9949bcb41f/globus_sdk-3.65.0-py3-none-any.whl", hash = "sha256:d14154c3a40bb6c4d6a77e7200234d43358bd1daca9224841d4297f0edea80e6", size = 418025, upload-time = "2025-10-03T01:56:43.495Z" },
+    { url = "https://files.pythonhosted.org/packages/30/bb/2b865d79c5bdc574b428e5502a24e7517cdaeca2569f6baa051106f9fa7e/globus_sdk-4.8.1-py3-none-any.whl", hash = "sha256:48b57862902a26d8606e73374c354415724cfa9d99301af7e9e406659dafe78d", size = 442599, upload-time = "2026-06-16T16:42:16.226Z" },
 ]
 
 [[package]]
@@ -470,7 +469,7 @@ integration = [
 requires-dist = [
     { name = "globus-compute-endpoint", marker = "sys_platform == 'linux' and extra == 'integration'", specifier = ">=4" },
     { name = "globus-compute-sdk", marker = "extra == 'integration'", specifier = ">=4" },
-    { name = "globus-sdk", specifier = ">=3,<4" },
+    { name = "globus-sdk", specifier = ">=4.4,<5" },
     { name = "jinja2", marker = "extra == 'dev'", specifier = ">=3" },
     { name = "mcp", specifier = ">=1.23,<2" },
     { name = "pydantic", specifier = ">=2" },
@@ -738,7 +737,7 @@ wheels = [
 
 [[package]]
 name = "parsl"
-version = "2026.1.5"
+version = "2026.4.20"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "dill" },
@@ -752,9 +751,9 @@ dependencies = [
     { name = "typeguard" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/19/d7/7f8cc847bedde25f7f1e749d96c26e8808c3943a549f453591d5ae832c7e/parsl-2026.1.5.tar.gz", hash = "sha256:19ee5e0214a823c00e99e7499e48a38d88983782c8b92e0822657a8eda666eef", size = 374874, upload-time = "2026-01-05T22:46:12.447Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/98/af/7fa01798b133ed4fa56d68bfe42ab16782ee2af04b13f06c133c531ce37e/parsl-2026.4.20.tar.gz", hash = "sha256:ad118454b69d04ed3453d0553d6d4e02f7411d765843d5bc74c49cf857712bb5", size = 378356, upload-time = "2026-04-20T22:57:56.779Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a3/10/89cce0d37657347f509b7e2fbcce99561aa60f721504fe06d548dacbb9b6/parsl-2026.1.5-py3-none-any.whl", hash = "sha256:f4bc92206217e465ea5c17391ebb75e73598376ce283b56eaa62978c6c6d1aea", size = 557446, upload-time = "2026-01-05T22:46:10.334Z" },
+    { url = "https://files.pythonhosted.org/packages/d1/e6/cda789b1039443ed07dbb25af72caacbf9c0f5aed5d8e0cdb205e8723bc9/parsl-2026.4.20-py3-none-any.whl", hash = "sha256:e6de61f96ab5fc1e8acb391f992d64d6ebc57486defe178261a6fa22ded52066", size = 561137, upload-time = "2026-04-20T22:57:55.058Z" },
 ]
 
 [[package]]
@@ -781,12 +780,8 @@ version = "5.9.8"
 source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/90/c7/6dc0a455d111f68ee43f27793971cf03fe29b6ef972042549db29eec39a2/psutil-5.9.8.tar.gz", hash = "sha256:6be126e3225486dff286a8fb9a06246a5253f4c7c53b475ea5f5ac934e64194c", size = 503247, upload-time = "2024-01-19T20:47:09.517Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e7/e3/07ae864a636d70a8a6f58da27cb1179192f1140d5d1da10886ade9405797/psutil-5.9.8-cp36-abi3-macosx_10_9_x86_64.whl", hash = "sha256:aee678c8720623dc456fa20659af736241f575d79429a0e5e9cf88ae0605cc81", size = 248702, upload-time = "2024-01-19T20:47:36.303Z" },
     { url = "https://files.pythonhosted.org/packages/b3/bd/28c5f553667116b2598b9cc55908ec435cb7f77a34f2bff3e3ca765b0f78/psutil-5.9.8-cp36-abi3-manylinux_2_12_i686.manylinux2010_i686.manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:8cb6403ce6d8e047495a701dc7c5bd788add903f8986d523e3e20b98b733e421", size = 285242, upload-time = "2024-01-19T20:47:39.65Z" },
     { url = "https://files.pythonhosted.org/packages/c5/4f/0e22aaa246f96d6ac87fe5ebb9c5a693fbe8877f537a1022527c47ca43c5/psutil-5.9.8-cp36-abi3-manylinux_2_12_x86_64.manylinux2010_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:d06016f7f8625a1825ba3732081d77c94589dca78b7a3fc072194851e88461a4", size = 288191, upload-time = "2024-01-19T20:47:43.078Z" },
-    { url = "https://files.pythonhosted.org/packages/6e/f5/2aa3a4acdc1e5940b59d421742356f133185667dd190b166dbcfcf5d7b43/psutil-5.9.8-cp37-abi3-win32.whl", hash = "sha256:bc56c2a1b0d15aa3eaa5a60c9f3f8e3e565303b465dbf57a1b730e7a2b9844e0", size = 251252, upload-time = "2024-01-19T20:47:52.88Z" },
-    { url = "https://files.pythonhosted.org/packages/93/52/3e39d26feae7df0aa0fd510b14012c3678b36ed068f7d78b8d8784d61f0e/psutil-5.9.8-cp37-abi3-win_amd64.whl", hash = "sha256:8db4c1b57507eef143a15a6884ca10f7c73876cdf5d51e713151c1236a0e68cf", size = 255090, upload-time = "2024-01-19T20:47:56.019Z" },
-    { url = "https://files.pythonhosted.org/packages/05/33/2d74d588408caedd065c2497bdb5ef83ce6082db01289a1e1147f6639802/psutil-5.9.8-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:d16bbddf0693323b8c6123dd804100241da461e41d6e332fb0ba6058f630f8c8", size = 249898, upload-time = "2024-01-19T20:47:59.238Z" },
 ]
 
 [[package]]
