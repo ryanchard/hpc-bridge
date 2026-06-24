@@ -361,36 +361,39 @@ async def test_server_registers_stop_endpoint_tool():
     assert any(t.name == "stop_endpoint" for t in tools)
 
 
-def test_make_facility_selects_slurm_for_anvil(monkeypatch):
+async def test_make_facility_selects_slurm_for_anvil(monkeypatch):
     from hpc_bridge.server import make_facility
 
+    monkeypatch.delenv("HPC_BRIDGE_MACHINE", raising=False)
     monkeypatch.setenv("HPC_BRIDGE_FACILITY", "anvil")
     monkeypatch.setenv("HPC_BRIDGE_SSH_USER", "x-u")
     monkeypatch.setenv("HPC_BRIDGE_SSH_KEY", "/tmp/anvil-key")
     monkeypatch.setenv("HPC_BRIDGE_ACCOUNT", "ACC")
-    assert make_facility().name == "anvil"
+    assert (await make_facility()).name == "anvil"
 
 
-def test_make_facility_requires_env_for_anvil(monkeypatch):
+async def test_make_facility_requires_env_for_anvil(monkeypatch):
     import pytest
 
     from hpc_bridge.server import make_facility
 
+    monkeypatch.delenv("HPC_BRIDGE_MACHINE", raising=False)
     monkeypatch.setenv("HPC_BRIDGE_FACILITY", "anvil")
     for v in ("HPC_BRIDGE_SSH_USER", "HPC_BRIDGE_SSH_KEY", "HPC_BRIDGE_ACCOUNT"):
         monkeypatch.delenv(v, raising=False)
     with pytest.raises(RuntimeError, match="required"):
-        make_facility()
+        await make_facility()
 
 
-def test_make_facility_defaults_local(monkeypatch):
+async def test_make_facility_defaults_local(monkeypatch):
     from hpc_bridge.server import make_facility
 
+    monkeypatch.delenv("HPC_BRIDGE_MACHINE", raising=False)
     monkeypatch.delenv("HPC_BRIDGE_FACILITY", raising=False)
-    assert make_facility().name == "local"
+    assert (await make_facility()).name == "local"
 
 
-def test_make_facility_reconnects_to_pinned_login_node(monkeypatch):
+async def test_make_facility_reconnects_to_pinned_login_node(monkeypatch):
     import hpc_bridge.state as state_mod
     from hpc_bridge.state import EndpointRecord
     from hpc_bridge.server import make_facility
@@ -409,12 +412,54 @@ def test_make_facility_reconnects_to_pinned_login_node(monkeypatch):
             return rec
 
     monkeypatch.setattr(state_mod, "LoginNodeStore", _FakeStore)
+    monkeypatch.delenv("HPC_BRIDGE_MACHINE", raising=False)
     monkeypatch.setenv("HPC_BRIDGE_FACILITY", "anvil")
     monkeypatch.setenv("HPC_BRIDGE_SSH_USER", "x-u")
     monkeypatch.setenv("HPC_BRIDGE_SSH_KEY", "/tmp/k")
     monkeypatch.setenv("HPC_BRIDGE_ACCOUNT", "ACC")
-    fac = make_facility()
+    fac = await make_facility()
     assert fac.cli.target.host == "login05.anvil.rcac.purdue.edu"  # rebound to pinned node
+
+
+async def test_make_facility_builds_from_catalog_when_machine_set(monkeypatch):
+    # HPC_BRIDGE_MACHINE sources the profile from the catalog (bundled seed here; the live
+    # Globus Search index when HPC_BRIDGE_SEARCH_INDEX is set). FACILITY is unset, so a slurm
+    # "anvil" facility can ONLY come from the catalog branch.
+    import hpc_bridge.state as state_mod
+    from hpc_bridge.server import make_facility
+
+    class _NoPinStore:  # isolate from any real ~/.hpc-bridge/endpoints.json on this machine
+        def __init__(self, *a, **k):
+            pass
+
+        def get(self, *, alias, name):
+            return None
+
+    monkeypatch.setattr(state_mod, "LoginNodeStore", _NoPinStore)
+    monkeypatch.delenv("HPC_BRIDGE_FACILITY", raising=False)
+    monkeypatch.delenv("HPC_BRIDGE_SEARCH_INDEX", raising=False)  # -> bundled seed
+    monkeypatch.setenv("HPC_BRIDGE_MACHINE", "purdue:anvil")
+    monkeypatch.setenv("HPC_BRIDGE_SSH_USER", "x-u")
+    monkeypatch.setenv("HPC_BRIDGE_SSH_KEY", "/tmp/k")
+    monkeypatch.setenv("HPC_BRIDGE_ACCOUNT", "ACC")
+    fac = await make_facility()
+    assert fac.name == "anvil"  # profile.name == entry.id
+    assert fac.cli.target.host == "anvil.rcac.purdue.edu"  # from entry.ssh_host
+    assert fac.cli.target.user == "x-u"
+    assert "{venv}" not in fac.profile.env_setup  # template resolved
+    assert "/home/x-u/hpc-bridge/gce-venv/bin/activate" in fac.profile.env_setup
+    assert "/anvil/scratch/x-u/.hpc-bridge" == fac.profile.scratch_root
+
+
+async def test_make_facility_catalog_unknown_machine_errors(monkeypatch):
+    import pytest
+
+    from hpc_bridge.server import make_facility
+
+    monkeypatch.delenv("HPC_BRIDGE_SEARCH_INDEX", raising=False)
+    monkeypatch.setenv("HPC_BRIDGE_MACHINE", "nope:nope")
+    with pytest.raises(RuntimeError, match="not found"):
+        await make_facility()
 
 
 def test_billing_banks_warm_interval_across_idle_release(monkeypatch):

@@ -67,34 +67,76 @@ def _require_env(name: str) -> str:
     return val
 
 
-def make_facility() -> Facility:
-    """Select the facility: a remote Slurm cluster (HPC_BRIDGE_FACILITY) or local dev."""
+def _slurm_facility(profile, *, alias: str, user: str) -> Facility:
+    """Wire a Slurm `MachineProfile` into a `SlurmFacility` over SSH — shared by the catalog
+    and the hardcoded-Anvil paths."""
+    from .facility.remote import RemoteEndpointCLI, SlurmFacility, SshTarget
+    from .state import LoginNodeStore
+
+    target = SshTarget(
+        host=alias, user=user, key_path=os.path.expanduser(_require_env("HPC_BRIDGE_SSH_KEY"))
+    )
+    cli = RemoteEndpointCLI(target, profile.env_setup)
+    store = LoginNodeStore()
+    rec = store.get(alias=alias, name=profile.endpoint_name)
+    if rec is not None:  # reconnect direct-to-node instead of the round-robin alias
+        # Dead-pin limitation: if the pinned node is down or the endpoint is gone, the next SSH
+        # fails fast (BatchMode) and surfaces as a structured error; clearing or reconciling a
+        # stale pin is deferred (delete ~/.hpc-bridge/endpoints.json to reset).
+        cli.rebind(rec.login_host)
+    return SlurmFacility(profile, cli, store=store, alias=alias)
+
+
+async def _catalog_facility(machine: str) -> Facility:
+    """Build a facility from a catalog entry (HPC_BRIDGE_MACHINE), sourcing the machine config
+    from `make_catalog()` (the live Globus Search index when HPC_BRIDGE_SEARCH_INDEX is set, else
+    the bundled seed). v1 slice: SSH-bootstrap Slurm machines only."""
+    from .facility.remote import profile_from_catalog_entry
+
+    entry = await make_catalog().get(machine)
+    if entry is None:
+        raise RuntimeError(f"HPC_BRIDGE_MACHINE={machine!r} not found in the catalog")
+    if entry.compute_mep_uuid:
+        raise RuntimeError(
+            f"{machine}: entry has a compute_mep_uuid (BYO multi-user endpoint); catalog-driven "
+            "MEP dispatch is not wired yet — use HPC_BRIDGE_ENDPOINT_ID, or see Plan 2"
+        )
+    if entry.compute.scheduler != "slurm":
+        raise RuntimeError(
+            f"{machine}: scheduler {entry.compute.scheduler!r} not supported yet (slurm only)"
+        )
+    user = _require_env("HPC_BRIDGE_SSH_USER")
+    alias = os.environ.get("HPC_BRIDGE_SSH_HOST", "").strip() or entry.ssh_host
+    profile = profile_from_catalog_entry(
+        entry,
+        user=user,
+        account=_require_env("HPC_BRIDGE_ACCOUNT"),
+        partition=os.environ.get("HPC_BRIDGE_PARTITION", "").strip() or None,
+        venv=os.environ.get("HPC_BRIDGE_REMOTE_VENV", "").strip() or None,
+    )
+    return _slurm_facility(profile, alias=alias, user=user)
+
+
+async def make_facility() -> Facility:
+    """Select the facility: a catalog-described machine (HPC_BRIDGE_MACHINE — sourced from the
+    Globus Search index / bundled seed), the hardcoded remote Slurm cluster (HPC_BRIDGE_FACILITY),
+    or local dev."""
+    machine = os.environ.get("HPC_BRIDGE_MACHINE", "").strip()
+    if machine:
+        return await _catalog_facility(machine)
+
     fac = os.environ.get("HPC_BRIDGE_FACILITY", "").strip().lower()
     if fac == "anvil":
-        from .facility.remote import RemoteEndpointCLI, SlurmFacility, SshTarget, anvil_profile
-        from .state import LoginNodeStore
+        from .facility.remote import anvil_profile
 
+        user = _require_env("HPC_BRIDGE_SSH_USER")
         alias = os.environ.get("HPC_BRIDGE_SSH_HOST", "anvil.rcac.purdue.edu")
-        target = SshTarget(
-            host=alias,
-            user=_require_env("HPC_BRIDGE_SSH_USER"),
-            key_path=os.path.expanduser(_require_env("HPC_BRIDGE_SSH_KEY")),
-        )
         profile = anvil_profile(
             account=_require_env("HPC_BRIDGE_ACCOUNT"),
-            user=target.user,
+            user=user,
             partition=os.environ.get("HPC_BRIDGE_PARTITION", "debug"),
         )
-        cli = RemoteEndpointCLI(target, profile.env_setup)
-        store = LoginNodeStore()
-        rec = store.get(alias=alias, name=profile.endpoint_name)
-        if rec is not None:  # reconnect direct-to-node instead of the round-robin alias
-            # Dead-pin limitation: if the pinned node is down or the endpoint is gone, the
-            # next SSH fails fast (BatchMode) and surfaces as a structured error; clearing
-            # or reconciling a stale pin is deferred (delete ~/.hpc-bridge/endpoints.json
-            # to reset).
-            cli.rebind(rec.login_host)
-        return SlurmFacility(profile, cli, store=store, alias=alias)
+        return _slurm_facility(profile, alias=alias, user=user)
     user_dir = Path(os.environ.get("HPC_BRIDGE_USER_DIR", str(Path.home() / ".globus_compute")))
     return LocalFacility(EndpointCLI(user_dir=user_dir))
 
@@ -186,7 +228,7 @@ def _env_endpoint_id() -> str | None:
 
 @asynccontextmanager
 async def lifespan(server: FastMCP) -> AsyncIterator[AppCtx]:
-    facility = make_facility()
+    facility = await make_facility()
     # Session-shell root: explicit env wins, else the facility's shared-FS scratch
     # (e.g. Anvil $SCRATCH), else a local default.
     scratch = os.path.expanduser(

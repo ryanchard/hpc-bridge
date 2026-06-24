@@ -1,6 +1,5 @@
 # tests/test_catalog_search.py
 import json
-from pathlib import Path
 
 from hpc_bridge.catalog.search import SearchCatalog
 from tests.fakes import FakeCatalog, fake_entry
