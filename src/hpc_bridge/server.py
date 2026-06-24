@@ -102,14 +102,15 @@ def make_facility() -> Facility:
 def _make_search_client():
     """Build a Globus SearchClient reusing the Compute SDK's identity.
 
-    Spec §8 open item: confirm `search.api.globus.org` composes with the Compute SDK token
-    cache and triggers NO second login. Isolated here so make_catalog() can fall back if it
-    fails, and so tests can substitute it.
+    Spec §8 open item — VERIFY LIVE: confirm the GlobusApp already holds the
+    `search.api.globus.org` scope so get_authorizer() does NOT trigger a second login.
+    Isolated here so make_catalog() falls back to bundled if it doesn't, and so tests can
+    substitute it.
     """
     from globus_compute_sdk import Client
     from globus_sdk import SearchClient
 
-    authorizer = Client().login_manager.get_authorizer("search.api.globus.org")
+    authorizer = Client().app.get_authorizer("search.api.globus.org")
     return SearchClient(authorizer=authorizer)
 
 

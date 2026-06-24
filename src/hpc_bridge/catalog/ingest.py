@@ -19,7 +19,7 @@ def ingest(index_id: str, seed_path: str | Path, client) -> int:
     gmeta = [
         {
             "subject": entry.subject,
-            "visible_to": ["public"],
+            "visible_to": ["public"],  # TODO(curator): per-entry/--visible-to for group-restricted machines (spec §6)
             "content": json.loads(entry.model_dump_json()),
         }
         for entry in catalog.entries()
@@ -41,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
     from globus_compute_sdk import Client
     from globus_sdk import SearchClient
 
-    authorizer = Client().login_manager.get_authorizer("search.api.globus.org")
+    authorizer = Client().app.get_authorizer("search.api.globus.org")
     client = SearchClient(authorizer=authorizer)
     n = ingest(index_id=args.index_id, seed_path=args.seed_path, client=client)
     print(f"ingested {n} entr{'y' if n == 1 else 'ies'} to {args.index_id}", file=sys.stderr)
