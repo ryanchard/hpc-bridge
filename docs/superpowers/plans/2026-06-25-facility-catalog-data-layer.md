@@ -673,19 +673,19 @@ Expected: FAIL — `get("purdue:anvil")` returns `None` (no seed dir yet)
 
 > The `transfer_endpoint_uuid` placeholder is a real-format zero-UUID so the schema validates; it MUST be replaced with Anvil's actual collection UUID before the entry is ingested to a live index (the ingest script, Task 7, does not invent UUIDs).
 
-- [ ] **Step 4: Ensure the seed ships in the wheel**
+- [ ] **Step 4: Verify the seed ships in the wheel (no pyproject change needed)**
 
-Add to `pyproject.toml` under the existing `[tool.hatch.build.targets.wheel]` section:
+Hatchling's existing `packages = ["src/hpc_bridge"]` already includes **all** files under
+`src/hpc_bridge/` — including non-`.py` data like the seed YAML. Do NOT add a
+`force-include` stanza: it duplicates the same path and makes the wheel build fail with
+"A second file is being added to the wheel archive at the same path". Instead, verify:
 
-```toml
-[tool.hatch.build.targets.wheel]
-packages = ["src/hpc_bridge"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"src/hpc_bridge/catalog/seed" = "hpc_bridge/catalog/seed"
+```bash
+uv build --wheel
+python -c "import zipfile,glob; z=zipfile.ZipFile(sorted(glob.glob('dist/*.whl'))[-1]); print([n for n in z.namelist() if 'seed' in n])"
+rm -rf dist build   # don't commit build artifacts
 ```
-
-> Hatchling includes `.py` files under `packages` automatically; `force-include` guarantees the non-`.py` YAML data is in the wheel so `importlib.resources` finds it at runtime.
+Expected: the build succeeds and the printed list contains `hpc_bridge/catalog/seed/anvil.yaml`.
 
 - [ ] **Step 5: Run to verify pass**
 
