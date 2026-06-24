@@ -26,3 +26,16 @@ def test_make_catalog_falls_back_to_bundled_if_search_client_fails(monkeypatch, 
 
     monkeypatch.setattr(server, "_make_search_client", boom)
     assert isinstance(server.make_catalog(), BundledCatalog)
+
+
+def test_make_catalog_falls_back_if_searchcatalog_construction_fails(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path))
+    monkeypatch.setenv("HPC_BRIDGE_SEARCH_INDEX", "idx-uuid")
+    monkeypatch.setattr(server, "_make_search_client", lambda: object())
+    import hpc_bridge.catalog.search as search_mod
+
+    def boom(*a, **k):
+        raise OSError("cache dir unwritable")
+
+    monkeypatch.setattr(search_mod, "SearchCatalog", boom)
+    assert isinstance(server.make_catalog(), BundledCatalog)

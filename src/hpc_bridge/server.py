@@ -129,19 +129,20 @@ def make_catalog():
 
     try:
         client = _make_search_client()
-    except Exception as exc:  # noqa: BLE001 - never crash startup on a Search/auth problem
+        cache_dir = (
+            Path(os.environ.get("CLAUDE_PLUGIN_DATA", str(Path.home() / ".hpc-bridge")))
+            / "catalog-cache"
+        )
+        return SearchCatalog(
+            index_id=index, client=client, fallback=BundledCatalog(), cache_dir=cache_dir
+        )
+    except Exception as exc:  # noqa: BLE001 - never crash startup on a Search/auth/cache problem
         print(
             f"hpc-bridge: Globus Search unavailable ({type(exc).__name__}: {exc}); "
             "using bundled catalog",
             file=sys.stderr,
         )
         return BundledCatalog()
-
-    cache_dir = (
-        Path(os.environ.get("CLAUDE_PLUGIN_DATA", str(Path.home() / ".hpc-bridge")))
-        / "catalog-cache"
-    )
-    return SearchCatalog(index_id=index, client=client, fallback=BundledCatalog(), cache_dir=cache_dir)
 
 
 def _env_float(name: str, default: float) -> float:
