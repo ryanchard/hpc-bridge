@@ -1,0 +1,29 @@
+# src/hpc_bridge/catalog/seed/anvil.yaml
+# Curated. Mirrors anvil_profile() in facility/remote.py (validated 2026-06-03, worker on a006).
+- id: anvil
+  facility_key: purdue
+  facility: "Purdue / ACCESS"
+  description: "Anvil CPU cluster"
+  display_name: "HPC-Bridge Anvil"
+  aliases: [anvil.rcac.purdue.edu]
+  compute_mep_uuid: null            # no facility MEP wired; personal-endpoint bootstrap path
+  # TODO(curator): replace with Anvil's real Globus Transfer collection UUID before ingest.
+  transfer_endpoint_uuid: "00000000-0000-0000-0000-000000000000"
+  ssh_host: anvil.rcac.purdue.edu
+  auth_method: ssh-key
+  allocation: {command: mybalance, parser: mybalance}
+  compute:
+    scheduler: slurm
+    interface: ib0
+    env_setup: "module load anaconda/2024.02-py311 && source {venv}/bin/activate"
+    scratch_root: "/anvil/scratch/{user}/.hpc-bridge"
+    # amqp_port: 443 -> default
+    # endpoint_name: hpc-bridge -> default
+  defaults:
+    partition: debug
+    walltime: "00:30:00"
+    max_workers_per_node: 2
+    nodes_per_block: 1
+    max_blocks: 1
+  provenance: curated
+  last_validated: 2026-06-03

@@ -88,3 +88,12 @@ async def test_bundled_missing_path_is_empty_not_crash(tmp_path):
     c = BundledCatalog(tmp_path / "does_not_exist")
     assert await c.get("anything") is None
     assert await c.discover("") == []
+
+
+async def test_default_bundled_catalog_has_anvil():
+    c = BundledCatalog()  # default packaged seed dir
+    anvil = await c.get("purdue:anvil")
+    assert anvil is not None
+    assert anvil.compute.interface == "ib0"
+    assert anvil.compute.amqp_port == 443
+    assert anvil.allocation.parser == "mybalance"
