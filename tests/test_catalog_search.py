@@ -43,13 +43,13 @@ async def test_search_get_hits_live_and_writes_through_cache(tmp_path):
     got = await c.get("purdue:anvil")
     assert got.id == "anvil"
     assert client.calls == [("idx", "purdue:anvil")]
-    assert (tmp_path / "purdue:anvil.json").exists()  # write-through
+    assert (tmp_path / "purdue%3Aanvil.json").exists()  # write-through
 
 
 async def test_search_falls_back_to_cache_then_bundled_on_error(tmp_path):
     e = fake_entry(id="anvil", facility_key="purdue")
     # prime the cache
-    (tmp_path / "purdue:anvil.json").write_text(e.model_dump_json())
+    (tmp_path / "purdue%3Aanvil.json").write_text(e.model_dump_json())
     client = _FakeSearchClient(fail=True)
     c = SearchCatalog(index_id="idx", client=client,
                       fallback=FakeCatalog([]), cache_dir=tmp_path)

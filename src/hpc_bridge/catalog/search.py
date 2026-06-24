@@ -25,7 +25,8 @@ class SearchCatalog:
         self._cache_dir.mkdir(parents=True, exist_ok=True)
 
     def _cache_file(self, subject: str) -> Path:
-        safe = subject.replace("/", "%2F")  # flatten any slash so the cache stays one file per subject
+        # percent-escape chars that are illegal in filenames on some OSes (':' on Windows, '/' everywhere)
+        safe = subject.replace("%", "%25").replace("/", "%2F").replace(":", "%3A")
         return self._cache_dir / f"{safe}.json"
 
     async def get(self, machine_id: str) -> CatalogEntry | None:

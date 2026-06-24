@@ -34,7 +34,7 @@ packages = ["src/hpc_bridge"]
 # every source file so a fresh `uvx` (new session) always rebuilds. Custom cache-keys
 # replace the defaults, so pyproject.toml must be listed explicitly.
 [tool.uv]
-cache-keys = [{ file = "pyproject.toml" }, { file = "src/**/*.py" }]
+cache-keys = [{ file = "pyproject.toml" }, { file = "src/**/*.py" }, { file = "src/**/*.yaml" }]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
