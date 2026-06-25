@@ -1,0 +1,32 @@
+# tests/catalog_fixtures/two_machines.yaml
+- id: anvil
+  facility_key: purdue
+  facility: "Purdue / ACCESS"
+  description: "Anvil CPU cluster"
+  display_name: "HPC-Bridge Anvil"
+  aliases: [anvil.rcac.purdue.edu]
+  transfer_endpoint_uuid: "11111111-2222-3333-4444-555555555555"
+  ssh_host: anvil.rcac.purdue.edu
+  allocation: {command: mybalance, parser: mybalance}
+  compute:
+    scheduler: slurm
+    interface: ib0
+    env_setup: "module load anaconda && source {venv}/bin/activate"
+    scratch_root: "/anvil/scratch/{user}/.hpc-bridge"
+  defaults: {partition: debug}
+  last_validated: 2026-06-03
+- id: polaris
+  facility_key: alcf
+  facility: "ALCF"
+  description: "Polaris GPU machine"
+  display_name: "HPC-Bridge Polaris"
+  transfer_endpoint_uuid: "99999999-8888-7777-6666-555555555555"
+  ssh_host: polaris.alcf.anl.gov
+  allocation: {command: sbank, parser: sbank}
+  compute:
+    scheduler: pbs
+    interface: bond0
+    env_setup: "module use /soft/modulefiles && module load conda"
+    scratch_root: "/eagle/{user}/.hpc-bridge"
+  defaults: {partition: debug}
+  last_validated: 2026-06-03

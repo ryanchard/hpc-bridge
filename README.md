@@ -161,6 +161,12 @@ claude --plugin-dir .            # install into Claude Code for local testing
 **Config (env vars):**
 
 - `HPC_BRIDGE_FACILITY` — `anvil` for the remote Slurm facility; unset = local dev.
+- `HPC_BRIDGE_MACHINE=<facility:id>` — **catalog-driven** (e.g. `purdue:anvil`): build the
+  machine profile from the **facility catalog** instead of the hardcoded `anvil_profile()`. Set
+  `HPC_BRIDGE_SEARCH_INDEX=<uuid>` to source it from the live **Globus Search** index (else the
+  bundled seed). Still needs the SSH/account vars below; optional `HPC_BRIDGE_REMOTE_VENV`
+  overrides the remote globus-compute-endpoint venv (default `/home/<user>/hpc-bridge/gce-venv`).
+  v1 slice: SSH-bootstrap Slurm machines only. See `docs/design/facility-catalog.md`.
 - Anvil requires `HPC_BRIDGE_SSH_USER`, `HPC_BRIDGE_SSH_KEY`, `HPC_BRIDGE_ACCOUNT`
   (optional `HPC_BRIDGE_SSH_HOST`, `HPC_BRIDGE_PARTITION`).
 - `HPC_BRIDGE_PROFILE` (`interactive`|`batch`), `HPC_BRIDGE_SCRATCH`, `HPC_BRIDGE_USER_DIR`,

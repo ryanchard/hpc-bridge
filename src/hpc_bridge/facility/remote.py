@@ -25,9 +25,14 @@ from globus_compute_sdk.sdk.auth.token_storage import (
     _resolve_namespace,
 )
 
+from typing import TYPE_CHECKING
+
 from ..credentials import build_minimal_storage_db
 from ..profile import Profile
 from ..state import EndpointRecord, LoginNodeStore
+
+if TYPE_CHECKING:
+    from ..catalog.entry import CatalogEntry
 from .base import EndpointHandle
 
 # ---------------------------------------------------------------- SSH transport
@@ -139,6 +144,38 @@ def anvil_profile(
         available_accelerators=available_accelerators,
         scratch_root=f"/anvil/scratch/{user}/.hpc-bridge",
     )
+
+
+def profile_from_catalog_entry(
+    entry: CatalogEntry,
+    *,
+    user: str,
+    account: str,
+    partition: str | None = None,
+    venv: str | None = None,
+) -> MachineProfile:
+    """Build a `MachineProfile` from a catalog entry plus per-user runtime values.
+
+    The catalog stores user-agnostic templates; this resolves them at provision time:
+    ``{user}`` is the SSH login user and ``{venv}`` is the remote globus-compute-endpoint venv
+    (defaults to the ``anvil_profile()`` convention). ``account`` and the derived ``worker_init``
+    (= the resolved ``env_setup``, replayed on the compute worker) are supplied here, never stored
+    in the catalog. ``partition`` overrides the entry's default when given. For the Anvil entry
+    this reproduces ``anvil_profile()`` exactly (verified by test) — the bridge that lets the
+    catalog drive provisioning. Substitution uses ``str.replace`` (not ``str.format``) so literal
+    shell braces in ``env_setup`` are left untouched.
+    """
+    venv = venv or f"/home/{user}/hpc-bridge/gce-venv"
+
+    def _resolve(template: str) -> str:
+        return template.replace("{venv}", venv).replace("{user}", user)
+
+    kw = entry.profile_kwargs()
+    kw["env_setup"] = _resolve(kw["env_setup"])
+    kw["scratch_root"] = _resolve(kw["scratch_root"])
+    if partition:
+        kw["partition"] = partition
+    return MachineProfile(**kw, account=account, worker_init=kw["env_setup"])
 
 
 # ------------------------------------------------- globus-compute-endpoint / SSH

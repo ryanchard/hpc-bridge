@@ -67,36 +67,133 @@ def _require_env(name: str) -> str:
     return val
 
 
-def make_facility() -> Facility:
-    """Select the facility: a remote Slurm cluster (HPC_BRIDGE_FACILITY) or local dev."""
+def _slurm_facility(profile, *, alias: str, user: str) -> Facility:
+    """Wire a Slurm `MachineProfile` into a `SlurmFacility` over SSH — shared by the catalog
+    and the hardcoded-Anvil paths."""
+    from .facility.remote import RemoteEndpointCLI, SlurmFacility, SshTarget
+    from .state import LoginNodeStore
+
+    target = SshTarget(
+        host=alias, user=user, key_path=os.path.expanduser(_require_env("HPC_BRIDGE_SSH_KEY"))
+    )
+    cli = RemoteEndpointCLI(target, profile.env_setup)
+    store = LoginNodeStore()
+    rec = store.get(alias=alias, name=profile.endpoint_name)
+    if rec is not None:  # reconnect direct-to-node instead of the round-robin alias
+        # Dead-pin limitation: if the pinned node is down or the endpoint is gone, the next SSH
+        # fails fast (BatchMode) and surfaces as a structured error; clearing or reconciling a
+        # stale pin is deferred (delete ~/.hpc-bridge/endpoints.json to reset).
+        cli.rebind(rec.login_host)
+    return SlurmFacility(profile, cli, store=store, alias=alias)
+
+
+async def _catalog_facility(machine: str) -> Facility:
+    """Build a facility from a catalog entry (HPC_BRIDGE_MACHINE), sourcing the machine config
+    from `make_catalog()` (the live Globus Search index when HPC_BRIDGE_SEARCH_INDEX is set, else
+    the bundled seed). v1 slice: SSH-bootstrap Slurm machines only."""
+    from .facility.remote import profile_from_catalog_entry
+
+    entry = await make_catalog().get(machine)
+    if entry is None:
+        raise RuntimeError(f"HPC_BRIDGE_MACHINE={machine!r} not found in the catalog")
+    if entry.compute_mep_uuid:
+        raise RuntimeError(
+            f"{machine}: entry has a compute_mep_uuid (BYO multi-user endpoint); catalog-driven "
+            "MEP dispatch is not wired yet — use HPC_BRIDGE_ENDPOINT_ID, or see Plan 2"
+        )
+    if entry.compute.scheduler != "slurm":
+        raise RuntimeError(
+            f"{machine}: scheduler {entry.compute.scheduler!r} not supported yet (slurm only)"
+        )
+    user = _require_env("HPC_BRIDGE_SSH_USER")
+    alias = os.environ.get("HPC_BRIDGE_SSH_HOST", "").strip() or entry.ssh_host
+    profile = profile_from_catalog_entry(
+        entry,
+        user=user,
+        account=_require_env("HPC_BRIDGE_ACCOUNT"),
+        partition=os.environ.get("HPC_BRIDGE_PARTITION", "").strip() or None,
+        venv=os.environ.get("HPC_BRIDGE_REMOTE_VENV", "").strip() or None,
+    )
+    return _slurm_facility(profile, alias=alias, user=user)
+
+
+async def make_facility() -> Facility:
+    """Select the facility: a catalog-described machine (HPC_BRIDGE_MACHINE — sourced from the
+    Globus Search index / bundled seed), the hardcoded remote Slurm cluster (HPC_BRIDGE_FACILITY),
+    or local dev."""
+    machine = os.environ.get("HPC_BRIDGE_MACHINE", "").strip()
+    if machine:
+        return await _catalog_facility(machine)
+
     fac = os.environ.get("HPC_BRIDGE_FACILITY", "").strip().lower()
     if fac == "anvil":
-        from .facility.remote import RemoteEndpointCLI, SlurmFacility, SshTarget, anvil_profile
-        from .state import LoginNodeStore
+        from .facility.remote import anvil_profile
 
+        user = _require_env("HPC_BRIDGE_SSH_USER")
         alias = os.environ.get("HPC_BRIDGE_SSH_HOST", "anvil.rcac.purdue.edu")
-        target = SshTarget(
-            host=alias,
-            user=_require_env("HPC_BRIDGE_SSH_USER"),
-            key_path=os.path.expanduser(_require_env("HPC_BRIDGE_SSH_KEY")),
-        )
         profile = anvil_profile(
             account=_require_env("HPC_BRIDGE_ACCOUNT"),
-            user=target.user,
+            user=user,
             partition=os.environ.get("HPC_BRIDGE_PARTITION", "debug"),
         )
-        cli = RemoteEndpointCLI(target, profile.env_setup)
-        store = LoginNodeStore()
-        rec = store.get(alias=alias, name=profile.endpoint_name)
-        if rec is not None:  # reconnect direct-to-node instead of the round-robin alias
-            # Dead-pin limitation: if the pinned node is down or the endpoint is gone, the
-            # next SSH fails fast (BatchMode) and surfaces as a structured error; clearing
-            # or reconciling a stale pin is deferred (delete ~/.hpc-bridge/endpoints.json
-            # to reset).
-            cli.rebind(rec.login_host)
-        return SlurmFacility(profile, cli, store=store, alias=alias)
+        return _slurm_facility(profile, alias=alias, user=user)
     user_dir = Path(os.environ.get("HPC_BRIDGE_USER_DIR", str(Path.home() / ".globus_compute")))
     return LocalFacility(EndpointCLI(user_dir=user_dir))
+
+
+def _make_search_client():
+    """Build a Globus SearchClient that reuses the Compute SDK's GlobusApp identity.
+
+    Constructing ``SearchClient(app=...)`` registers the ``search.api.globus.org`` scope on the
+    app. Spec §8 — confirmed live (2026-06-25): the Compute app does NOT already hold the search
+    scope, so it must be granted once by an interactive login (run ``hpc-bridge-catalog``). We
+    never trigger that login from here — a server runs non-interactively, and a blocking prompt
+    on the MCP stdio channel would hang it — so if the scope isn't granted yet we raise and
+    make_catalog() falls back to the bundled catalog. Once granted, the token is cached and this
+    returns a ready client with no further prompts. Isolated so tests can substitute it.
+    """
+    from globus_compute_sdk import Client
+    from globus_sdk import SearchClient
+
+    app = Client().app
+    client = SearchClient(app=app)  # registers the search scope requirement on the app
+    if app.login_required():  # non-prompting check; the scope hasn't been granted yet
+        raise RuntimeError(
+            "Globus Search scope not granted; run `hpc-bridge-catalog <index> <seed>` once to log in"
+        )
+    return client
+
+
+def make_catalog():
+    """Select the catalog provider from env, mirroring make_facility().
+
+    HPC_BRIDGE_SEARCH_INDEX set -> SearchCatalog (Globus Search) with bundled+cache fallback.
+    Otherwise, or if the Search client can't be built -> BundledCatalog (the packaged seed YAML).
+    """
+    from .catalog.bundled import BundledCatalog
+
+    index = os.environ.get("HPC_BRIDGE_SEARCH_INDEX", "").strip()
+    if not index:
+        return BundledCatalog()
+
+    from .catalog.search import SearchCatalog
+
+    try:
+        client = _make_search_client()
+        cache_dir = (
+            Path(os.environ.get("CLAUDE_PLUGIN_DATA", str(Path.home() / ".hpc-bridge")))
+            / "catalog-cache"
+        )
+        return SearchCatalog(
+            index_id=index, client=client, fallback=BundledCatalog(), cache_dir=cache_dir
+        )
+    except Exception as exc:  # noqa: BLE001 - never crash startup on a Search/auth/cache problem
+        print(
+            f"hpc-bridge: Globus Search unavailable ({type(exc).__name__}: {exc}); "
+            "using bundled catalog",
+            file=sys.stderr,
+        )
+        return BundledCatalog()
 
 
 def _env_float(name: str, default: float) -> float:
@@ -131,7 +228,7 @@ def _env_endpoint_id() -> str | None:
 
 @asynccontextmanager
 async def lifespan(server: FastMCP) -> AsyncIterator[AppCtx]:
-    facility = make_facility()
+    facility = await make_facility()
     # Session-shell root: explicit env wins, else the facility's shared-FS scratch
     # (e.g. Anvil $SCRATCH), else a local default.
     scratch = os.path.expanduser(
