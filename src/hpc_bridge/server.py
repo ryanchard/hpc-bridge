@@ -68,7 +68,7 @@ class AppCtx:
 def _require_env(name: str) -> str:
     val = os.environ.get(name, "").strip()
     if not val:
-        raise RuntimeError(f"{name} is required for the selected HPC_BRIDGE_FACILITY")
+        raise RuntimeError(f"{name} is required for the selected HPC_BRIDGE_MACHINE")
     return val
 
 
@@ -137,24 +137,16 @@ async def _catalog_facility(machine: str) -> Facility:
 
 async def make_facility() -> Facility:
     """Select the facility: a catalog-described machine (HPC_BRIDGE_MACHINE — sourced from the
-    Globus Search index / bundled seed), the hardcoded remote Slurm cluster (HPC_BRIDGE_FACILITY),
-    or local dev."""
+    Globus Search index / bundled seed), or local dev. Machines are catalog *data*, never
+    hardcoded; the agent can also bind one at runtime via connect_facility."""
     machine = os.environ.get("HPC_BRIDGE_MACHINE", "").strip()
+    if not machine and os.environ.get("HPC_BRIDGE_FACILITY", "").strip():
+        raise RuntimeError(
+            "HPC_BRIDGE_FACILITY was removed — machines are catalog data now. Use "
+            "HPC_BRIDGE_MACHINE=<id> (e.g. anvil), or let the agent pick via connect_facility."
+        )
     if machine:
         return await _catalog_facility(machine)
-
-    fac = os.environ.get("HPC_BRIDGE_FACILITY", "").strip().lower()
-    if fac == "anvil":
-        from .facility.remote import anvil_profile
-
-        user = _require_env("HPC_BRIDGE_SSH_USER")
-        alias = os.environ.get("HPC_BRIDGE_SSH_HOST", "anvil.rcac.purdue.edu")
-        profile = anvil_profile(
-            account=_require_env("HPC_BRIDGE_ACCOUNT"),
-            user=user,
-            partition=os.environ.get("HPC_BRIDGE_PARTITION", "debug"),
-        )
-        return _slurm_facility(profile, alias=alias, user=user)
     user_dir = Path(os.environ.get("HPC_BRIDGE_USER_DIR", str(Path.home() / ".globus_compute")))
     return LocalFacility(EndpointCLI(user_dir=user_dir))
 
@@ -720,8 +712,8 @@ async def _login_shell(app: AppCtx, command: str) -> LoginShellResult:
     if login_exec is None:
         return LoginShellResult(
             exit_code=1,
-            notice="login_shell needs an SSH facility (set HPC_BRIDGE_FACILITY=anvil); "
-            "the local dev facility has no login node.",
+            notice="login_shell needs an SSH facility (set HPC_BRIDGE_MACHINE=<id>, or "
+            "connect_facility(machine)); the local dev facility has no login node.",
         )
     try:
         rc, out, err = await login_exec(command)
@@ -743,7 +735,8 @@ async def login_shell(command: str, ctx: Context) -> LoginShellResult:
     Prefer `run_shell(command, shape="login")` once an endpoint is up: that runs the same
     login-node command THROUGH the endpoint (over the network), avoiding a fresh SSH — which
     on an MFA facility can force a re-auth. SSH is meant to be a one-time bootstrap, not a
-    channel. Only available for an SSH facility (HPC_BRIDGE_FACILITY=anvil), not local dev."""
+    channel. Only available for an SSH facility (a catalog machine via HPC_BRIDGE_MACHINE or
+    connect_facility), not local dev."""
     return await _login_shell(ctx.request_context.lifespan_context, command)
 
 

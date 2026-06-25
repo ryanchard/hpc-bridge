@@ -13,7 +13,7 @@ The conceptual frame (channel model, provide-vs-discover matrix, principles, the
 
 - **`CatalogEntry`** (Pydantic) — `compute:` (pinned, user can't override) / `defaults:` (overridable) split; named allocation `parser`; `{user}`/`{venv}` templating; `worker_init` *derived*; `account` *not* stored; UUIDs validated on read. `profile_kwargs()` is the binding seam → `MachineProfile`.
 - **`CatalogProvider`** seam — `SearchCatalog` (live `get_subject` → write-through cache → bundled fallback), `BundledCatalog` (seed YAML, shipped in the wheel), `FakeCatalog` (the test double = our "`SearchClient` injection" seam).
-- **3-way `make_facility`** — `HPC_BRIDGE_MACHINE` → catalog; `HPC_BRIDGE_FACILITY=anvil` → the hardcoded path (kept); else local. *Validated:* the catalog path produces a **byte-identical `MachineProfile`** to `anvil_profile`.
+- **`make_facility`** — `HPC_BRIDGE_MACHINE` → catalog; else local (the agent binds a machine at runtime via `connect_facility`). The hardcoded `anvil_profile` + `HPC_BRIDGE_FACILITY` path is **removed** — the bundled seed is the anvil config.
 - **Trust** — the plugin is **read-only**; writes are **curator-only** via the `hpc-bridge-catalog` ingest (PR review = the audit trail), because an open-write catalog of executable config (`env_setup` bash, UUIDs) is an injection vector. A `CatalogSummary` is the **agent-safe view** (no executable config / raw UUIDs). `provenance: plugin-validated` is *reserved, not built* — this supersedes our earlier "plugin write-back loop."
 
 > [!note] Decided — authenticated read (reuse the Compute identity)
@@ -26,7 +26,7 @@ Machine + allocation are now **agent-chosen at runtime**, not fixed by env ([[Th
 - **`connect_facility(machine)`** → bind the machine (late-binds `AppCtx.facility`, resetting shapes/state on a switch), bring up its **free login shape** (SSH cold-bootstrap once, or reuse an online endpoint), run the allocation command over Compute, parse, and return `needs_account` with the allocations. `provisioning` ⇒ login node still warming.
 - **deterministic parsers** (`catalog/parsers.py`): `mybalance` built (real Anvil output); `sbank`/`iris` reserved. Stdout parsed in code, never handed to the model.
 - **`ensure_endpoint_up(account=…)`** → the chosen allocation threads into the Slurm shape's `user_endpoint_config` (mirrors `partition`); `account` is no longer env-only.
-- `_facility_from_entry` / `_unsupported_entry_reason` factored out of `make_facility`'s startup path and shared with `connect_facility`. Backward-compatible: the env-fixed path still works.
+- `_facility_from_entry` / `_unsupported_entry_reason` factored out of `make_facility`'s startup path and shared with `connect_facility`.
 
 ## Our extras (later slices, optional)
 
@@ -34,7 +34,7 @@ From [[Discovery channel model]], not in the catalog yet: per-channel **ablation
 
 ## Status
 
-- **Merged:** Plan 1 — the catalog data layer · 3-way `make_facility` · bundled fallback · the `hpc-bridge-catalog` ingest curator ([#15](https://github.com/ryanchard/hpc-bridge/pull/15)).
+- **Merged:** Plan 1 — the catalog data layer · catalog-driven `make_facility` · bundled fallback · the `hpc-bridge-catalog` ingest curator ([#15](https://github.com/ryanchard/hpc-bridge/pull/15)).
 - **Built (in review, this PR):** Plan 2 — `list_facilities` + `connect_facility` + the `mybalance` parser + account-from-selection. 5 → 7 [[The MCP tools|MCP tools]].
 - **Deferred:** ACCESS MCP / Operations API channels; the ablation/trace/Socratic extras (see [[Discovery channel model]]).
 

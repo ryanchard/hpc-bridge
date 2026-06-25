@@ -1,7 +1,7 @@
 # Discovery channel model
 
 > [!warning] Planned · the conceptual frame
-> The target model for *where* hpc-bridge learns what a facility is, and what the user must supply versus what Claude can discover. Mostly **not built** — today the facility shape is a hardcoded `anvil_profile` ([[Discovery today]]). This is the durable model; the concrete first build is [[Globus index discovery channel]]. Tracking: [#7](https://github.com/ryanchard/hpc-bridge/issues/7). Absorbs the former `docs/design/discovery-channels.md`.
+> The target model for *where* hpc-bridge learns what a facility is, and what the user must supply versus what Claude can discover. **Partly built** — the facility shape now comes from the [[Facility catalog|catalog]] (index/seed), not a hardcoded profile; the *fuller cascade* (login-probe + human fallback, ablation, trace) is what remains. The concrete build is [[Globus index discovery channel]]. Tracking: [#7](https://github.com/ryanchard/hpc-bridge/issues/7). Absorbs the former `docs/design/discovery-channels.md`.
 
 ## One abstraction — the human is terminal
 
@@ -30,7 +30,7 @@ Three tiers, named by *who answers*:
 
 - **Tier 1 — irreducible user input** (the human channel, always active): the **SSH key** (a secret, never discoverable) and the **login name**. The **SSH host** lands here *only when the index is unavailable*.
 - **Tier 2 — consequential choices** (gates: discovered options, the human picks): which facility, which partition, the spend confirmation — already built ([[Resource shapes & the spend floor]]).
-- **Tier 3 — machine-discoverable** (no user input): everything `anvil_profile` hardcodes — answered by the index (static), the login node (live), or the local client (identity). **`anvil_profile` is ~90% a frozen discovery, not configuration; users provide credentials, not configuration.**
+- **Tier 3 — machine-discoverable** (no user input): everything the old `anvil_profile` hardcoded — now answered by the index (static), the login node (live), or the local client (identity). **The machine profile is ~90% a frozen discovery, not configuration; users provide credentials, not configuration.**
 
 ### The per-fact matrix
 

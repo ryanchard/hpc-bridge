@@ -1,5 +1,5 @@
 # src/hpc_bridge/catalog/seed/anvil.yaml
-# Curated. Mirrors anvil_profile() in facility/remote.py (validated 2026-06-03, worker on a006).
+# Curated Anvil (Purdue/ACCESS) config — validated 2026-06-03 (worker on compute node a006).
 - id: anvil
   facility_key: purdue
   facility: "Purdue / ACCESS"

@@ -7,13 +7,23 @@ import yaml as _yaml
 
 from hpc_bridge.facility import remote
 from hpc_bridge.facility.base import EndpointHandle, Facility
-from hpc_bridge.facility.remote import RemoteEndpointCLI, SlurmFacility, SshTarget, anvil_profile
+from hpc_bridge.facility.remote import RemoteEndpointCLI, SlurmFacility, SshTarget
 from hpc_bridge.profile import Profile
 from hpc_bridge.shapes import shape_config
 
 
 def _profile():
-    return anvil_profile(account="ACC", user="x-u")
+    return remote.MachineProfile(
+        name="testmachine",
+        endpoint_name="hpc-bridge",
+        display_name="HPC-Bridge Test",
+        env_setup="module load x && source /home/x-u/gce-venv/bin/activate",
+        interface="ib0",
+        partition="debug",
+        account="ACC",
+        worker_init="module load x && source /home/x-u/gce-venv/bin/activate",
+        scratch_root="/scratch/x-u/.hpc-bridge",
+    )
 
 
 async def test_ssh_exec_kills_child_on_timeout(monkeypatch):
@@ -42,17 +52,6 @@ async def test_ssh_exec_kills_child_on_timeout(monkeypatch):
     with pytest.raises(TimeoutError):
         await remote.ssh_exec(SshTarget("h", "u", "/k"), "hang", timeout=0.05)
     assert state["killed"] and state["waited"]  # child killed + reaped, not abandoned
-
-
-def test_anvil_profile_fields():
-    p = anvil_profile(account="cis250223", user="x-amcsweeneyel")
-    assert p.name == "anvil" and p.account == "cis250223" and p.interface == "ib0"
-    assert p.partition == "debug"
-    assert "anaconda/2024.02-py311" in p.env_setup and "gce-venv/bin/activate" in p.env_setup
-    assert p.scratch_root == "/anvil/scratch/x-amcsweeneyel/.hpc-bridge"
-    assert p.worker_init == p.env_setup  # worker replays the same env
-    assert p.endpoint_name == "hpc-bridge"  # registration/dir name
-    assert p.display_name == "HPC-Bridge Anvil"  # human label for the web UI
 
 
 def _sanitize_user_json(opts):
@@ -355,7 +354,7 @@ async def test_provision_fresh_configures_writes_and_starts():
     assert ("configure", "hpc-bridge", False) in cli.calls  # forced single-user
     assert ("start", "hpc-bridge") in cli.calls
     assert "amqp_port: 443" in cli.written["manager"]  # firewall-friendly AMQP in manager cfg
-    assert "HPC-Bridge Anvil" in cli.written["manager"]  # human display_name, not the dir name
+    assert "HPC-Bridge Test" in cli.written["manager"]  # human display_name, not the dir name
     assert "provider_type" in cli.written["uep"]  # template references the var, not a literal
 
 

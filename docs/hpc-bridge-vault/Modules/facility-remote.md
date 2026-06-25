@@ -6,7 +6,7 @@
 ## The pieces
 
 - **SSH transport** — `SshTarget` (`:37`) + `ssh_exec()` (`:55`): key-only (`BatchMode`, `IdentitiesOnly`), reaps the child on timeout/cancel (no process/FD leak). The control channel of [[Two-channel architecture]].
-- **Per-facility data** — `MachineProfile` (`:86`) + `anvil_profile()` (`:109`): host, `env_setup` (module + venv), `interface`, partition, account, scratch… exactly the facts a [[Discovery today|discovery]] index is meant to supply instead of hardcoding.
+- **Per-facility data** — `MachineProfile` (`:86`): host, `env_setup` (module + venv), `interface`, partition, account, scratch… now supplied by the [[Facility catalog|catalog]] (`profile_from_catalog_entry`), no longer hardcoded per machine.
 - **gce driver** — `RemoteEndpointCLI` (`:151`): runs `globus-compute-endpoint` over SSH via `_gce` (`:163`); also `login_exec` (`:167`, backs the `login_shell` tool), `seed_storage_db` (`:238`, [[Credential seeding]]), `configure`/`start`/`stop`, and `cancel_blocks` (`:293`).
 - **Orchestration** — `SlurmFacility` (`:355`): `bootstrap` (`:471`), `provision` (`:512`), `config_template` (`:378`, [[MEP & templated endpoints]]), `teardown` (`:545`), `manager_online` (`:562`, web), `find_online_endpoint` (`:569`, web reuse).
 

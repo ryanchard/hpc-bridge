@@ -24,7 +24,7 @@
 > `run_shell`/`reset_session` ride [[Two-channel architecture|AMQP]] (the warm block or the login shape). `login_shell` is the only tool that opens a fresh SSH — reserved for cold-start discovery.
 
 > [!note] The selection flow
-> `list_facilities` → `connect_facility(machine)` → pick an allocation → `ensure_endpoint_up(account=…, partition=…, confirm_spend=True)`. Machine + allocation are **agent-chosen at runtime** ([[Facility catalog]]), not fixed by env — though the env-fixed path (`HPC_BRIDGE_MACHINE`/`FACILITY`) still works.
+> `list_facilities` → `connect_facility(machine)` → pick an allocation → `ensure_endpoint_up(account=…, partition=…, confirm_spend=True)`. Machine + allocation are **agent-chosen at runtime** ([[Facility catalog]]); a machine can also be pinned at startup with `HPC_BRIDGE_MACHINE`.
 
 ## See also
 [[server]] · [[models]] · [[Facility catalog]] · [[Resource shapes & the spend floor]] · [[Discovery today]]

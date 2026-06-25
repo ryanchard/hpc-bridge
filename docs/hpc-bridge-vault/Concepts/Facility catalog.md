@@ -1,7 +1,7 @@
 # Facility catalog
 
 > [!abstract] In one line
-> Where the per-facility shape comes from: a **Globus Search index** (or a bundled seed) of machine entries, resolved into a `MachineProfile` — so adding a facility is *data*, not *code*. The primary source, with the hardcoded `anvil_profile` ([[facility-remote]]) demoted to a fallback.
+> Where the per-facility shape comes from: a **Globus Search index** (or a bundled seed) of machine entries, resolved into a `MachineProfile` — so adding a facility is *data*, not *code*. The single source — the hardcoded `anvil_profile` is gone; anvil now lives in the bundled seed.
 
 ## The entry — `CatalogEntry` (`catalog/entry.py`)
 
@@ -11,7 +11,7 @@ One entry per machine, a **superset of `MachineProfile`**, split by *who control
 - **`defaults:`** — per-run tunables the agent/user **may override** (`partition`, `walltime`, nodes/blocks, accelerators).
 - plus identity, `ssh_host`, `auth_method`, the allocation `command` + named `parser`, and `provenance` / `last_validated`.
 
-`{user}`/`{venv}` are templated at provision time; `worker_init` is *derived* (= `env_setup`); `account` is **never stored** (per-user, from allocation selection). `profile_kwargs()` → `profile_from_catalog_entry` ([[facility-remote]]) is the binding seam to `MachineProfile`. The Anvil entry reproduces `anvil_profile()` **byte-for-byte** (verified by test).
+`{user}`/`{venv}` are templated at provision time; `worker_init` is *derived* (= `env_setup`); `account` is **never stored** (per-user, from allocation selection). `profile_kwargs()` → `profile_from_catalog_entry` ([[facility-remote]]) is the binding seam to `MachineProfile`. The bundled Anvil entry resolves to the known-good config we've stood up live (verified by test).
 
 ## The provider seam — `CatalogProvider` (`catalog/base.py`)
 
@@ -28,7 +28,7 @@ A `Protocol` with `get(machine)` (exact → provisioning) and `discover(query)` 
 
 ## Two ways in — startup or agentic
 
-- **Startup (env-fixed):** `HPC_BRIDGE_MACHINE=<id>` → `make_facility` resolves the entry at boot. `HPC_BRIDGE_FACILITY=anvil` still selects the hardcoded path.
+- **Startup (env-pinned):** `HPC_BRIDGE_MACHINE=<id>` → `make_facility` resolves the entry from the catalog at boot.
 - **Agentic (runtime):** `list_facilities()` → `connect_facility(machine)` binds the machine (late-binds `AppCtx.facility`), brings up its **free login shape**, runs the allocation `command` over Compute, parses it, and returns the allocations → `ensure_endpoint_up(account=…)`. → [[The MCP tools]]
 
 Allocation output is parsed by a **deterministic, plugin-side parser** keyed by `entry.allocation.parser` (`catalog/parsers.py` — `mybalance` built; `sbank`/`iris` reserved). Stdout is parsed in code, **never** handed to the model — inference is exactly what the catalog removes.
