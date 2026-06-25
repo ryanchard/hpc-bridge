@@ -142,9 +142,9 @@ async def test_connect_facility_brings_up_login_and_lists_allocations(monkeypatc
 
     res = await server._connect_facility(app, "anvil")
     assert res.phase == "needs_account"
-    assert res.machine == "anvil"
+    assert res.facility == "anvil"
     assert [a.account for a in res.allocations] == ["cis250223", "cis250223-gpu"]
-    assert app.facility is f and app.machine == "anvil"  # late-bound the chosen machine
+    assert app.facility is f and app.machine == "anvil"  # late-bound the chosen facility
 
 
 async def test_connect_facility_unknown_machine_is_not_found(monkeypatch):

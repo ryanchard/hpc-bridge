@@ -589,23 +589,23 @@ async def list_facilities(query: str = "") -> list[CatalogSummary]:
     index — set HPC_BRIDGE_SEARCH_INDEX). Empty query lists all; a query filters by name/description.
 
     Returns agent-safe summaries (no executable config or raw UUIDs). Pick one and call
-    connect_facility(machine) to bring up its login node and see your allocations. No SSH, no
+    connect_facility(facility=…) to bring up its login node and see your allocations. No SSH, no
     provisioning, no spend."""
     return await _list_facilities(query)
 
 
-async def _connect_facility(app: AppCtx, machine: str) -> ConnectFacilityResult:
+async def _connect_facility(app: AppCtx, facility: str) -> ConnectFacilityResult:
     try:
-        entry = await make_catalog().get(machine)
+        entry = await make_catalog().get(facility)
     except Exception as exc:  # noqa: BLE001 - no catalog (no index / search scope) -> hard fail
         return ConnectFacilityResult(
-            phase="failed", machine=machine, notice=f"catalog unavailable: {exc}"[:300]
+            phase="failed", facility=facility, notice=f"catalog unavailable: {exc}"[:300]
         )
     if entry is None:
         return ConnectFacilityResult(
             phase="not_found",
-            machine=machine,
-            notice=f"{machine!r} is not in the catalog — call list_facilities() to see options",
+            facility=facility,
+            notice=f"{facility!r} is not in the catalog — call list_facilities() to see options",
         )
     reason = _unsupported_entry_reason(entry)
     if reason is None and entry.allocation.parser not in PARSERS:
@@ -614,30 +614,28 @@ async def _connect_facility(app: AppCtx, machine: str) -> ConnectFacilityResult:
             f"(have: {sorted(PARSERS)})"
         )
     if reason:
-        return ConnectFacilityResult(phase="unsupported", machine=machine, notice=reason)
+        return ConnectFacilityResult(phase="unsupported", facility=facility, notice=reason)
     try:
-        facility = _facility_from_entry(
-            entry, account=os.environ.get("HPC_BRIDGE_ACCOUNT", "").strip()
-        )
+        fac = _facility_from_entry(entry, account=os.environ.get("HPC_BRIDGE_ACCOUNT", "").strip())
     except Exception as exc:  # noqa: BLE001 - surface a missing SSH_USER/KEY as a structured result
         return ConnectFacilityResult(
             phase="failed",
-            machine=machine,
+            facility=facility,
             notice=f"hpc-bridge error: {type(exc).__name__}: {exc}"[:500],
         )
-    async with app.lock:  # switch machines: drop the old shapes/endpoint, bind the new facility
+    async with app.lock:  # switch facilities: drop the old shapes/endpoint, bind the new one
         for rt in app.shapes.values():
             if rt.runner is not None:
                 rt.runner.close()
         app.shapes.clear()
         app.state = EndpointState()
-        app.facility = facility
-        app.machine = machine
+        app.facility = fac
+        app.machine = facility
         # The session-shell root follows the bound facility — else run_shell would use the local
         # ~/.hpc-bridge path on the remote node (mirrors lifespan's scratch resolution).
         app.scratch_root = os.path.expanduser(
             os.environ.get("HPC_BRIDGE_SCRATCH")
-            or getattr(facility, "scratch_root", None)
+            or getattr(fac, "scratch_root", None)
             or "~/.hpc-bridge"
         )
         try:
@@ -645,43 +643,44 @@ async def _connect_facility(app: AppCtx, machine: str) -> ConnectFacilityResult:
         except Exception as exc:  # noqa: BLE001 - provisioning unavailable (e.g. non-Linux host)
             return ConnectFacilityResult(
                 phase="failed",
-                machine=machine,
+                facility=facility,
                 notice=f"hpc-bridge error: {type(exc).__name__}: {exc}"[:500],
             )
     if block != "warm":  # login node still coming up — nothing to read yet
         return ConnectFacilityResult(
             phase="provisioning",
-            machine=machine,
+            facility=facility,
             notice="bringing up the login node; call connect_facility again shortly to read your allocations",
         )
     out = await _run_shell(app, entry.allocation.command, shape="login")
     if out.phase != "complete" or out.exit_code != 0:
         return ConnectFacilityResult(
             phase="failed",
-            machine=machine,
+            facility=facility,
             notice=f"allocation discovery ({entry.allocation.command!r}) failed: "
             f"{out.notice or out.stderr_snippet or out.phase}",
         )
     allocations = PARSERS[entry.allocation.parser](out.stdout)
     return ConnectFacilityResult(
         phase="needs_account",
-        machine=machine,
+        facility=facility,
         allocations=allocations,
         notice="pick an allocation, then ensure_endpoint_up(account=…, partition=…, confirm_spend=True)",
     )
 
 
 @mcp.tool()
-async def connect_facility(machine: str, ctx: Context) -> ConnectFacilityResult:
-    """Select an HPC machine from the catalog and bring up its (free) login node, then list the
+async def connect_facility(facility: str, ctx: Context) -> ConnectFacilityResult:
+    """Select an HPC facility from the catalog and bring up its (free) login node, then list the
     allocations a Slurm block can be charged to.
 
-    `machine` is an id/subject/alias from list_facilities(). This binds the machine, stands up the
-    login shape (SSH cold-bootstrap once, or reuse an online endpoint — no Slurm account needed),
-    runs the facility's allocation command over Compute, and returns phase="needs_account" with the
-    parsed allocations. Pick one, then ensure_endpoint_up(account=…, partition=…, confirm_spend=True).
-    phase="provisioning" means the login node is still warming — call again shortly."""
-    return await _connect_facility(ctx.request_context.lifespan_context, machine)
+    `facility` is an id/subject/alias from list_facilities() (e.g. "anvil" or "purdue:anvil"). This
+    binds the facility, stands up the login shape (SSH cold-bootstrap once, or reuse an online
+    endpoint — no Slurm account needed), runs the facility's allocation command over Compute, and
+    returns phase="needs_account" with the parsed allocations. Pick one, then
+    ensure_endpoint_up(account=…, partition=…, confirm_spend=True). phase="provisioning" means the
+    login node is still warming — call again shortly."""
+    return await _connect_facility(ctx.request_context.lifespan_context, facility)
 
 
 async def _release_blocks_over_login(app: AppCtx) -> None:
@@ -766,7 +765,7 @@ async def _login_shell(app: AppCtx, command: str) -> LoginShellResult:
         return LoginShellResult(
             exit_code=1,
             notice="login_shell needs an SSH facility (set HPC_BRIDGE_MACHINE=<id>, or "
-            "connect_facility(machine)); the local dev facility has no login node.",
+            "connect_facility(facility=…)); the local dev facility has no login node.",
         )
     try:
         rc, out, err = await login_exec(command)

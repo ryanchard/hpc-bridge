@@ -18,13 +18,13 @@
 | Tool | Returns | What it does |
 |---|---|---|
 | `list_facilities(query="")` | `list[CatalogSummary]` | Browse the [[Facility catalog]] (the Globus Search index). Agent-safe summaries — identity + provenance, **no** executable config or raw UUIDs. No SSH, no spend. |
-| `connect_facility(machine)` | `ConnectFacilityResult` | Bind a machine and bring up its **free login shape** (SSH cold-bootstrap once, or reuse an online endpoint — no Slurm account needed), run the facility's allocation command over Compute, return `needs_account` with the parsed allocations. `provisioning` ⇒ login node still warming, call again. |
+| `connect_facility(facility)` | `ConnectFacilityResult` | Bind a machine and bring up its **free login shape** (SSH cold-bootstrap once, or reuse an online endpoint — no Slurm account needed), run the facility's allocation command over Compute, return `needs_account` with the parsed allocations. `provisioning` ⇒ login node still warming, call again. |
 
 > [!note] Two execution channels
 > `run_shell`/`reset_session` ride [[Two-channel architecture|AMQP]] (the warm block or the login shape). `login_shell` is the only tool that opens a fresh SSH — reserved for cold-start discovery.
 
 > [!note] The selection flow
-> `list_facilities` → `connect_facility(machine)` → pick an allocation → `ensure_endpoint_up(account=…, partition=…, confirm_spend=True)`. Machine + allocation are **agent-chosen at runtime** ([[Facility catalog]]); a machine can also be pinned at startup with `HPC_BRIDGE_MACHINE`.
+> `list_facilities` → `connect_facility(facility)` → pick an allocation → `ensure_endpoint_up(account=…, partition=…, confirm_spend=True)`. Machine + allocation are **agent-chosen at runtime** ([[Facility catalog]]); a machine can also be pinned at startup with `HPC_BRIDGE_MACHINE`.
 
 ## See also
 [[server]] · [[models]] · [[Facility catalog]] · [[Resource shapes & the spend floor]] · [[Discovery today]]

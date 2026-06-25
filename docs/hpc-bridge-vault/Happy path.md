@@ -7,7 +7,7 @@ This is the **implemented spine** — machine + allocation are now agent-selecte
 
 ```mermaid
 flowchart TD
-  C["0 · Configure & install<br/>SSH creds only"] --> L["1 · Select facility<br/>list_facilities → connect_facility(machine)<br/><i>login shape up + allocations</i>"]
+  C["0 · Configure & install<br/>SSH creds only"] --> L["1 · Select facility<br/>list_facilities → connect_facility(facility)<br/><i>login shape up + allocations</i>"]
   L --> D["2 · Discover partitions<br/>run_shell(shape=login): sinfo · squeue"]
   D --> G["3 · Gate: allocation + partition + budget<br/>AskUserQuestion"]
   G --> P["4 · Provision slurm block<br/>ensure_endpoint_up(account, partition, confirm_spend=True)"]
@@ -19,7 +19,7 @@ flowchart TD
 ## The steps
 
 0. **Configure & install** — set the SSH creds (key + login name); load the plugin. The *machine* is chosen at runtime, not pinned by env. → [[Configuration]] · [[Plugin packaging]]
-1. **Select the facility** — `list_facilities()` browses the [[Facility catalog|catalog]]; `connect_facility(machine)` brings up the **free login shape** (reuse over web, else one SSH bootstrap; seed creds; pin the login node) and lists the user's allocations. → [[Facility catalog]] · [[Standing up the endpoint]] · [[Credential seeding]]
+1. **Select the facility** — `list_facilities()` browses the [[Facility catalog|catalog]]; `connect_facility(facility)` brings up the **free login shape** (reuse over web, else one SSH bootstrap; seed creds; pin the login node) and lists the user's allocations. → [[Facility catalog]] · [[Standing up the endpoint]] · [[Credential seeding]]
 2. **Discover partitions** — `run_shell(shape="login")` runs `sinfo`/`squeue` over AMQP, **no SSH**. → [[Discovery today]]
 3. **Gate** — present the allocations (balance) + partitions (live idle) + estimated cost; the human picks. → [[Resource shapes & the spend floor]]
 4. **Provision the billed block** — `ensure_endpoint_up(shape="slurm", account=…, partition=…, confirm_spend=True)`; the spend floor blocks an *unconfirmed* start. → [[Resource shapes & the spend floor]] · [[MEP & templated endpoints]]

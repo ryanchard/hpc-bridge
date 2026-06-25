@@ -62,6 +62,6 @@ class ConnectFacilityResult(BaseModel):
     # needs_account: login node is up; `allocations` are the choices -> ensure_endpoint_up(account=…).
     # provisioning: login node still warming (call again). not_found/unsupported/failed: see notice.
     phase: Literal["needs_account", "provisioning", "not_found", "unsupported", "failed"]
-    machine: str
+    facility: str  # the id/subject that was connected (echoes connect_facility's arg)
     allocations: list[AllocationOption] = []
     notice: str | None = None
