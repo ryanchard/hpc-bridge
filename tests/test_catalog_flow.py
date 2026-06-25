@@ -205,3 +205,46 @@ async def test_list_facilities_empty_without_catalog(monkeypatch):
 
     monkeypatch.setattr(server, "make_catalog", _no_catalog)
     assert await _list_facilities("") == []
+
+
+# --- regressions from the live test --------------------------------------------------------------
+
+
+async def test_connect_facility_moves_scratch_root_to_the_facility(monkeypatch):
+    # Live-test bug: the server boots LocalFacility (scratch ~/.hpc-bridge -> /Users/...), and
+    # connect_facility late-binds the remote facility but must ALSO move the session-shell root,
+    # else run_shell uses the local path ON the remote node (`mkdir /Users/...: Permission denied`).
+    from hpc_bridge import server
+
+    f = FakeFacility()
+    f.workers = 1
+    f.scratch_root = "/anvil/scratch/me/.hpc-bridge"  # the bound facility's remote scratch
+    app = AppCtx(facility=FakeFacility(), profile=Profile())  # starts with a different (local) facility
+    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, MYBALANCE, ""))
+    monkeypatch.delenv("HPC_BRIDGE_SCRATCH", raising=False)
+    monkeypatch.setattr(
+        server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
+    )
+    monkeypatch.setattr(server, "_facility_from_entry", lambda entry, *, account: f)
+    await server._connect_facility(app, "anvil")
+    assert app.scratch_root == "/anvil/scratch/me/.hpc-bridge"
+
+
+async def test_stop_endpoint_bounds_a_slow_teardown(monkeypatch):
+    # Live test "hung on stop": teardown makes 2-3 SSH calls at 120s each on a loaded login node.
+    # _stop_endpoint must cap it so the tool returns promptly with a clear notice (pin kept).
+    import asyncio
+
+    from hpc_bridge import server
+    from hpc_bridge.lifecycle import EndpointState
+
+    f = FakeFacility()
+
+    async def slow_teardown(eid):
+        await asyncio.sleep(1)
+
+    f.teardown = slow_teardown
+    app = AppCtx(facility=f, profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
+    monkeypatch.setattr(server, "STOP_TIMEOUT_S", 0.05)
+    res = await server._stop_endpoint(app)
+    assert res.notice and "timed out" in res.notice

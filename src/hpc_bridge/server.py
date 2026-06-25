@@ -27,6 +27,7 @@ from .session_shell import Session
 from .shapes import SHAPES, shape_config
 
 DEFAULT_SHAPE = "slurm"
+STOP_TIMEOUT_S = 90.0  # cap teardown so a slow/overloaded login node doesn't make stop feel hung
 
 
 @dataclass
@@ -631,6 +632,13 @@ async def _connect_facility(app: AppCtx, machine: str) -> ConnectFacilityResult:
         app.state = EndpointState()
         app.facility = facility
         app.machine = machine
+        # The session-shell root follows the bound facility — else run_shell would use the local
+        # ~/.hpc-bridge path on the remote node (mirrors lifespan's scratch resolution).
+        app.scratch_root = os.path.expanduser(
+            os.environ.get("HPC_BRIDGE_SCRATCH")
+            or getattr(facility, "scratch_root", None)
+            or "~/.hpc-bridge"
+        )
         try:
             block = await _provision(app, "login", force_canary=True)
         except Exception as exc:  # noqa: BLE001 - provisioning unavailable (e.g. non-Linux host)
@@ -688,9 +696,18 @@ async def _stop_endpoint(app: AppCtx) -> EndpointStatus:
             notice = "this facility has no teardown (local dev)"
         else:
             try:
-                await teardown(eid)
+                # Each SSH call already has a 120s timeout, but 2-3 in series on an overloaded
+                # login node feels like a hang (and holds app.lock). Cap the whole teardown so the
+                # tool returns promptly; a timed-out stop keeps the pin and lets the block
+                # idle-release (min_blocks=0).
+                await asyncio.wait_for(teardown(eid), timeout=STOP_TIMEOUT_S)
                 notice = "endpoint stopped; compute block released"
                 torn_down = True
+            except asyncio.TimeoutError:
+                notice = (
+                    f"stop timed out after {STOP_TIMEOUT_S:.0f}s (login node may be overloaded); the "
+                    "Slurm block idle-releases on its own and the pin is kept for reconnect."
+                )
             except Exception as exc:  # noqa: BLE001 - report, never crash the tool
                 notice = f"stop attempted; {type(exc).__name__}: {exc}"[:300]
         # Only drop the login-node pin if the daemon is actually gone. A failed teardown
