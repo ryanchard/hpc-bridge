@@ -374,6 +374,19 @@ async def test_make_facility_rejects_removed_facility_env(monkeypatch):
         await make_facility()
 
 
+async def test_lifespan_boots_unbound_when_facility_setup_fails(monkeypatch, capsys):
+    # A startup crash would silently register no tools (the agent just sees "no hpc-bridge tools"),
+    # so lifespan must catch a failed make_facility (here: the removed HPC_BRIDGE_FACILITY) and boot
+    # local/unbound instead — the agent then binds a machine via connect_facility.
+    from hpc_bridge.server import lifespan, mcp
+
+    monkeypatch.delenv("HPC_BRIDGE_MACHINE", raising=False)
+    monkeypatch.setenv("HPC_BRIDGE_FACILITY", "anvil")
+    async with lifespan(mcp) as app:
+        assert app.facility.name == "local"
+    assert "facility setup failed at startup" in capsys.readouterr().err
+
+
 async def test_make_facility_requires_env_for_catalog_machine(monkeypatch):
     import pytest
 

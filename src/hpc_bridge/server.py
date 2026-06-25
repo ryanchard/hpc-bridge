@@ -137,8 +137,8 @@ async def _catalog_facility(machine: str) -> Facility:
 
 async def make_facility() -> Facility:
     """Select the facility: a catalog-described machine (HPC_BRIDGE_MACHINE — sourced from the
-    Globus Search index / bundled seed), or local dev. Machines are catalog *data*, never
-    hardcoded; the agent can also bind one at runtime via connect_facility."""
+    Globus Search index), or local dev. Machines are catalog *data*, never hardcoded; the agent
+    can also bind one at runtime via connect_facility. (lifespan boots resiliently if this raises.)"""
     machine = os.environ.get("HPC_BRIDGE_MACHINE", "").strip()
     if not machine and os.environ.get("HPC_BRIDGE_FACILITY", "").strip():
         raise RuntimeError(
@@ -229,7 +229,18 @@ def _env_endpoint_id() -> str | None:
 
 @asynccontextmanager
 async def lifespan(server: FastMCP) -> AsyncIterator[AppCtx]:
-    facility = await make_facility()
+    try:
+        facility = await make_facility()
+    except Exception as exc:  # noqa: BLE001 - a config error must NOT brick the MCP server at boot
+        # (a startup crash = the agent silently sees no tools). Start unbound/local and let the
+        # catalog tools surface/bind: list_facilities / connect_facility.
+        print(
+            f"hpc-bridge: facility setup failed at startup ({type(exc).__name__}: {exc}); starting "
+            "unbound — use list_facilities / connect_facility to bind a machine.",
+            file=sys.stderr,
+        )
+        user_dir = Path(os.environ.get("HPC_BRIDGE_USER_DIR", str(Path.home() / ".globus_compute")))
+        facility = LocalFacility(EndpointCLI(user_dir=user_dir))
     # Session-shell root: explicit env wins, else the facility's shared-FS scratch
     # (e.g. Anvil $SCRATCH), else a local default.
     scratch = os.path.expanduser(
