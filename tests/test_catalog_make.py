@@ -1,41 +1,33 @@
 # tests/test_catalog_make.py
+import pytest
+
 import hpc_bridge.server as server
-from hpc_bridge.catalog.bundled import BundledCatalog
 from hpc_bridge.catalog.search import SearchCatalog
 
 
-def test_make_catalog_defaults_to_bundled(monkeypatch):
+def test_make_catalog_requires_index(monkeypatch):
+    # The catalog IS the Globus Search index — no index is a hard failure (no bundled fallback).
     monkeypatch.delenv("HPC_BRIDGE_SEARCH_INDEX", raising=False)
-    assert isinstance(server.make_catalog(), BundledCatalog)
+    with pytest.raises(RuntimeError, match="HPC_BRIDGE_SEARCH_INDEX is required"):
+        server.make_catalog()
 
 
 def test_make_catalog_uses_search_when_index_set(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path))
     monkeypatch.setenv("HPC_BRIDGE_SEARCH_INDEX", "idx-uuid")
-    # avoid real Globus auth by substituting the client builder
-    monkeypatch.setattr(server, "_make_search_client", lambda: object())
+    monkeypatch.setattr(server, "_make_search_client", lambda: object())  # avoid real Globus auth
     assert isinstance(server.make_catalog(), SearchCatalog)
 
 
-def test_make_catalog_falls_back_to_bundled_if_search_client_fails(monkeypatch, tmp_path):
+def test_make_catalog_propagates_search_client_failure(monkeypatch, tmp_path):
+    # No bundled fallback: if the search client can't be built (e.g. the scope isn't granted),
+    # that's a hard failure, not a silent fall back to hardcoded data.
     monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path))
     monkeypatch.setenv("HPC_BRIDGE_SEARCH_INDEX", "idx-uuid")
 
     def boom():
-        raise RuntimeError("no auth")
+        raise RuntimeError("scope not granted")
 
     monkeypatch.setattr(server, "_make_search_client", boom)
-    assert isinstance(server.make_catalog(), BundledCatalog)
-
-
-def test_make_catalog_falls_back_if_searchcatalog_construction_fails(monkeypatch, tmp_path):
-    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path))
-    monkeypatch.setenv("HPC_BRIDGE_SEARCH_INDEX", "idx-uuid")
-    monkeypatch.setattr(server, "_make_search_client", lambda: object())
-    import hpc_bridge.catalog.search as search_mod
-
-    def boom(*a, **k):
-        raise OSError("cache dir unwritable")
-
-    monkeypatch.setattr(search_mod, "SearchCatalog", boom)
-    assert isinstance(server.make_catalog(), BundledCatalog)
+    with pytest.raises(RuntimeError, match="scope not granted"):
+        server.make_catalog()

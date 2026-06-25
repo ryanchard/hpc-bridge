@@ -2,9 +2,7 @@
 import json
 
 from hpc_bridge.catalog.search import SearchCatalog
-from tests.fakes import FakeCatalog, fake_entry
-
-VALID_UUID = "11111111-2222-3333-4444-555555555555"
+from tests.fakes import fake_entry
 
 
 def _gmeta(entry):
@@ -37,54 +35,45 @@ class _FakeSearchClient:
 async def test_search_get_hits_live_and_writes_through_cache(tmp_path):
     e = fake_entry(id="anvil", facility_key="purdue")
     client = _FakeSearchClient(subjects={"purdue:anvil": e})
-    c = SearchCatalog(index_id="idx", client=client,
-                      fallback=FakeCatalog([]), cache_dir=tmp_path)
+    c = SearchCatalog(index_id="idx", client=client, cache_dir=tmp_path)
     got = await c.get("purdue:anvil")
     assert got.id == "anvil"
     assert client.calls == [("idx", "purdue:anvil")]
     assert (tmp_path / "purdue%3Aanvil.json").exists()  # write-through
 
 
-async def test_search_falls_back_to_cache_then_bundled_on_error(tmp_path):
+async def test_search_falls_back_to_cache_on_error(tmp_path):
     e = fake_entry(id="anvil", facility_key="purdue")
-    # prime the cache
-    (tmp_path / "purdue%3Aanvil.json").write_text(e.model_dump_json())
+    (tmp_path / "purdue%3Aanvil.json").write_text(e.model_dump_json())  # prime the cache
     client = _FakeSearchClient(fail=True)
-    c = SearchCatalog(index_id="idx", client=client,
-                      fallback=FakeCatalog([]), cache_dir=tmp_path)
+    c = SearchCatalog(index_id="idx", client=client, cache_dir=tmp_path)
     got = await c.get("purdue:anvil")
-    assert got.id == "anvil"  # served from cache, not the failing client
+    assert got.id == "anvil"  # served from cached index data, not the failing client
 
 
-async def test_search_falls_back_to_bundled_when_no_cache(tmp_path):
-    e = fake_entry(id="anvil", facility_key="purdue")
+async def test_search_error_without_cache_is_a_hard_miss(tmp_path):
+    # No bundled fallback: index offline + nothing cached -> None (hard failure, not hardcoded data).
     client = _FakeSearchClient(fail=True)
-    c = SearchCatalog(index_id="idx", client=client,
-                      fallback=FakeCatalog([e]), cache_dir=tmp_path)
-    got = await c.get("purdue:anvil")
-    assert got.id == "anvil"  # served from the bundled fallback
+    c = SearchCatalog(index_id="idx", client=client, cache_dir=tmp_path)
+    assert await c.get("purdue:anvil") is None
 
 
 async def test_search_miss_returns_none(tmp_path):
     client = _FakeSearchClient(subjects={})
-    c = SearchCatalog(index_id="idx", client=client,
-                      fallback=FakeCatalog([]), cache_dir=tmp_path)
+    c = SearchCatalog(index_id="idx", client=client, cache_dir=tmp_path)
     assert await c.get("purdue:absent") is None
 
 
 async def test_search_discover_maps_summaries(tmp_path):
     e = fake_entry(id="anvil", facility_key="purdue")
     client = _FakeSearchClient(subjects={"purdue:anvil": e})
-    c = SearchCatalog(index_id="idx", client=client,
-                      fallback=FakeCatalog([]), cache_dir=tmp_path)
+    c = SearchCatalog(index_id="idx", client=client, cache_dir=tmp_path)
     got = await c.discover("anvil")
     assert {s.id for s in got} == {"anvil"}
 
 
-async def test_search_discover_falls_back_on_error(tmp_path):
-    e = fake_entry(id="anvil", facility_key="purdue")
+async def test_search_discover_error_returns_empty(tmp_path):
+    # No fallback: a failed search yields no facilities (not hardcoded data).
     client = _FakeSearchClient(fail=True)
-    c = SearchCatalog(index_id="idx", client=client,
-                      fallback=FakeCatalog([e]), cache_dir=tmp_path)
-    got = await c.discover("")
-    assert {s.id for s in got} == {"anvil"}
+    c = SearchCatalog(index_id="idx", client=client, cache_dir=tmp_path)
+    assert await c.discover("") == []

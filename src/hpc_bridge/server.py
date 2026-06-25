@@ -124,8 +124,8 @@ def _facility_from_entry(entry, *, account: str) -> Facility:
 
 async def _catalog_facility(machine: str) -> Facility:
     """Build a facility from a catalog entry (HPC_BRIDGE_MACHINE), sourcing the machine config
-    from `make_catalog()` (the live Globus Search index when HPC_BRIDGE_SEARCH_INDEX is set, else
-    the bundled seed). v1 slice: SSH-bootstrap Slurm machines only."""
+    from `make_catalog()` (the live Globus Search index — HPC_BRIDGE_SEARCH_INDEX; no bundled
+    fallback). v1 slice: SSH-bootstrap Slurm machines only."""
     entry = await make_catalog().get(machine)
     if entry is None:
         raise RuntimeError(f"HPC_BRIDGE_MACHINE={machine!r} not found in the catalog")
@@ -158,8 +158,8 @@ def _make_search_client():
     app. Spec §8 — confirmed live (2026-06-25): the Compute app does NOT already hold the search
     scope, so it must be granted once by an interactive login (run ``hpc-bridge-catalog``). We
     never trigger that login from here — a server runs non-interactively, and a blocking prompt
-    on the MCP stdio channel would hang it — so if the scope isn't granted yet we raise and
-    make_catalog() falls back to the bundled catalog. Once granted, the token is cached and this
+    on the MCP stdio channel would hang it — so if the scope isn't granted yet we raise (a hard
+    failure; there is no bundled fallback). Once granted, the token is cached and this
     returns a ready client with no further prompts. Isolated so tests can substitute it.
     """
     from globus_compute_sdk import Client
@@ -175,35 +175,26 @@ def _make_search_client():
 
 
 def make_catalog():
-    """Select the catalog provider from env, mirroring make_facility().
-
-    HPC_BRIDGE_SEARCH_INDEX set -> SearchCatalog (Globus Search) with bundled+cache fallback.
-    Otherwise, or if the Search client can't be built -> BundledCatalog (the packaged seed YAML).
+    """The runtime catalog is the Globus Search index (HPC_BRIDGE_SEARCH_INDEX). There is **no
+    bundled fallback**: a machine the index can't resolve is a hard failure (the soft
+    agent-discovery fallback is a later slice). The bundled seed is the curator's ingest source
+    (see `hpc-bridge-catalog`), never a runtime catalog.
     """
-    from .catalog.bundled import BundledCatalog
-
     index = os.environ.get("HPC_BRIDGE_SEARCH_INDEX", "").strip()
     if not index:
-        return BundledCatalog()
-
+        raise RuntimeError(
+            "HPC_BRIDGE_SEARCH_INDEX is required: the catalog is the Globus Search index (the "
+            "bundled fallback was removed). Set it and run `hpc-bridge-catalog` once to grant the "
+            "search scope."
+        )
     from .catalog.search import SearchCatalog
 
-    try:
-        client = _make_search_client()
-        cache_dir = (
-            Path(os.environ.get("CLAUDE_PLUGIN_DATA", str(Path.home() / ".hpc-bridge")))
-            / "catalog-cache"
-        )
-        return SearchCatalog(
-            index_id=index, client=client, fallback=BundledCatalog(), cache_dir=cache_dir
-        )
-    except Exception as exc:  # noqa: BLE001 - never crash startup on a Search/auth/cache problem
-        print(
-            f"hpc-bridge: Globus Search unavailable ({type(exc).__name__}: {exc}); "
-            "using bundled catalog",
-            file=sys.stderr,
-        )
-        return BundledCatalog()
+    client = _make_search_client()  # raises if the search scope isn't granted yet
+    cache_dir = (
+        Path(os.environ.get("CLAUDE_PLUGIN_DATA", str(Path.home() / ".hpc-bridge")))
+        / "catalog-cache"
+    )
+    return SearchCatalog(index_id=index, client=client, cache_dir=cache_dir)
 
 
 def _env_float(name: str, default: float) -> float:
@@ -573,13 +564,16 @@ async def ensure_endpoint_up(
 
 
 async def _list_facilities(query: str = "") -> list[CatalogSummary]:
-    return await make_catalog().discover(query)
+    try:
+        return await make_catalog().discover(query)
+    except Exception:  # noqa: BLE001 - no catalog configured (no index / scope) -> no facilities
+        return []
 
 
 @mcp.tool()
 async def list_facilities(query: str = "") -> list[CatalogSummary]:
     """List the HPC machines hpc-bridge can stand up, from the facility catalog (the Globus Search
-    index, or the bundled seed). Empty query lists all; a query filters by name/description.
+    index — set HPC_BRIDGE_SEARCH_INDEX). Empty query lists all; a query filters by name/description.
 
     Returns agent-safe summaries (no executable config or raw UUIDs). Pick one and call
     connect_facility(machine) to bring up its login node and see your allocations. No SSH, no
@@ -588,7 +582,12 @@ async def list_facilities(query: str = "") -> list[CatalogSummary]:
 
 
 async def _connect_facility(app: AppCtx, machine: str) -> ConnectFacilityResult:
-    entry = await make_catalog().get(machine)
+    try:
+        entry = await make_catalog().get(machine)
+    except Exception as exc:  # noqa: BLE001 - no catalog (no index / search scope) -> hard fail
+        return ConnectFacilityResult(
+            phase="failed", machine=machine, notice=f"catalog unavailable: {exc}"[:300]
+        )
     if entry is None:
         return ConnectFacilityResult(
             phase="not_found",

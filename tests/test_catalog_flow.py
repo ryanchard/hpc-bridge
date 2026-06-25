@@ -180,3 +180,28 @@ async def test_connect_facility_provisioning_when_login_worker_cold(monkeypatch)
 
 async def test_server_registers_connect_facility_tool():
     assert "connect_facility" in {t.name for t in await mcp.list_tools()}
+
+
+# --- hard failure when the catalog is unavailable (no bundled fallback) ------------------------
+
+
+def _no_catalog():
+    raise RuntimeError("HPC_BRIDGE_SEARCH_INDEX is required")
+
+
+async def test_connect_facility_hard_fails_without_catalog(monkeypatch):
+    # No index / search scope -> make_catalog raises -> connect surfaces a structured failure,
+    # never a hardcoded default.
+    from hpc_bridge import server
+
+    monkeypatch.setattr(server, "make_catalog", _no_catalog)
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    res = await server._connect_facility(app, "anvil")
+    assert res.phase == "failed" and res.notice and "catalog unavailable" in res.notice
+
+
+async def test_list_facilities_empty_without_catalog(monkeypatch):
+    from hpc_bridge import server
+
+    monkeypatch.setattr(server, "make_catalog", _no_catalog)
+    assert await _list_facilities("") == []

@@ -17,7 +17,7 @@
 
 | Tool | Returns | What it does |
 |---|---|---|
-| `list_facilities(query="")` | `list[CatalogSummary]` | Browse the [[Facility catalog]] (Globus Search index / bundled seed). Agent-safe summaries — identity + provenance, **no** executable config or raw UUIDs. No SSH, no spend. |
+| `list_facilities(query="")` | `list[CatalogSummary]` | Browse the [[Facility catalog]] (the Globus Search index). Agent-safe summaries — identity + provenance, **no** executable config or raw UUIDs. No SSH, no spend. |
 | `connect_facility(machine)` | `ConnectFacilityResult` | Bind a machine and bring up its **free login shape** (SSH cold-bootstrap once, or reuse an online endpoint — no Slurm account needed), run the facility's allocation command over Compute, return `needs_account` with the parsed allocations. `provisioning` ⇒ login node still warming, call again. |
 
 > [!note] Two execution channels
