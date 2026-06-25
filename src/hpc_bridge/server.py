@@ -704,10 +704,10 @@ async def _release_blocks_over_login(app: AppCtx) -> bool:
         '[ -n "$ids" ] && scancel $ids; echo "released: ${ids:-none}"'
     )
     try:
-        # Bounded: a slow/busy login worker must not make the AMQP release itself the new hang.
-        out = await asyncio.wait_for(
-            _run_shell(app, cmd, shape="login"), timeout=AMQP_RELEASE_TIMEOUT_S
-        )
+        # Bounded by the dispatch's HARD result timeout (NOT asyncio.wait_for, which can't cancel
+        # a to_thread call — that was the 215s "stop hang"). A slow/busy login worker now caps at
+        # AMQP_RELEASE_TIMEOUT_S; on timeout the outcome is `failed` -> False -> SSH backstop runs.
+        out = await _run_shell(app, cmd, shape="login", dispatch_timeout=AMQP_RELEASE_TIMEOUT_S)
         return out.phase == "complete"  # the scancel actually ran on the worker
     except Exception:  # noqa: BLE001 - best-effort; teardown's SSH cancel_blocks backstops a miss
         return False
@@ -848,7 +848,11 @@ def _with_spend(app: AppCtx, out: ShellOutcome) -> ShellOutcome:
 
 
 async def _run_shell(
-    app: AppCtx, command: str, session_id: str = "default", shape: str = DEFAULT_SHAPE
+    app: AppCtx,
+    command: str,
+    session_id: str = "default",
+    shape: str = DEFAULT_SHAPE,
+    dispatch_timeout: float | None = None,
 ) -> ShellOutcome:
     session = Session(session_id, app.scratch_root)  # validates session_id before provisioning
     async with app.lock:  # provision + bind the runner atomically (no race with a concurrent stop)
@@ -860,7 +864,8 @@ async def _run_shell(
         return _cold_outcome(not_warm)
     wrapped = session_shell.wrap(command, session)
     out = await dispatch.execute(  # dispatch OUTSIDE the lock so long commands don't serialize
-        wrapped, runner, block_state="warm", max_output_chars=app.max_output_chars
+        wrapped, runner, block_state="warm", max_output_chars=app.max_output_chars,
+        timeout=dispatch_timeout,
     )
     async with app.lock:
         _note_dispatch(_shape_runtime(app, shape), out)

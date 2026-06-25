@@ -22,7 +22,7 @@ class _FakeRunner:
         self.commands: list[str] = []
         self.canaries = 0
 
-    async def run(self, command):
+    async def run(self, command, timeout=None):
         self.commands.append(command)
         return self._res
 
@@ -266,7 +266,7 @@ async def test_stop_endpoint_releases_block_over_login_amqp(monkeypatch):
     )
     seen = {}
 
-    async def fake_run_shell(a, command, session_id="default", shape="slurm"):
+    async def fake_run_shell(a, command, session_id="default", shape="slurm", dispatch_timeout=None):
         seen["shape"], seen["cmd"] = shape, command
         return ShellOutcome(phase="complete", block_state="warm")
 
@@ -298,7 +298,7 @@ async def test_stop_skips_ssh_cancel_when_amqp_released(monkeypatch):
         warm_confirmed_at=1.0,
     )
 
-    async def ok_run_shell(a, command, session_id="default", shape="slurm"):
+    async def ok_run_shell(a, command, session_id="default", shape="slurm", dispatch_timeout=None):
         return ShellOutcome(phase="complete", block_state="warm")
 
     monkeypatch.setattr(server, "_run_shell", ok_run_shell)
@@ -306,13 +306,13 @@ async def test_stop_skips_ssh_cancel_when_amqp_released(monkeypatch):
     assert seen.get("skip_block_cancel") is True
 
 
-async def test_stop_amqp_release_is_bounded(monkeypatch):
-    # A slow/hanging login worker must NOT make the AMQP release itself the new hang (the live bug:
-    # the release ran unbounded before the capped teardown).
-    import asyncio
-
+async def test_stop_amqp_release_passes_a_hard_dispatch_timeout(monkeypatch):
+    # The release must bound the dispatch via the runner's RESULT timeout (a to_thread call can't be
+    # cancelled by asyncio.wait_for — that was the 215s stop hang). Assert the short hard timeout is
+    # threaded down to _run_shell -> dispatch -> fut.result.
     from hpc_bridge import server
     from hpc_bridge.lifecycle import EndpointState
+    from hpc_bridge.models import ShellOutcome
     from hpc_bridge.server import ShapeRuntime
 
     app = AppCtx(facility=FakeFacility(), profile=Profile(), state=EndpointState(endpoint_id="eid-xyz"))
@@ -321,16 +321,15 @@ async def test_stop_amqp_release_is_bounded(monkeypatch):
         runner=_FakeRunner("eid", _Res(0, "", "")),
         warm_confirmed_at=1.0,
     )
+    seen = {}
 
-    async def hanging_run_shell(*a, **k):
-        await asyncio.sleep(30)  # a wedged login worker
+    async def fake_run_shell(a, command, session_id="default", shape="slurm", dispatch_timeout=None):
+        seen["dispatch_timeout"] = dispatch_timeout
+        return ShellOutcome(phase="complete", block_state="warm")
 
-    monkeypatch.setattr(server, "_run_shell", hanging_run_shell)
-    monkeypatch.setattr(server, "AMQP_RELEASE_TIMEOUT_S", 0.05)
-    # If the release weren't bounded, _stop_endpoint would block on the 30s sleep and this wait_for
-    # would fire. It returning is the assertion.
-    res = await asyncio.wait_for(server._stop_endpoint(app), timeout=3.0)
-    assert res is not None
+    monkeypatch.setattr(server, "_run_shell", fake_run_shell)
+    await server._stop_endpoint(app)
+    assert seen["dispatch_timeout"] == server.AMQP_RELEASE_TIMEOUT_S
 
 
 async def test_stop_endpoint_skips_amqp_when_login_not_warm(monkeypatch):

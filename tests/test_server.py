@@ -31,7 +31,7 @@ class _FakeRunner:
         self.commands = []
         self.canaries = 0
 
-    async def run(self, command):
+    async def run(self, command, timeout=None):
         self.commands.append(command)
         return self._res
 
