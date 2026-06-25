@@ -58,6 +58,12 @@ class SshTarget:
         ]
 
 
+# Teardown SSH ops (gce stop, squeue, scancel) hit a possibly-loaded login node with *fresh*
+# connections; bound them tighter than the 120s default so stop_endpoint releases the allocation
+# promptly instead of dragging on a slow sshd.
+_TEARDOWN_SSH_S = 30.0
+
+
 async def ssh_exec(
     target: SshTarget, remote_cmd: str, *, stdin: str | None = None, timeout: float = 120.0
 ) -> tuple[int, str, str]:
@@ -161,9 +167,9 @@ class RemoteEndpointCLI:
         self.env_setup = env_setup
         self.remote_dir = remote_dir
 
-    async def _gce(self, *args: str) -> tuple[int, str, str]:
+    async def _gce(self, *args: str, timeout: float = 120.0) -> tuple[int, str, str]:
         inner = f"{self.env_setup} && globus-compute-endpoint " + " ".join(shlex.quote(a) for a in args)
-        return await ssh_exec(self.target, f"bash -lc {shlex.quote(inner)}")
+        return await ssh_exec(self.target, f"bash -lc {shlex.quote(inner)}", timeout=timeout)
 
     async def login_exec(self, command: str) -> tuple[int, str, str]:
         """Run a read-only command on the login node over SSH for facility discovery
@@ -284,8 +290,9 @@ class RemoteEndpointCLI:
         return await self.endpoint_id(name), host
 
     async def stop(self, name: str) -> None:
-        # Best-effort: `stop` can throw a psutil traceback yet still cancel the block.
-        await self._gce("stop", name)
+        # Best-effort + bounded: `stop` can throw a psutil traceback yet still cancel the block, and
+        # a fresh SSH to a loaded login node is slow — don't let it hold teardown hostage.
+        await self._gce("stop", name, timeout=_TEARDOWN_SSH_S)
 
     async def wipe_storage_db(self) -> None:
         """Remove the seeded credential from the remote host (best-effort)."""
@@ -302,7 +309,9 @@ class RemoteEndpointCLI:
         marker = f"uep.{endpoint_id}"
         try:
             squeue = 'squeue -u "$USER" -h -O "JobID:30,StdOut:1024" 2>/dev/null'
-            rc, out, _err = await ssh_exec(self.target, f"bash -lc {shlex.quote(squeue)}")
+            rc, out, _err = await ssh_exec(
+                self.target, f"bash -lc {shlex.quote(squeue)}", timeout=_TEARDOWN_SSH_S
+            )
         except Exception:  # noqa: BLE001 - scheduler unreachable -> nothing to cancel
             return []
         if rc != 0:
@@ -314,7 +323,11 @@ class RemoteEndpointCLI:
         ]
         if ids:
             try:
-                await ssh_exec(self.target, f"bash -lc {shlex.quote('scancel ' + ' '.join(ids))}")
+                await ssh_exec(
+                    self.target,
+                    f"bash -lc {shlex.quote('scancel ' + ' '.join(ids))}",
+                    timeout=_TEARDOWN_SSH_S,
+                )
             except Exception:  # noqa: BLE001 - best-effort
                 pass
         return ids

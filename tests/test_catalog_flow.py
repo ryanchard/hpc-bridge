@@ -248,3 +248,47 @@ async def test_stop_endpoint_bounds_a_slow_teardown(monkeypatch):
     monkeypatch.setattr(server, "STOP_TIMEOUT_S", 0.05)
     res = await server._stop_endpoint(app)
     assert res.notice and "timed out" in res.notice
+
+
+async def test_stop_endpoint_releases_block_over_login_amqp(monkeypatch):
+    # The block release should go over the WARM login shape (AMQP) — not a fresh SSH — before the
+    # SSH teardown, so a loaded login node can't make stop hang.
+    from hpc_bridge import server
+    from hpc_bridge.lifecycle import EndpointState
+    from hpc_bridge.models import ShellOutcome
+    from hpc_bridge.server import ShapeRuntime
+
+    app = AppCtx(facility=FakeFacility(), profile=Profile(), state=EndpointState(endpoint_id="eid-xyz"))
+    app.shapes["login"] = ShapeRuntime(
+        user_endpoint_config={"provider_type": "LocalProvider"},
+        runner=_FakeRunner("eid", _Res(0, "", "")),
+        warm_confirmed_at=1.0,
+    )
+    seen = {}
+
+    async def fake_run_shell(a, command, session_id="default", shape="slurm"):
+        seen["shape"], seen["cmd"] = shape, command
+        return ShellOutcome(phase="complete", block_state="warm")
+
+    monkeypatch.setattr(server, "_run_shell", fake_run_shell)
+    await server._stop_endpoint(app)
+    assert seen.get("shape") == "login"
+    assert "scancel" in seen["cmd"] and "uep.eid-xyz" in seen["cmd"]
+
+
+async def test_stop_endpoint_skips_amqp_when_login_not_warm(monkeypatch):
+    # No warm login shape -> don't try AMQP (run_shell would SSH-bootstrap); the SSH teardown backstops.
+    from hpc_bridge import server
+    from hpc_bridge.lifecycle import EndpointState
+    from hpc_bridge.models import ShellOutcome
+
+    app = AppCtx(facility=FakeFacility(), profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
+    called = {"n": 0}
+
+    async def fake_run_shell(*a, **k):
+        called["n"] += 1
+        return ShellOutcome(phase="complete", block_state="warm")
+
+    monkeypatch.setattr(server, "_run_shell", fake_run_shell)
+    await server._stop_endpoint(app)  # no app.shapes["login"] -> guard skips the AMQP path
+    assert called["n"] == 0

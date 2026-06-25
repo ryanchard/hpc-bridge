@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import shlex
 import sys
 import time
 from collections.abc import AsyncIterator, Callable
@@ -683,8 +684,33 @@ async def connect_facility(machine: str, ctx: Context) -> ConnectFacilityResult:
     return await _connect_facility(ctx.request_context.lifespan_context, machine)
 
 
+async def _release_blocks_over_login(app: AppCtx) -> None:
+    """Cancel this endpoint's Slurm block(s) over the WARM login shape (AMQP) — instant, vs a fresh
+    SSH to a possibly-loaded login node. Best-effort, and only when the login shape is already warm
+    (else run_shell would SSH-bootstrap, defeating the point); teardown's SSH `cancel_blocks` is the
+    backstop. MUST run before `gce stop`, which kills the AMQP path. Finds our blocks precisely by the
+    UEP StdOut marker so it never touches another endpoint's jobs (mirrors RemoteEndpointCLI)."""
+    eid = app.state.endpoint_id
+    login = app.shapes.get("login")
+    if eid is None or login is None or login.runner is None or login.warm_confirmed_at is None:
+        return
+    cmd = (
+        'ids=$(squeue -u "$USER" -h -O "JobID:30,StdOut:1024" 2>/dev/null '
+        f"| grep -F {shlex.quote('uep.' + eid)} | awk '{{print $1}}'); "
+        '[ -n "$ids" ] && scancel $ids; echo "released: ${ids:-none}"'
+    )
+    try:
+        await _run_shell(app, cmd, shape="login")
+    except Exception:  # noqa: BLE001 - best-effort; the SSH cancel_blocks in teardown backstops it
+        pass
+
+
 async def _stop_endpoint(app: AppCtx) -> EndpointStatus:
     """Tear down the current endpoint, release its compute, and reset session state."""
+    # Fast path: release the Slurm block over the warm login shape (AMQP) before the SSH teardown —
+    # a fresh SSH to a loaded login node is slow, but the login worker answers instantly. The SSH
+    # cancel_blocks inside teardown remains the backstop (idempotent) for when no login shape is warm.
+    await _release_blocks_over_login(app)
     async with app.lock:  # exclude concurrent dispatch/provision while we tear down
         eid = app.state.endpoint_id
         teardown = getattr(app.facility, "teardown", None)
