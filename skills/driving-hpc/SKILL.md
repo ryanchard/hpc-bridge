@@ -32,7 +32,7 @@ A Slurm block **spends your allocation**, so don't provision blind. Pick a machi
 **3. Provision the billed block, confirming spend.** `ensure_endpoint_up(shape="slurm", account="<allocation>", partition="<choice>", confirm_spend=True)`. The manager is already up from step 0, so this just kicks the Slurm block. The account, partition, and spend acknowledgement **persist for the session** (later calls reuse them) until you change them or `stop_endpoint`. A first call returning `provisioning` is normal.
 
 **4. Wait THROUGH the endpoint.** Poll `run_shell("squeue -u $USER -h -o '%i|%P|%T|%r'", shape="login")` — over the network, no SSH — for the pilot's state (`PENDING`→`RUNNING`) and *why* it pends (`Priority`, `Resources`). Wait for `RUNNING`, then call `ensure_endpoint_up(shape="slurm")` **once** to confirm the worker registered (`up`).
-   - **Between polls, don't foreground-`sleep`** (the harness blocks a standalone `sleep`). The queue state comes from the `run_shell` **MCP tool**, so a `Monitor`/`until <check>` loop can't drive the wait (it tests a *local shell* condition, not a tool call). Instead background a short wait (Claude Code: `run_in_background: true` on a `sleep`) and re-poll when it elapses — relaxed cadence (~20–30 s, escalate if it stays pending), and don't hammer `ensure_endpoint_up`.
+   - **Between polls: background a sleep, then END YOUR TURN.** Foreground `sleep` is blocked by the harness; the queue state comes from the `run_shell` **MCP tool**, so a `Monitor`/`until` loop can't drive the wait either (it tests a *local shell* condition, not a tool call). The pattern is: `Bash("sleep 30", run_in_background: true)` → write a one-line status to the user → **stop**. The harness re-invokes you when the background sleep exits, and *that* is when you re-poll. **Do NOT** call `Bash("wait")` or re-poll in the same turn after backgrounding the sleep — a fresh `Bash` shell has no background jobs, so `wait` returns instantly and you'd spin (re-polling every few ms while the abandoned sleep fires its hook later). Relaxed cadence (~20–30 s, escalate if it stays pending); don't hammer `ensure_endpoint_up`.
    - A pend can be seconds (node booting) or many minutes (queued behind priority) — the `squeue` reason tells you which, so you can tell the user instead of polling blindly.
 
 This is a *policy gate*: discovery surfaces the options + the budget, the human picks, and the pick drives provisioning.
@@ -40,6 +40,10 @@ This is a *policy gate*: discovery surfaces the options + the budget, the human 
 - **The spend floor is enforced, not advisory.** A billed Slurm shape **without** `confirm_spend=True` returns `needs_confirmation` and starts **nothing**. Only set `confirm_spend=True` *after* surfacing the balance to the user — it is your acknowledgement on their behalf, not a default to sprinkle on.
 - **Gate, not interrogation:** the consequential, cost-bearing choices are gated — the **allocation** (only when there's a real choice), the partition, and the spend confirmation; walltime/nodes are sensible-defaulted. Don't prompt for the unambiguous (a single allocation → just use it).
 - **Headless fallback (can't prompt):** stay on `shape="login"` (free, read-only) rather than spend unattended; only auto-confirm a billed block in autonomous mode with an explicit budget signal.
+
+## Stopping
+
+`stop_endpoint` is the explicit exit: it cancels the Slurm block (over the warm login shape) and stops the manager. Its result is **authoritative** — `"endpoint stopped; compute block released"` means the block is gone. **Don't** then `run_shell` a `squeue` to "double-check": that call would cold-start a *brand-new* endpoint (the one you just stopped is down), churning a bootstrap for nothing. If you truly must verify after a stop, use `login_shell("squeue -u $USER")` (raw SSH, stands nothing up) — but normally just trust the stop result.
 
 ## When to use `login_shell` (raw SSH) instead
 

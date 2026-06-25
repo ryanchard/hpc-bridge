@@ -416,7 +416,7 @@ class SlurmFacility:
         template = """\
 engine:
   type: GlobusComputeEngine
-  run_in_sandbox: false
+  run_in_sandbox: true
   max_workers_per_node: {{ max_workers_per_node | default(@@MAXW@@) }}
   address:
     type: address_by_interface

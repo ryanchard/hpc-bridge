@@ -356,7 +356,7 @@ async def test_provision_fresh_configures_writes_and_starts():
     assert "amqp_port: 443" in cli.written["manager"]  # firewall-friendly AMQP in manager cfg
     assert "HPC-Bridge Test" in cli.written["manager"]  # human display_name, not the dir name
     assert "provider_type" in cli.written["uep"]  # template references the var, not a literal
-    assert "run_in_sandbox: false" in cli.written["uep"]  # sandboxing off (matches local; no warning)
+    assert "run_in_sandbox: true" in cli.written["uep"]  # ShellFunctions expect a sandbox (per-task dir)
 
 
 async def test_provision_skips_configure_when_already_configured():
