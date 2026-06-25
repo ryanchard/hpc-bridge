@@ -22,5 +22,6 @@ htmlcov/
 .idea/
 .vscode/
 
-docs/architecture.html
-docs/poc-transcript.html
+# Obsidian machine-local UI state (keep the vault, drop the cursor/layout)
+docs/hpc-bridge-vault/.obsidian/workspace.json
+docs/hpc-bridge-vault/.obsidian/workspace-mobile.json

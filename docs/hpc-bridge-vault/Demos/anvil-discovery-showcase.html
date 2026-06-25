@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hpc-bridge · Anvil discovery logbook</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;700&family=Newsreader:opsz,wght@6..72,300;6..72,400;6..72,500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --void: #07090c;
+    --slate: #0e1218;
+    --panel: #141a22;
+    --panel-2: #19212b;
+    --line: #232d3a;
+    --line-soft: #1a222c;
+    --ink: #e8eef2;
+    --ink-dim: #93a1ad;
+    --ink-faint: #5d6b78;
+    --phosphor: #54e6a0;
+    --amber: #f0b35b;
+    --signal: #6db8ff;
+    --alert: #ff6b5e;
+    --serif: "Instrument Serif", Georgia, serif;
+    --body: "Newsreader", Georgia, serif;
+    --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--void); color: var(--ink);
+    font-family: var(--body); font-size: 17px; line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    background-image:
+      radial-gradient(900px 500px at 82% -8%, rgba(84,230,160,.06), transparent 60%),
+      radial-gradient(700px 500px at 0% 100%, rgba(109,184,255,.05), transparent 55%);
+  }
+  /* film grain */
+  body::after {
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 99; opacity: .035;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  .wrap { max-width: 940px; margin: 0 auto; padding: 0 28px; }
+
+  /* ---- masthead ---- */
+  header { position: relative; padding: 64px 0 40px; border-bottom: 1px solid var(--line); }
+  .ticker {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .22em; text-transform: uppercase;
+    color: var(--phosphor); display: flex; gap: 16px; align-items: center; margin-bottom: 26px;
+    animation: fade .8s ease both;
+  }
+  .ticker .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--phosphor);
+    box-shadow: 0 0 10px var(--phosphor); animation: pulse 2.4s ease-in-out infinite; }
+  .ticker .spacer { flex: 1; height: 1px; background: linear-gradient(90deg, var(--line), transparent); }
+  h1 {
+    font-family: var(--serif); font-weight: 400; font-size: clamp(44px, 8vw, 82px);
+    line-height: .98; letter-spacing: -.01em; margin: 0 0 22px; color: var(--ink);
+    animation: rise .9s cubic-bezier(.2,.7,.2,1) .05s both;
+  }
+  h1 em { font-style: italic; color: var(--phosphor); }
+  .lede {
+    max-width: 60ch; color: var(--ink-dim); font-size: 19px; margin: 0;
+    animation: rise .9s cubic-bezier(.2,.7,.2,1) .15s both;
+  }
+  .lede b { color: var(--ink); font-weight: 500; }
+  .stats {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; margin-top: 38px;
+    background: var(--line); border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+    animation: rise .9s cubic-bezier(.2,.7,.2,1) .25s both;
+  }
+  .stat { background: var(--slate); padding: 16px 18px; }
+  .stat .k { font-family: var(--mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-faint); }
+  .stat .v { font-family: var(--serif); font-size: 34px; line-height: 1.1; margin-top: 2px; }
+  .stat .v.good { color: var(--phosphor); }
+
+  /* ---- section scaffolding ---- */
+  section { padding: 56px 0; border-bottom: 1px solid var(--line-soft); }
+  .kicker {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .2em; text-transform: uppercase;
+    color: var(--amber); display: flex; align-items: center; gap: 12px; margin: 0 0 8px;
+  }
+  .kicker::before { content: ""; width: 22px; height: 1px; background: var(--amber); }
+  h2 { font-family: var(--serif); font-weight: 400; font-size: 32px; margin: 0 0 28px; letter-spacing: -.01em; }
+
+  /* ---- conversation turns ---- */
+  .turn { display: grid; grid-template-columns: 60px 1fr; gap: 20px; margin-bottom: 40px; }
+  .turn .rail { position: relative; }
+  .turn .rail .num {
+    font-family: var(--mono); font-size: 12px; color: var(--ink-faint);
+    border: 1px solid var(--line); border-radius: 50%; width: 38px; height: 38px;
+    display: grid; place-items: center; background: var(--slate);
+  }
+  .turn .rail::after {
+    content: ""; position: absolute; left: 19px; top: 44px; bottom: -40px; width: 1px;
+    background: linear-gradient(var(--line), transparent);
+  }
+  .turn:last-child .rail::after { display: none; }
+
+  .msg { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+  .msg .head {
+    display: flex; align-items: center; gap: 10px; padding: 12px 18px;
+    border-bottom: 1px solid var(--line-soft); background: var(--panel-2);
+    font-family: var(--mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+  }
+  .who-user { color: var(--signal); }
+  .who-claude { color: var(--phosphor); }
+  .msg .head .glyph { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .msg .body { padding: 18px 20px; }
+  .verbatim { font-family: var(--body); font-size: 19px; color: var(--ink); margin: 0; }
+  .verbatim.q { font-style: italic; }
+
+  /* ---- tool log ---- */
+  .toollog { margin-top: 18px; border: 1px dashed var(--line); border-radius: 10px; background: var(--void); }
+  .toollog .tl-head {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .16em; text-transform: uppercase;
+    color: var(--ink-faint); padding: 10px 14px; border-bottom: 1px solid var(--line-soft);
+  }
+  .toollog ul { margin: 0; padding: 12px 14px; list-style: none; display: grid; gap: 9px; }
+  .toollog li { font-family: var(--mono); font-size: 12.5px; color: var(--ink-dim); display: flex; gap: 10px; align-items: baseline; }
+  .toollog li .tool { color: var(--phosphor); white-space: nowrap; }
+  .toollog li .arrow { color: var(--ink-faint); }
+  .toollog li code { color: var(--ink); background: var(--slate); padding: 1px 6px; border-radius: 4px; word-break: break-all; }
+
+  /* ---- policy callout ---- */
+  .policy {
+    margin-top: 14px; display: grid; grid-template-columns: auto 1fr; gap: 14px; align-items: start;
+    background: linear-gradient(180deg, rgba(240,179,91,.06), transparent);
+    border: 1px solid var(--line); border-left: 2px solid var(--amber); border-radius: 10px; padding: 14px 16px;
+  }
+  .policy .tag {
+    font-family: var(--mono); font-size: 9px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--amber); border: 1px solid var(--amber); border-radius: 4px; padding: 3px 7px; white-space: nowrap;
+  }
+  .policy p { margin: 0; font-size: 15.5px; color: var(--ink-dim); }
+  .policy p b { color: var(--ink); font-weight: 500; }
+
+  /* ---- data tables ---- */
+  .ledger { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; margin-bottom: 16px; }
+  .ledger .cap {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--ink-dim); padding: 13px 18px; border-bottom: 1px solid var(--line-soft); background: var(--panel-2);
+    display: flex; justify-content: space-between;
+  }
+  .ledger .cap .via { color: var(--ink-faint); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 11px 18px; border-bottom: 1px solid var(--line-soft); font-size: 14.5px; }
+  tr:last-child td { border-bottom: none; }
+  th { font-family: var(--mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint); font-weight: 500; }
+  td.mono { font-family: var(--mono); font-size: 13px; }
+  tbody tr { transition: background .15s; }
+  tbody tr:hover { background: var(--panel-2); }
+  .chip { font-family: var(--mono); font-size: 12px; padding: 2px 9px; border-radius: 999px; }
+  .chip.idle { background: rgba(84,230,160,.12); color: var(--phosphor); }
+  .chip.queue { background: rgba(255,107,94,.12); color: var(--alert); }
+  .chip.def { background: rgba(109,184,255,.14); color: var(--signal); }
+
+  /* ---- budget meters ---- */
+  .meters { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .meter { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 22px; }
+  .meter .name { font-family: var(--mono); font-size: 12px; color: var(--ink-dim); letter-spacing: .06em; }
+  .meter .figure { font-family: var(--serif); font-size: 52px; line-height: 1; margin: 10px 0 2px; }
+  .meter .figure.cpu { color: var(--phosphor); }
+  .meter .figure.gpu { color: var(--signal); }
+  .meter .figure .unit { font-size: 18px; color: var(--ink-faint); }
+  .meter .of { font-size: 14px; color: var(--ink-dim); }
+  .track { height: 6px; border-radius: 999px; background: var(--void); margin-top: 16px; overflow: hidden; border: 1px solid var(--line-soft); }
+  .track > i { display: block; height: 100%; border-radius: 999px; }
+  .track.cpu > i { width: 91%; background: linear-gradient(90deg, #2ea36e, var(--phosphor)); box-shadow: 0 0 12px rgba(84,230,160,.5); }
+  .track.gpu > i { width: 100%; background: linear-gradient(90deg, #2f6fb0, var(--signal)); box-shadow: 0 0 12px rgba(109,184,255,.4); }
+  .meter small { display: block; margin-top: 12px; font-size: 13.5px; color: var(--ink-dim); }
+
+  .note { font-size: 14px; color: var(--ink-faint); margin: 18px 0 0; }
+  .note code { font-family: var(--mono); font-size: 12.5px; color: var(--ink-dim); }
+
+  /* ---- closing ---- */
+  .thesis {
+    font-family: var(--serif); font-size: clamp(26px, 4vw, 38px); line-height: 1.25;
+    color: var(--ink); max-width: 24ch; margin: 0;
+  }
+  .thesis em { font-style: italic; color: var(--phosphor); }
+  .thesis .sec { display: block; font-family: var(--body); font-size: 16px; color: var(--ink-dim); margin-top: 22px; max-width: 60ch; line-height: 1.6; }
+
+  footer { padding: 30px 0 60px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px;
+    font-family: var(--mono); font-size: 11px; color: var(--ink-faint); letter-spacing: .08em; }
+
+  @keyframes rise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
+  @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+  @media (max-width: 640px) {
+    .stats { grid-template-columns: 1fr 1fr; }
+    .meters { grid-template-columns: 1fr; }
+    .turn { grid-template-columns: 40px 1fr; gap: 14px; }
+    .turn .rail .num { width: 32px; height: 32px; }
+    .turn .rail::after { left: 16px; }
+    .policy { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="ticker">
+      <span class="dot"></span>
+      <span>hpc-bridge</span><span>·</span><span>facility: anvil</span>
+      <span class="spacer"></span>
+      <span>read-only session</span>
+    </div>
+    <h1>The discovery<br><em>logbook</em>.</h1>
+    <p class="lede">
+      A Claude Code session driving the <b>hpc-bridge</b> plugin against Purdue Anvil.
+      Every answer below was pulled live from the facility's login node — what can I run,
+      and what does it cost me — with <b>nothing provisioned and no allocation spent.</b>
+    </p>
+    <div class="stats">
+      <div class="stat"><div class="k">Facility</div><div class="v">Anvil</div></div>
+      <div class="stat"><div class="k">Login-node calls</div><div class="v good">4</div></div>
+      <div class="stat"><div class="k">Nodes started</div><div class="v">0</div></div>
+      <div class="stat"><div class="k">SUs spent</div><div class="v">0</div></div>
+    </div>
+  </header>
+
+  <!-- ================= TURN 1 ================= -->
+  <section>
+    <p class="kicker">Exchange 01 — partitions</p>
+    <h2>"What can I actually run?"</h2>
+
+    <div class="turn">
+      <div class="rail"><div class="num">01</div></div>
+      <div class="msg">
+        <div class="head who-user"><span class="glyph"></span>user</div>
+        <div class="body">
+          <p class="verbatim q">Hi claude, what partitions do I have access to / time on on Anvil? Dont request a node -- I just want to know what partitions I have access too</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="turn">
+      <div class="rail"><div class="num">→</div></div>
+      <div class="msg">
+        <div class="head who-claude"><span class="glyph"></span>claude · plugin response</div>
+        <div class="body">
+          <p class="verbatim">Probed the scheduler instead of starting one — three read-only login-node calls returned the partition list, my account associations, and the real per-QOS walltime caps.</p>
+
+          <div class="toollog">
+            <div class="tl-head">Tools run · hpc-bridge.login_shell ×3</div>
+            <ul>
+              <li><span class="tool">login_shell</span><span class="arrow">→</span><code>sinfo -h -o '%P|%a|%l|%D|%c|%m|%F'</code></li>
+              <li><span class="tool">login_shell</span><span class="arrow">→</span><code>sacctmgr -nP show assoc where user=$USER format=Account,QOS,Partition</code></li>
+              <li><span class="tool">login_shell</span><span class="arrow">→</span><code>sacctmgr -nP show qos format=Name,MaxWall,MaxTRES</code></li>
+            </ul>
+          </div>
+
+          <div class="policy">
+            <span class="tag">policy decision</span>
+            <p><b>Discovery before provisioning.</b> The model refuses to start a node blind. It gathers live partitions, associations, and QOS caps, then surfaces them as a <b>selection gate</b> — the human picks the partition. The probe also caught a trap: <code style="font-family:var(--mono);font-size:12px">sinfo</code> reports every walltime as <b>infinite</b>, so the model cross-checked the QOS table for the true caps before presenting them.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="ledger">
+      <div class="cap"><span>CPU partitions</span><span class="via">via cis250223</span></div>
+      <table>
+        <thead><tr><th>Partition</th><th>Node size</th><th>Walltime</th><th>Idle now</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">shared <span class="chip def">default</span></td><td>sub-node · ≤128c / 257 GB</td><td>4 days</td><td><span class="chip idle">26</span></td></tr>
+          <tr><td class="mono">standard</td><td>whole 128c / 257 GB</td><td>4 days</td><td><span class="chip idle">39</span></td></tr>
+          <tr><td class="mono">wholenode</td><td>whole 128c node</td><td>4 days</td><td><span class="chip idle">39</span></td></tr>
+          <tr><td class="mono">wide</td><td>many whole nodes (≤56)</td><td>12 h</td><td><span class="chip idle">39</span></td></tr>
+          <tr><td class="mono">highmem</td><td>128c / 1 TB</td><td>2 days</td><td><span class="chip idle">4</span></td></tr>
+          <tr><td class="mono">debug</td><td>whole nodes, small</td><td>2 h</td><td><span class="chip queue">0 · queues</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="ledger">
+      <div class="cap"><span>GPU partitions</span><span class="via">via cis250223-gpu</span></div>
+      <table>
+        <thead><tr><th>Partition</th><th>Node size</th><th>Walltime</th><th>Idle now</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">gpu</td><td>128c / 515 GB + GPUs</td><td>2 days</td><td><span class="chip queue">0 · queues</span></td></tr>
+          <tr><td class="mono">gpu-debug</td><td>same, debug</td><td>30 min</td><td><span class="chip queue">0 · queues</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">Idle counts are live from the moment of the probe. <code>shared</code>, <code>standard</code>, <code>wholenode</code> and <code>wide</code> all draw from the same ~39-node idle pool.</p>
+  </section>
+
+  <!-- ================= TURN 2 ================= -->
+  <section>
+    <p class="kicker">Exchange 02 — budgets</p>
+    <h2>"And what will it cost me?"</h2>
+
+    <div class="turn">
+      <div class="rail"><div class="num">02</div></div>
+      <div class="msg">
+        <div class="head who-user"><span class="glyph"></span>user</div>
+        <div class="body">
+          <p class="verbatim q">Do you know what my resource budgets are?</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="turn">
+      <div class="rail"><div class="num">→</div></div>
+      <div class="msg">
+        <div class="head who-claude"><span class="glyph"></span>claude · plugin response</div>
+        <div class="body">
+          <p class="verbatim">One more login-node helper — the ACCESS Service-Unit ledger. Touched nothing, returned both allocations' limits, usage and balance.</p>
+
+          <div class="toollog">
+            <div class="tl-head">Tools run · hpc-bridge.login_shell ×1</div>
+            <ul>
+              <li><span class="tool">login_shell</span><span class="arrow">→</span><code>mybalance</code></li>
+            </ul>
+          </div>
+
+          <div class="policy">
+            <span class="tag">policy decision</span>
+            <p><b>Budget bounds the recommendation.</b> Knowing the balance is <b>9,106 CPU SU</b> and <b>1,000 GPU SU</b> lets the model size what it would propose: ~71 whole-node-hours of CPU, a deliberately small GPU envelope. This is the input that keeps the model from recommending a job that would overrun the allocation — feasibility is checked <b>before</b> any node is requested.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="meters">
+      <div class="meter">
+        <div class="name">cis250223 · CPU</div>
+        <div class="figure cpu">9,106<span class="unit"> SU</span></div>
+        <div class="of">of 10,001 — ~91% remaining</div>
+        <div class="track cpu"><i></i></div>
+        <small>≈ 71 whole-node-hours (128 SU/node-hr), or ~9,100 core-hours spread however you like. 123 of the 895 SU used so far are yours.</small>
+      </div>
+      <div class="meter">
+        <div class="name">cis250223-gpu · GPU</div>
+        <div class="figure gpu">1,000<span class="unit"> SU</span></div>
+        <div class="of">of 1,000 — untouched</div>
+        <div class="track gpu"><i></i></div>
+        <small>GPU SUs bill per-GPU-hour at a higher multiplier, so the practical envelope is smaller than the figure suggests. Budget GPU jobs carefully.</small>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= THESIS ================= -->
+  <section style="border-bottom:none;">
+    <p class="kicker">The pattern</p>
+    <p class="thesis">
+      The agent never <em>guessed</em>. It <em>gathered</em>, then let the human decide.
+      <span class="sec">Partitions, associations, QOS caps, the SU ledger — all pulled straight from the facility over read-only login-node calls. Each answer carries the tools that produced it and the policy decision it informs: <b style="color:var(--ink);font-weight:500">discovery is the cheap, honest first step before any real compute.</b> Zero nodes provisioned. Zero SUs spent.</span>
+    </p>
+  </section>
+
+  <footer>
+    <span>Generated by Claude Code · hpc-bridge plugin</span>
+    <span>facility: anvil · read-only discovery · 2026-06-05</span>
+  </footer>
+
+</div>
+</body>
+</html>
