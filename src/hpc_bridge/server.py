@@ -13,12 +13,14 @@ from pathlib import Path
 from mcp.server.fastmcp import Context, FastMCP
 
 from . import dispatch, session_shell
+from .catalog.entry import CatalogSummary
+from .catalog.parsers import PARSERS
 from .cost import cap_output, estimate_spend
 from .endpoint import EndpointCLI
 from .facility.base import Facility
 from .facility.local import LocalFacility
 from .lifecycle import EndpointState, ensure_warm
-from .models import EndpointStatus, LoginShellResult, ShellOutcome
+from .models import ConnectFacilityResult, EndpointStatus, LoginShellResult, ShellOutcome
 from .profile import Profile
 from .runner import CanaryResult, GlobusRunner
 from .session_shell import Session
@@ -50,6 +52,9 @@ class ShapeRuntime:
 class AppCtx:
     facility: Facility
     profile: Profile
+    # Catalog machine id bound by connect_facility (the agentic path); None when the facility was
+    # fixed at startup (HPC_BRIDGE_MACHINE/FACILITY) or is local dev.
+    machine: str | None = None
     state: EndpointState = field(default_factory=EndpointState)
     scratch_root: str = "~/.hpc-bridge"
     charge_factor: float = 0.0
@@ -87,34 +92,47 @@ def _slurm_facility(profile, *, alias: str, user: str) -> Facility:
     return SlurmFacility(profile, cli, store=store, alias=alias)
 
 
-async def _catalog_facility(machine: str) -> Facility:
-    """Build a facility from a catalog entry (HPC_BRIDGE_MACHINE), sourcing the machine config
-    from `make_catalog()` (the live Globus Search index when HPC_BRIDGE_SEARCH_INDEX is set, else
-    the bundled seed). v1 slice: SSH-bootstrap Slurm machines only."""
-    from .facility.remote import profile_from_catalog_entry
-
-    entry = await make_catalog().get(machine)
-    if entry is None:
-        raise RuntimeError(f"HPC_BRIDGE_MACHINE={machine!r} not found in the catalog")
+def _unsupported_entry_reason(entry) -> str | None:
+    """Why this catalog entry can't drive a stand-up yet (v1: SSH-bootstrap Slurm only), or None."""
     if entry.compute_mep_uuid:
-        raise RuntimeError(
-            f"{machine}: entry has a compute_mep_uuid (BYO multi-user endpoint); catalog-driven "
-            "MEP dispatch is not wired yet — use HPC_BRIDGE_ENDPOINT_ID, or see Plan 2"
+        return (
+            "entry has a compute_mep_uuid (BYO multi-user endpoint); catalog-driven MEP dispatch "
+            "is not wired yet — use HPC_BRIDGE_ENDPOINT_ID"
         )
     if entry.compute.scheduler != "slurm":
-        raise RuntimeError(
-            f"{machine}: scheduler {entry.compute.scheduler!r} not supported yet (slurm only)"
-        )
+        return f"scheduler {entry.compute.scheduler!r} not supported yet (slurm only)"
+    return None
+
+
+def _facility_from_entry(entry, *, account: str) -> Facility:
+    """Build a SlurmFacility from a catalog entry + per-user runtime values — shared by the startup
+    path (make_facility) and the runtime path (connect_facility). `account` may be empty for the
+    agentic flow; ensure_endpoint_up(account=…) overrides it per Slurm block."""
+    from .facility.remote import profile_from_catalog_entry
+
     user = _require_env("HPC_BRIDGE_SSH_USER")
     alias = os.environ.get("HPC_BRIDGE_SSH_HOST", "").strip() or entry.ssh_host
     profile = profile_from_catalog_entry(
         entry,
         user=user,
-        account=_require_env("HPC_BRIDGE_ACCOUNT"),
+        account=account,
         partition=os.environ.get("HPC_BRIDGE_PARTITION", "").strip() or None,
         venv=os.environ.get("HPC_BRIDGE_REMOTE_VENV", "").strip() or None,
     )
     return _slurm_facility(profile, alias=alias, user=user)
+
+
+async def _catalog_facility(machine: str) -> Facility:
+    """Build a facility from a catalog entry (HPC_BRIDGE_MACHINE), sourcing the machine config
+    from `make_catalog()` (the live Globus Search index when HPC_BRIDGE_SEARCH_INDEX is set, else
+    the bundled seed). v1 slice: SSH-bootstrap Slurm machines only."""
+    entry = await make_catalog().get(machine)
+    if entry is None:
+        raise RuntimeError(f"HPC_BRIDGE_MACHINE={machine!r} not found in the catalog")
+    reason = _unsupported_entry_reason(entry)
+    if reason:
+        raise RuntimeError(f"{machine}: {reason}")
+    return _facility_from_entry(entry, account=_require_env("HPC_BRIDGE_ACCOUNT"))
 
 
 async def make_facility() -> Facility:
@@ -424,6 +442,7 @@ async def _provision(
 # metacharacters). Slurm partition names are short identifiers; this allowlist covers real ones
 # (letters, digits, '_', '-', '.', ':') without admitting an injection vector.
 _VALID_PARTITION = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
+_VALID_ACCOUNT = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 
 
 def _apply_partition(rt: ShapeRuntime, partition: str | None) -> None:
@@ -444,11 +463,27 @@ def _apply_partition(rt: ShapeRuntime, partition: str | None) -> None:
     rt.warm_confirmed_at = None
 
 
+def _apply_account(rt: ShapeRuntime, account: str | None) -> None:
+    """Point this shape's next provision at `account` (the chosen allocation) — the account
+    analogue of _apply_partition. Slurm-only; the config_template renders `account` from
+    user_endpoint_config with the profile default, so a selection here overrides it. A change
+    invalidates the cached runner (banking the prior warm interval) and drops the warm
+    confirmation; the selection persists for the session."""
+    if account is None or not rt.user_endpoint_config.get("is_slurm"):
+        return
+    if rt.user_endpoint_config.get("account") == account:
+        return
+    rt.user_endpoint_config["account"] = account
+    rt.runner_stale = True
+    rt.warm_confirmed_at = None
+
+
 async def _ensure_endpoint_up(
     app: AppCtx,
     shape: str = DEFAULT_SHAPE,
     partition: str | None = None,
     confirm_spend: bool = False,
+    account: str | None = None,
 ) -> EndpointStatus:
     if partition is not None and not _VALID_PARTITION.match(partition):
         return EndpointStatus(
@@ -457,13 +492,22 @@ async def _ensure_endpoint_up(
             endpoint_id=app.state.endpoint_id,
             notice=f"invalid partition {partition!r}: must match [A-Za-z0-9_.:-]{{1,64}}",
         )
+    if account is not None and not _VALID_ACCOUNT.match(account):
+        return EndpointStatus(
+            status="down",
+            block_state="cold",
+            endpoint_id=app.state.endpoint_id,
+            notice=f"invalid account {account!r}: must match [A-Za-z0-9_.:-]{{1,64}}",
+        )
     async with app.lock:  # serialize provisioning/state mutation across concurrent tool calls
         rt = _shape_runtime(app, shape)
         # A login shape has no partition; surface that we ignored a supplied one rather than
         # silently dropping the user's selection.
         ignored = partition is not None and not rt.user_endpoint_config.get("is_slurm")
         _apply_partition(rt, partition)
+        _apply_account(rt, account)
         active_partition = rt.user_endpoint_config.get("partition")
+        active_account = rt.user_endpoint_config.get("account")
         try:
             # force_canary: a status probe must re-verify the worker (and kick a cold block),
             # never trust the TTL — that's exactly the cold-start gap callers are asking about.
@@ -474,6 +518,7 @@ async def _ensure_endpoint_up(
                 block_state="cold",
                 endpoint_id=app.state.endpoint_id,
                 partition=active_partition,
+                account=active_account,
                 notice=f"hpc-bridge error: {type(exc).__name__}: {exc}"[:500],
             )
         if block == "needs_confirmation":  # the deterministic spend floor — nothing was started
@@ -483,6 +528,7 @@ async def _ensure_endpoint_up(
                 block_state="cold",
                 endpoint_id=app.state.endpoint_id,
                 partition=active_partition,
+                account=active_account,
                 notice=(
                     f"billed Slurm block{where} ({app.profile.nodes_per_block} node(s)): spend "
                     "not yet confirmed. Surface the allocation balance (e.g. login_shell('mybalance')) "
@@ -503,13 +549,18 @@ async def _ensure_endpoint_up(
             endpoint_id=app.state.endpoint_id,
             session_spend=_total_session_spend(app),
             partition=active_partition,
+            account=active_account,
             notice=notice,
         )
 
 
 @mcp.tool()
 async def ensure_endpoint_up(
-    ctx: Context, shape: str = "slurm", partition: str | None = None, confirm_spend: bool = False
+    ctx: Context,
+    shape: str = "slurm",
+    partition: str | None = None,
+    confirm_spend: bool = False,
+    account: str | None = None,
 ) -> EndpointStatus:
     """Ensure the personal HPC endpoint is up; report whether its pilot block is warm.
 
@@ -517,13 +568,109 @@ async def ensure_endpoint_up(
     partition; the choice persists for the session until changed. Omit it to keep the facility
     default. Ignored for shape="login" (a login-node LocalProvider has no partition).
 
+    Pass `account` (the allocation chosen from connect_facility's options) to charge the Slurm
+    block to it; like `partition`, it persists for the session and is ignored for shape="login".
+
     `confirm_spend` is the deterministic budget floor: a billed Slurm block will not start until
     you pass confirm_spend=True (after surfacing the allocation balance to the user — see the
     driving-hpc skill). Without it the call returns status="needs_confirmation" and provisions
     nothing. The acknowledgement persists for the session. Not needed for shape="login" (free)."""
     return await _ensure_endpoint_up(
-        ctx.request_context.lifespan_context, shape, partition, confirm_spend
+        ctx.request_context.lifespan_context, shape, partition, confirm_spend, account
     )
+
+
+async def _list_facilities(query: str = "") -> list[CatalogSummary]:
+    return await make_catalog().discover(query)
+
+
+@mcp.tool()
+async def list_facilities(query: str = "") -> list[CatalogSummary]:
+    """List the HPC machines hpc-bridge can stand up, from the facility catalog (the Globus Search
+    index, or the bundled seed). Empty query lists all; a query filters by name/description.
+
+    Returns agent-safe summaries (no executable config or raw UUIDs). Pick one and call
+    connect_facility(machine) to bring up its login node and see your allocations. No SSH, no
+    provisioning, no spend."""
+    return await _list_facilities(query)
+
+
+async def _connect_facility(app: AppCtx, machine: str) -> ConnectFacilityResult:
+    entry = await make_catalog().get(machine)
+    if entry is None:
+        return ConnectFacilityResult(
+            phase="not_found",
+            machine=machine,
+            notice=f"{machine!r} is not in the catalog — call list_facilities() to see options",
+        )
+    reason = _unsupported_entry_reason(entry)
+    if reason is None and entry.allocation.parser not in PARSERS:
+        reason = (
+            f"allocation parser {entry.allocation.parser!r} not implemented yet "
+            f"(have: {sorted(PARSERS)})"
+        )
+    if reason:
+        return ConnectFacilityResult(phase="unsupported", machine=machine, notice=reason)
+    try:
+        facility = _facility_from_entry(
+            entry, account=os.environ.get("HPC_BRIDGE_ACCOUNT", "").strip()
+        )
+    except Exception as exc:  # noqa: BLE001 - surface a missing SSH_USER/KEY as a structured result
+        return ConnectFacilityResult(
+            phase="failed",
+            machine=machine,
+            notice=f"hpc-bridge error: {type(exc).__name__}: {exc}"[:500],
+        )
+    async with app.lock:  # switch machines: drop the old shapes/endpoint, bind the new facility
+        for rt in app.shapes.values():
+            if rt.runner is not None:
+                rt.runner.close()
+        app.shapes.clear()
+        app.state = EndpointState()
+        app.facility = facility
+        app.machine = machine
+        try:
+            block = await _provision(app, "login", force_canary=True)
+        except Exception as exc:  # noqa: BLE001 - provisioning unavailable (e.g. non-Linux host)
+            return ConnectFacilityResult(
+                phase="failed",
+                machine=machine,
+                notice=f"hpc-bridge error: {type(exc).__name__}: {exc}"[:500],
+            )
+    if block != "warm":  # login node still coming up — nothing to read yet
+        return ConnectFacilityResult(
+            phase="provisioning",
+            machine=machine,
+            notice="bringing up the login node; call connect_facility again shortly to read your allocations",
+        )
+    out = await _run_shell(app, entry.allocation.command, shape="login")
+    if out.phase != "complete" or out.exit_code != 0:
+        return ConnectFacilityResult(
+            phase="failed",
+            machine=machine,
+            notice=f"allocation discovery ({entry.allocation.command!r}) failed: "
+            f"{out.notice or out.stderr_snippet or out.phase}",
+        )
+    allocations = PARSERS[entry.allocation.parser](out.stdout)
+    return ConnectFacilityResult(
+        phase="needs_account",
+        machine=machine,
+        allocations=allocations,
+        notice="pick an allocation, then ensure_endpoint_up(account=…, partition=…, confirm_spend=True)",
+    )
+
+
+@mcp.tool()
+async def connect_facility(machine: str, ctx: Context) -> ConnectFacilityResult:
+    """Select an HPC machine from the catalog and bring up its (free) login node, then list the
+    allocations a Slurm block can be charged to.
+
+    `machine` is an id/subject/alias from list_facilities(). This binds the machine, stands up the
+    login shape (SSH cold-bootstrap once, or reuse an online endpoint — no Slurm account needed),
+    runs the facility's allocation command over Compute, and returns phase="needs_account" with the
+    parsed allocations. Pick one, then ensure_endpoint_up(account=…, partition=…, confirm_spend=True).
+    phase="provisioning" means the login node is still warming — call again shortly."""
+    return await _connect_facility(ctx.request_context.lifespan_context, machine)
 
 
 async def _stop_endpoint(app: AppCtx) -> EndpointStatus:
