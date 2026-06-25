@@ -77,3 +77,15 @@ async def test_search_discover_error_returns_empty(tmp_path):
     client = _FakeSearchClient(fail=True)
     c = SearchCatalog(index_id="idx", client=client, cache_dir=tmp_path)
     assert await c.discover("") == []
+
+
+async def test_search_get_resolves_a_bare_id_via_search(tmp_path):
+    # connect_facility("anvil") should resolve, not only the full subject "purdue:anvil"
+    # (the live-test agent tried the bare id first and got not_found).
+    e = fake_entry(id="anvil", facility_key="purdue")  # subject "purdue:anvil"
+    client = _FakeSearchClient(subjects={"purdue:anvil": e})  # get_subject("anvil") -> miss
+    c = SearchCatalog(index_id="idx", client=client, cache_dir=tmp_path)
+    got = await c.get("anvil")
+    assert got is not None and got.subject == "purdue:anvil"
+    # the full subject still resolves directly (no extra search)
+    assert (await c.get("purdue:anvil")).id == "anvil"
