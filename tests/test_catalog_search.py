@@ -21,7 +21,7 @@ class _FakeSearchClient:
         if self._fail:
             raise RuntimeError("search offline")
         if subject not in self._subjects:
-            return {"entries": []}  # a simple miss
+            raise RuntimeError("404: subject not found")  # the real Search API 404s, not empty
         return _gmeta(self._subjects[subject])
 
     def post_search(self, index_id, query):

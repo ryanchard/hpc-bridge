@@ -29,14 +29,18 @@ class SearchCatalog:
     async def get(self, machine_id: str) -> CatalogEntry | None:
         try:
             resp = await asyncio.to_thread(self._client.get_subject, self._index_id, machine_id)
+            entries = resp.get("entries") or []
         except Exception:
-            return self._from_cache(machine_id)  # offline: cached index data only, else None
-        entries = resp.get("entries") or []
+            # the Search API 404s on a missing subject (it does NOT return empty); a transient
+            # error lands here too. Either way, fall through to the id search, then the cache.
+            entries = []
         if entries:
             entry = CatalogEntry.model_validate(entries[0]["content"])  # re-validate on read
             self._cache_file(machine_id).write_text(entry.model_dump_json())  # write-through
             return entry
-        return await self._by_id(machine_id)  # exact-subject miss: try resolving a bare id
+        # subject didn't resolve: try a bare id (e.g. "anvil" -> "purdue:anvil"), else offline cache
+        by_id = await self._by_id(machine_id)
+        return by_id if by_id is not None else self._from_cache(machine_id)
 
     async def _by_id(self, machine_id: str) -> CatalogEntry | None:
         # connect_facility("anvil") should work, not only the full subject "purdue:anvil" — match
