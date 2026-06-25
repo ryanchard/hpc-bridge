@@ -9,18 +9,22 @@
 
 | Tool | Helper | Does |
 |---|---|---|
-| `ensure_endpoint_up` (`:414`) | `_ensure_endpoint_up` (`:350`) | provision/probe; report warm via the canary |
-| `run_shell` (`:592`) | `_run_shell` (`:542`) | dispatch a command to the warm block |
-| `reset_session` (`:610`) | `_reset_session` (`:562`) | clear a session's cwd/env |
-| `stop_endpoint` (`:467`) | `_stop_endpoint` (`:432`) | teardown + release the block |
-| `login_shell` (`:494`) | `_login_shell` (`:473`) | read-only login-node command over SSH |
+| `list_facilities` | `_list_facilities` | browse the [[Facility catalog\|catalog]] (agent-safe summaries) |
+| `connect_facility` | `_connect_facility` | bind a facility, bring up its login shape, list allocations |
+| `ensure_endpoint_up` | `_ensure_endpoint_up` | provision/probe; report warm via the canary; thread account/partition |
+| `run_shell` | `_run_shell` | dispatch a command to the warm block / login shape |
+| `reset_session` | `_reset_session` | clear a session's cwd/env |
+| `stop_endpoint` | `_stop_endpoint` | teardown (scancel + gce stop) + reset state |
+| `login_shell` | `_login_shell` | read-only login-node command over SSH (cold-start escape hatch) |
+
+(Helpers carry the logic; the `@mcp.tool()` wrappers are thin. Exact line numbers drift — grep the symbol.)
 
 ## How it works
 
 - **State.** `AppCtx` (`:50`) holds the facility, profile, endpoint state, the per-shape `ShapeRuntime` (`:31` — its Executor, canary result, and spend clock), and an `asyncio.Lock`. `lifespan` (`:133`) builds it from `make_facility` + env.
 - **Facility selection.** `make_facility` returns a `SlurmFacility` resolved from the [[Facility catalog|catalog]] (`HPC_BRIDGE_MACHINE`, or `connect_facility` at runtime — by id *or* subject) or a `LocalFacility`, reading the login-node pin from [[state]] and rebinding the CLI to it. `lifespan` **boots resiliently** — a failed `make_facility` (stale env, no index) warns and starts unbound rather than crashing; `connect_facility` then binds and **moves `scratch_root`** to the facility ([[Session continuity]]).
 - **The provision choke point.** `_provision` (`:297`): bootstrap if there's no endpoint → `ensure_warm` ([[lifecycle]]) → on `"warm"`, confirm a *live worker* via `_confirm_worker` (`:201`, the canary) → `_settle_billing`. Both `ensure_endpoint_up` and `run_shell` (via `_ensure_warm_runner`) reach it.
-- **The lock.** Serialises provision / runner-swap / teardown so concurrent tool calls can't race `AppCtx`. Dispatch happens *outside* the lock, so a long command doesn't serialise everything else. `stop_endpoint` releases the block over the warm login shape (AMQP, bounded `AMQP_RELEASE_TIMEOUT_S`=25s) and then caps the SSH teardown at `STOP_TIMEOUT_S` (45s) — so a slow login node can't hold the lock, and the whole server, hostage. A successful AMQP release makes teardown skip its redundant SSH `cancel_blocks`.
+- **The lock.** Serialises provision / runner-swap / teardown so concurrent tool calls can't race `AppCtx`. Dispatch happens *outside* the lock, so a long command doesn't serialise everything else. `stop_endpoint` is just `teardown` (`scancel` + `gce stop`, each bounded by `_TEARDOWN_SSH_S`) → reset state; the runner `close()` is non-blocking ([[runner]]) so a stop returns promptly.
 - **The spend floor.** `_provision` returns `"needs_confirmation"` for a billed (slurm) shape until `confirm_spend=True` — see [[Resource shapes & the spend floor]]. Partition selection is threaded in via `_apply_partition` (`:332`).
 
 > [!warning] "warm" means a *worker* answered — not "manager online"
