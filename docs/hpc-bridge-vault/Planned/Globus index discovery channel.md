@@ -1,40 +1,41 @@
 # Globus index discovery channel
 
 > [!warning] Planned · transient
-> Designed work, **not current behaviour** — expect this note to churn and be deleted as it lands. **Status: ready to implement (slice 1).** Tracking: [#7](https://github.com/ryanchard/hpc-bridge/issues/7). Supersedes `docs/design/discovery-channels.md` (being absorbed here per the vault's single-home plan).
+> **Plan 1 (the catalog data layer) is built — in review ([PR #15](https://github.com/ryanchard/hpc-bridge/pull/15), branch `facility-catalog`).** Plan 2 (the agentic selection flow) is next. Tracking: [#7](https://github.com/ryanchard/hpc-bridge/issues/7). This note is the spec + status; it churns as the work lands.
 
 ## Goal
 
-Replace the hardcoded `anvil_profile` ([[facility-remote]]) with a **resolver** that builds a `MachineProfile` from an entry in a self-owned **Globus Search index** — so adding a facility is *data*, not *code*. The index is the *happiest* discovery channel; everything else (login-node probe, the human) is fallback. Contrast with what exists now: [[Discovery today]].
+Replace the hardcoded `anvil_profile` ([[facility-remote]]) with a **catalog-driven resolver** that builds a `MachineProfile` from an entry in a self-owned **Globus Search index** — so adding a facility is *data*, not *code*. The index is the *happiest* discovery channel; everything else (login-node probe, the human) is fallback. Contrast with what exists now: [[Discovery today]].
 
-## Design
+## Design — as built (Plan 1)
 
-The conceptual frame — the channel model, the provide-vs-discover matrix, the principles, and the resolution trace — lives in **[[Discovery channel model]]**. This note is the concrete *first build* of that model. The slice-specific part:
+The conceptual frame (channel model, provide-vs-discover matrix, principles, the trace) lives in **[[Discovery channel model]]**. A `catalog/` package implements the resolver:
 
-**The index.** A *public* Globus Search index (`6ff95fb8-1113-42be-a811-3d1cb5a67bd5`), queried **anonymously** via `globus_sdk.SearchClient` (already a transitive dep — **no CLI subprocess, no new auth**). `get_subject("purdue:anvil")` resolves a facility; `search(q=…)` browses. An entry carries `ssh_host`, `auth_method`, `compute.{scheduler, interface, env_setup, scratch_root}`, per-run `defaults.{…}`, an allocation `command` + named `parser`, and `provenance`.
+- **`CatalogEntry`** (Pydantic) — `compute:` (pinned, user can't override) / `defaults:` (overridable) split; named allocation `parser`; `{user}`/`{venv}` templating; `worker_init` *derived*; `account` *not* stored; UUIDs validated on read. `profile_kwargs()` is the binding seam → `MachineProfile`.
+- **`CatalogProvider`** seam — `SearchCatalog` (live `get_subject` → write-through cache → bundled fallback), `BundledCatalog` (seed YAML, shipped in the wheel), `FakeCatalog` (the test double = our "`SearchClient` injection" seam).
+- **3-way `make_facility`** — `HPC_BRIDGE_MACHINE` → catalog; `HPC_BRIDGE_FACILITY=anvil` → the hardcoded path (kept); else local. *Validated:* the catalog path produces a **byte-identical `MachineProfile`** to `anvil_profile`.
+- **Trust** — the plugin is **read-only**; writes are **curator-only** via the `hpc-bridge-catalog` ingest (PR review = the audit trail), because an open-write catalog of executable config (`env_setup` bash, UUIDs) is an injection vector. A `CatalogSummary` is the **agent-safe view** (no executable config / raw UUIDs). `provenance: plugin-validated` is *reserved, not built* — this supersedes our earlier "plugin write-back loop."
 
-## Plan
+> [!note] Open decision — the read auth path
+> As built, `SearchClient(app=Client().app)` reuses the Compute identity → needs a one-time search-scope login (server never prompts; **falls back to bundled** if not granted) — and supports `visible_to`-restricted entries. But the index is **public**, so an **anonymous** `SearchClient()` reads it with **no login** (simpler for a public v1). Decide per whether facility-restricted entries are wanted; the bundled fallback de-risks either way.
 
-**Resolve flow:** `facility id → SearchClient.get_subject → content → MachineProfile`, substituting `{user}`/`{venv}` at build time. A query failure **degrades** to a bundled seed entry (today's `anvil_profile`), then to the human — never a hard stop.
+## Plan 2 — next (the agentic selection flow)
 
-**Three seams, built test-first:**
-1. a **`SearchClient` injection point** — fake it in unit tests;
-2. per-channel **ablation flags** (`HPC_BRIDGE_DISABLE_CHANNELS=…`) — disable a channel, assert the fallback still delivers;
-3. a **resolution trace** (`{value, source, validated}` per fact) — observability **and** the test oracle **and** the write-back seed.
+Designed (`docs/design/facility-catalog.md` §5 — to be absorbed here), **not built**:
+- tools `list_facilities` / `connect_facility` → a `needs_account` state machine → `ensure_endpoint_up(account=…)`;
+- deterministic allocation **parsers** (`mybalance`/`sbank`/`iris`) — stdout parsed in code, never handed to the model;
+- **account-from-selection** (today it's still the `HPC_BRIDGE_ACCOUNT` env var);
+- allocation discovery runs **through the login shape** (Compute), not SSH — the same endpoint-first move as [[Discovery today]].
 
-**Test layers:** hermetic unit (fake `SearchClient` → `MachineProfile` + trace; degrade-to-seed; ablation; named-parser fixtures; schema-driven "what to ask"); the index is testable with **no auth** (a recorded fixture + a live "still matches the fixture" check); the [[Warmth, the canary & cold-start|canary]] is the production validator; the agent cascade via scripted ablation scenarios.
+## Our extras (later slices, optional)
 
-**Slices:**
-1. **The resolver + bundled fallback** — replace `make_facility`'s hardcode. *(next)*
-2. The **resolution trace** + **ablation flags**.
-3. The **Socratic fallback** as an explicit path (human → login-probe → canary).
-4. The **write-back loop** — a canary-validated stand-up proposes a `provenance: plugin-validated` entry.
+From [[Discovery channel model]], not in the catalog yet: per-channel **ablation flags** + the **resolution trace** (today the bundled-vs-search selector is a *coarse* ablation, and resolution is single-source so a per-fact trace is less load-bearing); the explicit **Socratic** human-elicitation fallback (today an unknown machine simply isn't found). Fold in if/when the matrix-as-tests discipline is wanted.
 
 ## Status
 
-- **Done:** the index exists and is queryable; the discovery *workflow* (establish → discover → gate → provision → wait) is live ([[Discovery today]]); endpoint reuse over the web ([[facility-remote]]).
-- **Next (ready):** slice 1 — the resolver.
-- **Deferred (simplicity/observability):** ACCESS MCP / Operations API as additional channels; the symbol-sync snippet tooling for the vault.
+- **Built (in review, [#15](https://github.com/ryanchard/hpc-bridge/pull/15)):** Plan 1 — the catalog data layer · 3-way `make_facility` · bundled fallback · the `hpc-bridge-catalog` ingest curator · `globus-sdk` as a direct dep.
+- **Next:** Plan 2 — the allocation-selection flow.
+- **Deferred:** ACCESS MCP / Operations API channels; the ablation/trace/Socratic extras.
 
 ## See also
-[[Discovery today]] · [[facility-remote]] · [[Two-channel architecture]] · [[Happy path]] · [[Home]]
+[[Discovery channel model]] · [[Discovery today]] · [[facility-remote]] · [[Happy path]] · [[Home]]
