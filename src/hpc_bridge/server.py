@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-import shlex
 import sys
 import time
 from collections.abc import AsyncIterator, Callable
@@ -28,11 +27,6 @@ from .session_shell import Session
 from .shapes import SHAPES, shape_config
 
 DEFAULT_SHAPE = "slurm"
-# Block-release over the warm login shape (AMQP) — bounded so a slow worker can't make stop hang.
-AMQP_RELEASE_TIMEOUT_S = 25.0
-# Cap the SSH teardown (gce stop + the cancel_blocks backstop) so an overloaded login node can't
-# make stop feel hung. With the block already released over AMQP, this is usually just `gce stop`.
-STOP_TIMEOUT_S = 45.0
 
 
 @dataclass
@@ -687,38 +681,14 @@ async def connect_facility(facility: str, ctx: Context) -> ConnectFacilityResult
     return await _connect_facility(ctx.request_context.lifespan_context, facility)
 
 
-async def _release_blocks_over_login(app: AppCtx) -> bool:
-    """Cancel this endpoint's Slurm block(s) over the WARM login shape (AMQP) — instant, vs a fresh
-    SSH to a possibly-loaded login node. Returns True if the scancel was dispatched (so teardown can
-    skip its redundant SSH cancel). Best-effort + bounded, and only when the login shape is already
-    warm (else run_shell would SSH-bootstrap, defeating the point). MUST run before `gce stop`, which
-    kills the AMQP path. Finds our blocks precisely by the UEP StdOut marker so it never touches
-    another endpoint's jobs (mirrors RemoteEndpointCLI)."""
-    eid = app.state.endpoint_id
-    login = app.shapes.get("login")
-    if eid is None or login is None or login.runner is None or login.warm_confirmed_at is None:
-        return False
-    cmd = (
-        'ids=$(squeue -u "$USER" -h -O "JobID:30,StdOut:1024" 2>/dev/null '
-        f"| grep -F {shlex.quote('uep.' + eid)} | awk '{{print $1}}'); "
-        '[ -n "$ids" ] && scancel $ids; echo "released: ${ids:-none}"'
-    )
-    try:
-        # Bounded by the dispatch's HARD result timeout (NOT asyncio.wait_for, which can't cancel
-        # a to_thread call — that was the 215s "stop hang"). A slow/busy login worker now caps at
-        # AMQP_RELEASE_TIMEOUT_S; on timeout the outcome is `failed` -> False -> SSH backstop runs.
-        out = await _run_shell(app, cmd, shape="login", dispatch_timeout=AMQP_RELEASE_TIMEOUT_S)
-        return out.phase == "complete"  # the scancel actually ran on the worker
-    except Exception:  # noqa: BLE001 - best-effort; teardown's SSH cancel_blocks backstops a miss
-        return False
-
-
 async def _stop_endpoint(app: AppCtx) -> EndpointStatus:
-    """Tear down the current endpoint, release its compute, and reset session state."""
-    # Fast path: release the Slurm block (the cost) over the warm login shape (AMQP) before the SSH
-    # teardown — a fresh SSH to a loaded login node is slow, but the login worker answers fast. When
-    # that succeeds, teardown skips its redundant SSH cancel_blocks and only does `gce stop`.
-    released = await _release_blocks_over_login(app)
+    """Tear down the current endpoint, release its compute, and reset session state.
+
+    `teardown` cancels the Slurm block (`scancel`) and stops the manager — both over SSH, each
+    bounded by `ssh_exec`'s own (cancellable) timeout. The endpoint is being destroyed, so we don't
+    route the cancel over the (ephemeral) login worker; SSH is reliable and needed for `gce stop`
+    anyway. (The old multi-minute hang was `runner.close()` blocking on `Executor.shutdown(wait=True)`
+    — see [[runner]] — not the cancel; fixed independently.)"""
     async with app.lock:  # exclude concurrent dispatch/provision while we tear down
         eid = app.state.endpoint_id
         teardown = getattr(app.facility, "teardown", None)
@@ -730,28 +700,9 @@ async def _stop_endpoint(app: AppCtx) -> EndpointStatus:
             notice = "this facility has no teardown (local dev)"
         else:
             try:
-                # Cap the SSH teardown so an overloaded login node can't hold the lock — and the
-                # whole server — hostage. A timed-out stop keeps the pin and lets the block
-                # idle-release (min_blocks=0); the cost is already released over AMQP above.
-                await asyncio.wait_for(
-                    teardown(eid, skip_block_cancel=released), timeout=STOP_TIMEOUT_S
-                )
+                await teardown(eid)
                 notice = "endpoint stopped; compute block released"
                 torn_down = True
-            except asyncio.TimeoutError:
-                # Keep the pin (torn_down stays False): the manager may still be running, so a
-                # reconnect should rebind to it. The cost is the block, which idle-releases (or was
-                # already released over AMQP — said explicitly so the user knows spend has stopped).
-                if released:
-                    notice = (
-                        "compute block released (over AMQP); the manager stop is slow (login node "
-                        "overloaded) and was left to finish on its own — no further cost accrues."
-                    )
-                else:
-                    notice = (
-                        f"stop timed out after {STOP_TIMEOUT_S:.0f}s (login node may be overloaded); "
-                        "the Slurm block idle-releases on its own and the pin is kept for reconnect."
-                    )
             except Exception as exc:  # noqa: BLE001 - report, never crash the tool
                 notice = f"stop attempted; {type(exc).__name__}: {exc}"[:300]
         # Only drop the login-node pin if the daemon is actually gone. A failed teardown
@@ -848,11 +799,7 @@ def _with_spend(app: AppCtx, out: ShellOutcome) -> ShellOutcome:
 
 
 async def _run_shell(
-    app: AppCtx,
-    command: str,
-    session_id: str = "default",
-    shape: str = DEFAULT_SHAPE,
-    dispatch_timeout: float | None = None,
+    app: AppCtx, command: str, session_id: str = "default", shape: str = DEFAULT_SHAPE
 ) -> ShellOutcome:
     session = Session(session_id, app.scratch_root)  # validates session_id before provisioning
     async with app.lock:  # provision + bind the runner atomically (no race with a concurrent stop)
@@ -864,8 +811,7 @@ async def _run_shell(
         return _cold_outcome(not_warm)
     wrapped = session_shell.wrap(command, session)
     out = await dispatch.execute(  # dispatch OUTSIDE the lock so long commands don't serialize
-        wrapped, runner, block_state="warm", max_output_chars=app.max_output_chars,
-        timeout=dispatch_timeout,
+        wrapped, runner, block_state="warm", max_output_chars=app.max_output_chars
     )
     async with app.lock:
         _note_dispatch(_shape_runtime(app, shape), out)

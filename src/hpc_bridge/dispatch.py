@@ -13,7 +13,7 @@ class ShellLike(Protocol):
 
 
 class Runner(Protocol):
-    async def run(self, command: str, timeout: float | None = None) -> ShellLike: ...
+    async def run(self, command: str) -> ShellLike: ...
 
 
 async def execute(
@@ -22,17 +22,15 @@ async def execute(
     *,
     block_state: str = "warm",
     max_output_chars: int = 1_000_000,
-    timeout: float | None = None,
 ) -> ShellOutcome:
     """Dispatch a shell command through a Runner and shape the structured result.
 
     Any dispatch failure (timeout, oversized result, remote task failure, transport
     error) is translated into a structured `failed` ShellOutcome rather than raised,
     so a hung/broken endpoint never crashes the MCP tool or hangs the agent silently.
-    `timeout` overrides the runner's default result wait (a HARD bound — see GlobusRunner.run).
     """
     try:
-        res = await runner.run(command, timeout=timeout)
+        res = await runner.run(command)
     except Exception as exc:  # noqa: BLE001 - deliberately translate ALL failures to an outcome
         return _failure_outcome(exc, block_state, max_output_chars)
     return ShellOutcome(

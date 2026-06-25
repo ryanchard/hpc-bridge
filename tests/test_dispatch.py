@@ -14,11 +14,9 @@ class FakeRunner:
     def __init__(self, result):
         self.result = result
         self.commands = []
-        self.timeouts = []
 
-    async def run(self, command, timeout=None):
+    async def run(self, command):
         self.commands.append(command)
-        self.timeouts.append(timeout)
         return self.result
 
 
@@ -30,13 +28,6 @@ async def test_execute_builds_complete_outcome():
     assert out.stdout == "hi\n"
     assert out.block_state == "warm"
     assert runner.commands == ["echo hi"]
-
-
-async def test_execute_forwards_timeout_to_run():
-    # The hard result-timeout (the only way to bound a to_thread dispatch) must reach runner.run.
-    runner = FakeRunner(FakeResult(0, "", ""))
-    await execute("scancel", runner, timeout=25.0)
-    assert runner.timeouts == [25.0]
 
 
 async def test_execute_preserves_nonzero_exit_and_stderr():

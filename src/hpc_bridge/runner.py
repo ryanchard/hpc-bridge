@@ -81,17 +81,13 @@ class GlobusRunner:
             self._ex = self._factory()
         return self._ex
 
-    async def run(self, command: str, timeout: float | None = None):
+    async def run(self, command: str):
         from globus_compute_sdk import ShellFunction
 
-        eff = timeout if timeout is not None else self.timeout
-        fn = ShellFunction(_escape_for_shellfunction(command), walltime=max(eff - 10.0, 5.0))
+        fn = ShellFunction(_escape_for_shellfunction(command), walltime=self.walltime)
         fut = self.executor().submit(fn)
-        # .result(eff) blocks on the AMQP round-trip; run it off the event loop. The `eff` arg is a
-        # HARD bound — `concurrent.futures` honors it (the worker task runs on, orphaned). This is
-        # the ONLY way to bound it: asyncio.wait_for can't cancel a to_thread call, so a caller
-        # needing a short ceiling (e.g. the teardown block-release) MUST pass `timeout` here.
-        return await asyncio.to_thread(fut.result, eff)
+        # .result() blocks on the AMQP round-trip; run it off the event loop.
+        return await asyncio.to_thread(fut.result, self.timeout)
 
     async def canary(self, timeout: float = 8.0) -> CanaryResult:
         """Submit a trivial task and confirm a WORKER answers within `timeout`.

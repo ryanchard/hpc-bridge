@@ -557,22 +557,15 @@ engine:
             self.cli.rebind(host)
         return EndpointHandle(endpoint_id=eid, name=name, login_host=host)
 
-    async def teardown(
-        self, endpoint_id: str, *, wipe_credentials: bool = False, skip_block_cancel: bool = False
-    ) -> None:
-        """Stop the endpoint and cancel its Slurm block(s) — the cost-control exit.
-        Credentials are kept by default so a later session can reconnect; pass
-        wipe_credentials=True to also remove the remote storage.db.
-
-        `skip_block_cancel=True` skips the SSH `cancel_blocks` — set when the block was already
-        released over the warm login shape (AMQP), so we don't pay a second, redundant SSH
-        squeue+scancel on a possibly-loaded login node."""
+    async def teardown(self, endpoint_id: str, *, wipe_credentials: bool = False) -> None:
+        """Stop the endpoint and cancel its Slurm block(s) — the cost-control exit. Both ops run
+        over SSH, each bounded by `_TEARDOWN_SSH_S`. Credentials are kept by default so a later
+        session can reconnect; pass wipe_credentials=True to also remove the remote storage.db."""
         await self.cli.stop(self.profile.endpoint_name)
-        # Backstop (when AMQP didn't already do it): `stop` kills the manager, but an ungraceful
-        # stop leaves Parsl's block holding the allocation until walltime (no manager left to scale
-        # it in). Explicitly cancel this endpoint's blocks so "teardown released the compute" holds.
-        if not skip_block_cancel:
-            await self.cli.cancel_blocks(endpoint_id)
+        # `stop` kills the manager, but an ungraceful stop leaves Parsl's block holding the
+        # allocation until walltime (no manager left to scale it in). Explicitly cancel this
+        # endpoint's blocks so "teardown released the compute" actually holds.
+        await self.cli.cancel_blocks(endpoint_id)
         if wipe_credentials:
             await self.cli.wipe_storage_db()
 
