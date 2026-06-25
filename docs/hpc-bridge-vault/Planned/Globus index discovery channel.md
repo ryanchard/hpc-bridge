@@ -16,8 +16,8 @@ The conceptual frame (channel model, provide-vs-discover matrix, principles, the
 - **3-way `make_facility`** — `HPC_BRIDGE_MACHINE` → catalog; `HPC_BRIDGE_FACILITY=anvil` → the hardcoded path (kept); else local. *Validated:* the catalog path produces a **byte-identical `MachineProfile`** to `anvil_profile`.
 - **Trust** — the plugin is **read-only**; writes are **curator-only** via the `hpc-bridge-catalog` ingest (PR review = the audit trail), because an open-write catalog of executable config (`env_setup` bash, UUIDs) is an injection vector. A `CatalogSummary` is the **agent-safe view** (no executable config / raw UUIDs). `provenance: plugin-validated` is *reserved, not built* — this supersedes our earlier "plugin write-back loop."
 
-> [!note] Open decision — the read auth path
-> As built, `SearchClient(app=Client().app)` reuses the Compute identity → needs a one-time search-scope login (server never prompts; **falls back to bundled** if not granted) — and supports `visible_to`-restricted entries. But the index is **public**, so an **anonymous** `SearchClient()` reads it with **no login** (simpler for a public v1). Decide per whether facility-restricted entries are wanted; the bundled fallback de-risks either way.
+> [!note] Decided — authenticated read (reuse the Compute identity)
+> We already require Globus Auth for Compute, so the index reuses **the same identity** (`SearchClient(app=Client().app)`) rather than an anonymous client. Rationale: the curator/write path needs auth *anyway* (ingest → `search:all`, else `403`), so unified auth is the coherent model — and it unlocks **`visible_to`-restricted entries** (a facility's config / sensitive UUIDs visible only to its allocation-holders), the actual reason to use Globus Search over a checked-in file. The marginal cost is a **one-time search-scope consent** per identity that wants *live* reads (run `hpc-bridge-catalog`; the server never prompts and **falls back to bundled** until granted). *(Reading purely-public entries anonymously, to skip even that consent, stays available as a later optimization.)*
 
 ## Plan 2 — next (the agentic selection flow)
 
