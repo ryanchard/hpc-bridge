@@ -20,5 +20,8 @@
 > [!warning] Record-safe env persistence
 > The env is diffed per-variable via base64 fingerprints and re-emitted with `printf %q`, so a multi-line value can't leave an orphan line that breaks the next `. .env` (which would silently drop the whole session env).
 
+> [!note] `<scratch>` follows the bound facility
+> The session root is the *facility's* remote scratch (e.g. Anvil `$SCRATCH`) — set at startup and **re-set by `connect_facility`** when a machine is bound at runtime. Without that, the shim runs at the local `~/.hpc-bridge` path on the remote node ([[Facility catalog]]).
+
 ## See also
 [[session_shell]] · [[server]] · [[The MCP tools]]

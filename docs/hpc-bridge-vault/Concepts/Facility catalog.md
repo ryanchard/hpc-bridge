@@ -33,6 +33,9 @@ A `Protocol` with `get(machine)` (exact → provisioning) and `discover(query)` 
 
 Allocation output is parsed by a **deterministic, plugin-side parser** keyed by `entry.allocation.parser` (`catalog/parsers.py` — `mybalance` built; `sbank`/`iris` reserved). Stdout is parsed in code, **never** handed to the model — inference is exactly what the catalog removes.
 
+> [!note] Runtime binding details
+> `connect_facility` resolves the `machine` by **id or subject** (`anvil` or `purdue:anvil`). It also **moves the [[Session continuity|session-shell]] root** to the bound facility's remote scratch — else `run_shell` would run the session shell at the local `~/.hpc-bridge` path *on the remote node*. And the server **boots resiliently**: if `make_facility` fails at startup (a stale env var, no index), `lifespan` warns and starts *unbound* (`LocalFacility`) rather than crashing — the agent then binds via `connect_facility`.
+
 > [!warning] Trust — read-only plugin, curator-only writes
 > The plugin never writes the index — an open-write catalog of executable config (`env_setup` bash, UUIDs) is an injection vector. New machines are curated via the `hpc-bridge-catalog` ingest (`catalog/ingest.py`; PR review = the audit trail). The agent only ever sees a `CatalogSummary` (identity + provenance — no executable config or raw UUIDs).
 
