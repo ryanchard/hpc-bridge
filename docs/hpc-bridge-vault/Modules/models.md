@@ -12,4 +12,4 @@
 The `needs_confirmation` phase/status is the [[Resource shapes & the spend floor|spend floor]] signal; `cold_start` is the no-hang cold path.
 
 ## See also
-[[The five MCP tools]] · [[server]] · [[dispatch]]
+[[The MCP tools]] · [[server]] · [[dispatch]]

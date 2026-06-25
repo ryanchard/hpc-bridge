@@ -1,11 +1,11 @@
 # server.py
 
 > [!abstract] Role
-> The FastMCP server — the agent-facing entry point. Declares the five MCP tools, holds session state (`AppCtx`), selects the facility, and runs the provision → canary → dispatch → spend flow under a lock.
+> The FastMCP server — the agent-facing entry point. Declares the seven MCP tools, holds session state (`AppCtx`), selects the facility, and runs the provision → canary → dispatch → spend flow under a lock.
 
 ## What it does
 
-`server.py` is the runtime heart. It exposes five tools ([[The five MCP tools]]), each a thin `@mcp.tool()` wrapper over a private `_`-helper that takes the `AppCtx`:
+`server.py` is the runtime heart. It exposes seven tools ([[The MCP tools]]), each a thin `@mcp.tool()` wrapper over a private `_`-helper that takes the `AppCtx`:
 
 | Tool | Helper | Does |
 |---|---|---|
@@ -27,4 +27,4 @@
 > `manager_online` (a cheap web query) only reflects the login-node manager. In the MEP model the first task forks the UEP and submits the block, so the manager reads online while the next command would cold-start. `_confirm_worker` submits a **canary** through the real Executor; only a returned result ⇒ warm. `CANARY_TTL_S` (`:158`) then trusts that for 45 s so an interactive burst doesn't pay the round-trip each call. See [[Warmth, the canary & cold-start]].
 
 ## See also
-[[Two-channel architecture]] · [[Warmth, the canary & cold-start]] · [[Resource shapes & the spend floor]] · [[The five MCP tools]] · [[runner]] · [[lifecycle]] · [[facility-remote]]
+[[Two-channel architecture]] · [[Warmth, the canary & cold-start]] · [[Resource shapes & the spend floor]] · [[The MCP tools]] · [[runner]] · [[lifecycle]] · [[facility-remote]]

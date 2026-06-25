@@ -21,4 +21,4 @@
 > The env is diffed per-variable via base64 fingerprints and re-emitted with `printf %q`, so a multi-line value can't leave an orphan line that breaks the next `. .env` (which would silently drop the whole session env).
 
 ## See also
-[[session_shell]] · [[server]] · [[The five MCP tools]]
+[[session_shell]] · [[server]] · [[The MCP tools]]

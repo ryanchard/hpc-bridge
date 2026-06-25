@@ -17,7 +17,7 @@ A maintainer's map of hpc-bridge in two halves:
 |---|---|---|---|
 | **Concept** | `Concepts/` | "how does X work?" — a mechanism that spans modules | [[Two-channel architecture]] |
 | **Module** | `Modules/` | "what is this file?" — one note per `src/hpc_bridge/*.py` | [[server]] |
-| **Reference** | `Reference/` | the external surface (tools, packaging, config) | [[The five MCP tools]] |
+| **Reference** | `Reference/` | the external surface (tools, packaging, config) | [[The MCP tools]] |
 
 **Naming:** module notes are named after the file with `/` → `-` (`facility/remote.py` → `facility-remote`). Concept/reference notes use a plain-English title. Filenames *are* the wiki-link targets — Obsidian resolves by basename, so keep them unique.
 
