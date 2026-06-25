@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hpc-bridge · POC: Running HPC compute through Claude</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2128; --border:#30363d;
+    --fg:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --green:#3fb950;
+    --amber:#d29922; --purple:#bc8cff; --mono:'SF Mono',ui-monospace,'JetBrains Mono',Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans);line-height:1.55;}
+  a{color:var(--accent);text-decoration:none}
+  .wrap{max-width:920px;margin:0 auto;padding:48px 20px 96px}
+  header{border-bottom:1px solid var(--border);padding-bottom:28px;margin-bottom:8px}
+  .eyebrow{font-family:var(--mono);font-size:13px;letter-spacing:.04em;color:var(--accent);text-transform:uppercase}
+  h1{font-size:34px;line-height:1.2;margin:10px 0 12px}
+  .lede{color:var(--muted);font-size:18px;max-width:680px}
+  .badges{display:flex;gap:8px;flex-wrap:wrap;margin-top:18px}
+  .badge{font-family:var(--mono);font-size:12px;background:var(--panel2);border:1px solid var(--border);
+         border-radius:999px;padding:5px 12px;color:var(--muted)}
+  .badge b{color:var(--fg);font-weight:600}
+
+  .arch{display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;
+        background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:22px 18px;margin:34px 0}
+  .node{font-family:var(--mono);font-size:13px;background:var(--panel2);border:1px solid var(--border);
+        border-radius:10px;padding:12px 16px;text-align:center;min-width:120px}
+  .node .t{color:var(--fg);font-weight:600;display:block}
+  .node .s{color:var(--muted);font-size:11px}
+  .arrow{color:var(--accent);font-size:20px;font-family:var(--mono)}
+
+  h2{font-size:14px;font-family:var(--mono);text-transform:uppercase;letter-spacing:.06em;
+     color:var(--muted);margin:54px 0 4px;border-top:1px solid var(--border);padding-top:26px}
+
+  .turn{margin:26px 0}
+  .role{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12px;
+        letter-spacing:.03em;text-transform:uppercase;margin-bottom:8px}
+  .dot{width:8px;height:8px;border-radius:50%}
+  .user .dot{background:var(--purple)} .user .role{color:var(--purple)}
+  .asst .dot{background:var(--green)} .asst .role{color:var(--green)}
+  .bubble{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px 18px}
+  .user .bubble{border-left:3px solid var(--purple)}
+  .asst .bubble{border-left:3px solid var(--green)}
+  .bubble p{margin:0 0 10px} .bubble p:last-child{margin:0}
+
+  .tool{margin:14px 0 4px;border:1px solid var(--border);border-radius:10px;overflow:hidden;background:#010409}
+  .tool .head{display:flex;align-items:center;gap:8px;background:var(--panel2);padding:8px 14px;
+              font-family:var(--mono);font-size:12px;border-bottom:1px solid var(--border)}
+  .tool .head .k{color:var(--amber)} .tool .head .n{color:var(--fg)}
+  .tool .head .tag{margin-left:auto;color:var(--muted);font-size:11px}
+  pre{margin:0;padding:14px;overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.5;color:#c9d1d9}
+  pre .c{color:var(--muted)} pre .g{color:var(--green)} pre .a{color:var(--accent)}
+  pre .y{color:var(--amber)} pre .p{color:var(--purple)}
+
+  table{width:100%;border-collapse:collapse;margin:16px 0;font-size:14px}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--border)}
+  th{font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+  td.mono,th.mono{font-family:var(--mono)}
+  td .hi{color:var(--green);font-weight:600}
+
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:18px 0}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px}
+  .card .big{font-size:26px;font-weight:700;font-family:var(--mono)}
+  .card .lbl{color:var(--muted);font-size:12px;margin-top:4px}
+  .card .big.g{color:var(--green)} .card .big.a{color:var(--accent)}
+
+  .callout{background:rgba(210,153,34,.08);border:1px solid rgba(210,153,34,.35);
+           border-radius:10px;padding:14px 16px;margin:18px 0;font-size:14px;color:#e8d8a8}
+  footer{margin-top:64px;border-top:1px solid var(--border);padding-top:22px;color:var(--muted);font-size:13px}
+  .step{display:flex;gap:14px;margin:12px 0}
+  .step .num{flex:none;width:26px;height:26px;border-radius:50%;background:var(--panel2);border:1px solid var(--border);
+             font-family:var(--mono);font-size:13px;display:flex;align-items:center;justify-content:center;color:var(--accent)}
+  .step .txt{padding-top:2px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">Proof of Concept · hpc-bridge plugin</div>
+  <h1>Running real HPC compute through Claude</h1>
+  <p class="lede">A complete transcript of Claude provisioning a supercomputer compute node,
+  writing and running a parallel benchmark across 128 cores, and tearing it all down —
+  driven entirely through a Claude Code plugin backed by Globus Compute.</p>
+  <div class="badges">
+    <span class="badge">Facility: <b>Purdue Anvil (ACCESS)</b></span>
+    <span class="badge">Bridge: <b>Globus Compute</b></span>
+    <span class="badge">Node: <b>a006 · 2× EPYC 7763</b></span>
+    <span class="badge">Peak: <b>1.69B points/s</b></span>
+  </div>
+</header>
+
+<div class="arch">
+  <div class="node"><span class="t">Claude</span><span class="s">Code + plugin</span></div>
+  <span class="arrow">&rarr;</span>
+  <div class="node"><span class="t">MCP tools</span><span class="s">ensure_up · run_shell · stop</span></div>
+  <span class="arrow">&rarr;</span>
+  <div class="node"><span class="t">Globus Compute</span><span class="s">personal endpoint</span></div>
+  <span class="arrow">&rarr;</span>
+  <div class="node"><span class="t">Anvil node a006</span><span class="s">128 cores · 251 GiB</span></div>
+</div>
+
+<!-- STEP 1 -->
+<h2>1 · Spin up the endpoint</h2>
+<div class="turn user"><div class="role"><span class="dot"></span>User</div>
+  <div class="bubble"><p>Spin up a compute endpoint on Anvil and tell me exactly which node we landed on and its hardware.</p></div>
+</div>
+<div class="turn asst"><div class="role"><span class="dot"></span>Claude</div>
+  <div class="bubble">
+    <p>I'll bring up the endpoint, then probe the node we land on.</p>
+    <div class="tool">
+      <div class="head"><span class="k">tool</span><span class="n">ensure_endpoint_up</span><span class="tag">MCP · hpc-bridge</span></div>
+<pre><span class="c">// provision / warm the personal Globus Compute endpoint</span>
+{ <span class="a">"status"</span>: <span class="g">"up"</span>, <span class="a">"block_state"</span>: <span class="g">"warm"</span>,
+  <span class="a">"endpoint_id"</span>: <span class="y">"8791269d-47f4-47f7-91a6-3485b4289269"</span>,
+  <span class="a">"session_spend"</span>: 0 }</pre>
+    </div>
+    <div class="tool">
+      <div class="head"><span class="k">tool</span><span class="n">run_shell</span><span class="tag">on node a006</span></div>
+<pre><span class="c"># hostname / cpu / mem / slurm probe</span>
+HOSTNAME  <span class="g">a006.anvil.rcac.purdue.edu</span>
+CPU       <span class="g">AMD EPYC 7763 64-Core</span> · 2 sockets · <span class="g">128 cores</span> · 8 NUMA
+MEM       251 GiB total (195 GiB free)
+SLURM     JOB=17934557  NODE=a006  PARTITION=debug
+OS        Rocky Linux 8.10 (Green Obsidian)</pre>
+    </div>
+    <p>Here's exactly where we landed:</p>
+  </div>
+</div>
+
+<table>
+  <tr><th>Property</th><th>Value</th></tr>
+  <tr><td>Node</td><td class="mono">a006.anvil.rcac.purdue.edu</td></tr>
+  <tr><td>Slurm job</td><td class="mono">17934557 · partition <b>debug</b></td></tr>
+  <tr><td>CPU</td><td>2× AMD EPYC 7763 "Milan" — <span class="hi">128 cores</span></td></tr>
+  <tr><td>Memory</td><td>251 GiB (~195 GiB available)</td></tr>
+  <tr><td>GPU</td><td>None — standard CPU compute node</td></tr>
+  <tr><td>OS</td><td>Rocky Linux 8.10</td></tr>
+</table>
+
+<!-- STEP 2 -->
+<h2>2 · Write &amp; run the benchmark</h2>
+<div class="turn user"><div class="role"><span class="dot"></span>User</div>
+  <div class="bubble"><p>Write a Monte-Carlo π benchmark that uses all the cores, save it to my scratch space, and run it.</p></div>
+</div>
+<div class="turn asst"><div class="role"><span class="dot"></span>Claude</div>
+  <div class="bubble">
+    <p>Located scratch at <span style="font-family:var(--mono)">/anvil/scratch/x-amcsweeneyel</span> (2.8&nbsp;PB free),
+    confirmed all 128 cores are usable via <span style="font-family:var(--mono)">sched_getaffinity</span>,
+    installed numpy into the endpoint venv, then wrote and ran the benchmark.</p>
+    <div class="tool">
+      <div class="head"><span class="k">file</span><span class="n">/anvil/scratch/x-amcsweeneyel/mc_pi.py</span><span class="tag">128-way multiprocessing</span></div>
+<pre><span class="p">def</span> <span class="a">worker</span>(args):
+    wid, n_points = args
+    rng = np.random.default_rng(np.random.SeedSequence([wid, os.getpid()]))
+    inside = 0
+    <span class="p">while</span> remaining &gt; 0:           <span class="c"># 5M-point vectorized chunks</span>
+        x = rng.random(m); y = rng.random(m)
+        inside += int(np.count_nonzero(x*x + y*y &lt;= 1.0))
+    <span class="p">return</span> inside
+
+<span class="p">with</span> mp.Pool(processes=128) <span class="p">as</span> pool:   <span class="c"># one worker per core</span>
+    results = pool.map(worker, list(enumerate(counts)))
+pi = 4.0 * sum(results) / total</pre>
+    </div>
+    <div class="tool">
+      <div class="head"><span class="k">tool</span><span class="n">run_shell</span><span class="tag">python3 mc_pi.py</span></div>
+<pre>cores=<span class="g">128</span>  total_points=<span class="g">20,000,000,000</span>
+pi_estimate = <span class="g">3.1415756536</span>
+abs_error   = 1.70e-05
+elapsed     = <span class="g">13.28 s</span>
+throughput  = <span class="a">1505.8 M points/s</span>  (11.76 M/s/core)</pre>
+    </div>
+  </div>
+</div>
+
+<!-- STEP 3 -->
+<h2>3 · Scale it 5×</h2>
+<div class="turn user"><div class="role"><span class="dot"></span>User</div>
+  <div class="bubble"><p>Great — rerun it with 5× the samples.</p></div>
+</div>
+<div class="turn asst"><div class="role"><span class="dot"></span>Claude</div>
+  <div class="bubble">
+    <div class="tool">
+      <div class="head"><span class="k">tool</span><span class="n">run_shell</span><span class="tag">python3 mc_pi.py 100_000_000_000</span></div>
+<pre>cores=<span class="g">128</span>  total_points=<span class="g">100,000,000,000</span>
+pi_estimate = <span class="g">3.1415998551</span>
+abs_error   = 7.20e-06
+elapsed     = <span class="g">59.06 s</span>
+throughput  = <span class="a">1693.3 M points/s</span>  (13.23 M/s/core)</pre>
+    </div>
+    <p>Error dropped ~2.4× — exactly the 1/√N scaling Monte-Carlo predicts for 5× more samples.</p>
+  </div>
+</div>
+
+<div class="cards">
+  <div class="card"><div class="big g">128</div><div class="lbl">cores driven</div></div>
+  <div class="card"><div class="big a">100B</div><div class="lbl">points sampled</div></div>
+  <div class="card"><div class="big">1.69B</div><div class="lbl">points / second</div></div>
+  <div class="card"><div class="big">7.2e-6</div><div class="lbl">π absolute error</div></div>
+</div>
+
+<!-- STEP 4 -->
+<h2>4 · Tear down</h2>
+<div class="turn user"><div class="role"><span class="dot"></span>User</div>
+  <div class="bubble"><p>We are done — could you shut down the endpoint so I don't keep using resources?</p></div>
+</div>
+<div class="turn asst"><div class="role"><span class="dot"></span>Claude</div>
+  <div class="bubble">
+    <div class="tool">
+      <div class="head"><span class="k">tool</span><span class="n">stop_endpoint</span><span class="tag">release compute block</span></div>
+<pre>{ <span class="a">"status"</span>: <span class="g">"down"</span>, <span class="a">"block_state"</span>: <span class="g">"cold"</span>,
+  <span class="a">"notice"</span>: <span class="g">"endpoint stopped; compute block released"</span> }</pre>
+    </div>
+    <p>Endpoint down, block released — nothing held against the allocation. The benchmark script
+    persists in scratch and numpy stays in the venv, so the next run is just one
+    <span style="font-family:var(--mono)">ensure_endpoint_up</span> away.</p>
+  </div>
+</div>
+
+<!-- HOW IT WORKS -->
+<h2>How it works</h2>
+<div class="step"><div class="num">1</div><div class="txt"><b>Claude calls MCP tools.</b> The plugin exposes
+  <span style="font-family:var(--mono)">ensure_endpoint_up</span>, <span style="font-family:var(--mono)">run_shell</span>,
+  <span style="font-family:var(--mono)">reset_session</span>, and <span style="font-family:var(--mono)">stop_endpoint</span> as
+  first-class tools inside Claude Code.</div></div>
+<div class="step"><div class="num">2</div><div class="txt"><b>Globus Compute bridges to the facility.</b> A personal endpoint
+  on Anvil receives the work, allocates a Slurm block, and keeps it warm between calls.</div></div>
+<div class="step"><div class="num">3</div><div class="txt"><b>A persistent session shell runs on the node.</b> Working directory and
+  environment carry across <span style="font-family:var(--mono)">run_shell</span> calls — so writing a file,
+  installing a package, and running it all share one live context on <span style="font-family:var(--mono)">a006</span>.</div></div>
+<div class="step"><div class="num">4</div><div class="txt"><b>Cost governance is built in.</b> Each response reports
+  <span style="font-family:var(--mono)">session_spend</span>; <span style="font-family:var(--mono)">stop_endpoint</span>
+  releases the block the moment work finishes.</div></div>
+
+<div class="callout">
+  <b>Note (POC):</b> the endpoint reported a sandboxing warning on every call
+  (<i>"Task sandboxing will not work due to endpoint misconfiguration"</i>) — tasks ran unsandboxed.
+  Worth enabling sandboxing on the endpoint before this moves past proof-of-concept.
+</div>
+
+<footer>
+  hpc-bridge — proof of concept · transcript captured 2026-06-03 · Purdue Anvil node a006 · endpoint 8791269d
+</footer>
+
+</div>
+</body>
+</html>

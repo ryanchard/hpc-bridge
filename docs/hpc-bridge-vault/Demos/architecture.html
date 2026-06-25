@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hpc-bridge — Architecture</title>
+<style>
+  :root{
+    --ink:#1b1f24; --muted:#5b6570;
+    --line:#e6e9ee; --bg:#fbfcfd; --card:#fff;
+    --ctrl:#b4690e; --ctrl-bg:#fdf3e7; --ctrl-line:#f0d6ab;   /* control / SSH = amber */
+    --work:#0f6f8c; --work-bg:#e9f6fa; --work-line:#bfe4ee;   /* work / Globus = teal  */
+    --accent:#4338ca;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.55 -apple-system,system-ui,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:920px;margin:0 auto;padding:34px 26px 60px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.86em}
+  code{background:#f1f3f6;padding:1px 5px;border-radius:5px}
+  h1{font-size:27px;margin:0 0 4px;letter-spacing:-.4px}
+  h2{font-size:17px;margin:30px 0 10px;padding-bottom:5px;border-bottom:1px solid var(--line)}
+  .sub{color:var(--muted);margin:0 0 4px;font-size:15px}
+  .tag{display:inline-block;font-size:12px;color:var(--muted);border:1px solid var(--line);
+    border-radius:999px;padding:2px 9px;margin-top:8px;background:#fff}
+  p{margin:9px 0}
+  .lead{font-size:15.5px}
+  /* callout */
+  .key{background:linear-gradient(180deg,#f6f4ff,#fff);border:1px solid #ddd7fb;
+    border-left:4px solid var(--accent);border-radius:10px;padding:14px 16px;margin:14px 0}
+  .key b{color:var(--accent)}
+  /* diagram */
+  .diagram{margin:16px 0 6px}
+  .box{background:var(--card);border:1px solid var(--line);border-radius:11px;
+    padding:11px 14px;box-shadow:0 1px 2px rgba(20,24,30,.04)}
+  .box .t{font-weight:650}
+  .box .d{color:var(--muted);font-size:12.5px;margin-top:2px}
+  .plugin{border-color:#d7dcff;background:#f7f8ff}
+  .down{color:var(--muted);text-align:center;font-size:13px;margin:6px 0;line-height:1.3}
+  .down .lab{display:inline-block;font-size:11.5px;background:#fff;border:1px solid var(--line);
+    border-radius:6px;padding:1px 7px;color:var(--muted)}
+  .split{display:flex;gap:14px;margin-top:6px}
+  .col{flex:1;min-width:0}
+  .chan{border-radius:11px;padding:11px 13px;border:1px solid}
+  .chan .h{font-weight:700;font-size:12px;letter-spacing:.3px;text-transform:uppercase;margin-bottom:7px}
+  .ctrl{background:var(--ctrl-bg);border-color:var(--ctrl-line)} .ctrl .h{color:var(--ctrl)}
+  .work{background:var(--work-bg);border-color:var(--work-line)} .work .h{color:var(--work)}
+  .node{background:#fff;border:1px solid rgba(0,0,0,.07);border-radius:8px;padding:8px 10px;margin-top:7px}
+  .node .t{font-weight:600;font-size:13.5px} .node .d{color:var(--muted);font-size:12px;margin-top:1px}
+  .arrow{text-align:center;color:var(--muted);font-size:12px;margin:3px 0}
+  /* table */
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13.5px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-size:12px;text-transform:uppercase;letter-spacing:.3px;color:var(--muted)}
+  td:first-child{white-space:nowrap}
+  /* steps */
+  ol.steps{margin:8px 0;padding-left:20px}
+  ol.steps li{margin:5px 0}
+  .grid2{display:flex;gap:16px;flex-wrap:wrap}
+  .grid2>div{flex:1;min-width:240px}
+  .muted{color:var(--muted)}
+  .pill{display:inline-block;font-size:11px;border-radius:6px;padding:1px 6px;font-weight:600}
+  .built{background:#e7f6ec;color:#1a7f3c} .design{background:#fde7e7;color:#b4322e}
+  ul.tight{margin:8px 0;padding-left:18px} ul.tight li{margin:4px 0}
+  footer{margin-top:34px;padding-top:12px;border-top:1px solid var(--line);
+    color:var(--muted);font-size:12.5px}
+  @media print{body{background:#fff}.wrap{padding:0}.box,.chan{box-shadow:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>hpc-bridge — how it works</h1>
+  <p class="sub">A Claude Code plugin that lets an agent stand up real HPC compute, run on it, and tear it down — through four tools and a credential-free hot path.</p>
+  <span class="tag">Current as of the Anvil (Purdue/ACCESS) integration · branch <code>claude-effort</code></span>
+
+  <div class="key">
+    <b>The one idea:</b> there are <b>two separate channels</b>, and the split is the whole design.
+    <b>SSH</b> is the <i>control</i> channel — used only to <b>stand up / tear down</b> the endpoint (a couple of times per session).
+    <b>Globus&nbsp;Compute</b> is the <i>work</i> channel — used for <b>every command</b>, over a Globus&nbsp;Auth token, <b>never SSH</b>.
+    So the tool Claude drives constantly (<code>run_shell</code>) never touches your credentials.
+  </div>
+
+  <div class="diagram">
+    <div class="box">
+      <div class="t">You ⇄ Claude &nbsp;<span class="muted" style="font-weight:400">— your Mac</span></div>
+      <div class="d">Claude sees only abstract tools + structured results: <span class="mono">{status, exit_code, stdout, cwd, block_state, session_spend}</span> — never SSH, Slurm, UUIDs, or partitions.</div>
+    </div>
+    <div class="down"><span class="lab">4 MCP tools over stdio ↓ &nbsp; structured results ↑</span></div>
+    <div class="box plugin">
+      <div class="t">hpc-bridge MCP server &nbsp;<span class="muted" style="font-weight:400">— the plugin: a <span class="mono">uv run</span> Python process on your Mac</span></div>
+      <div class="d">All the logic: facility selection · pilot lifecycle · dispatch · the session shim · cost accounting. It owns both channels below.</div>
+    </div>
+    <div class="split">
+      <div class="col">
+        <div class="chan ctrl">
+          <div class="h">① Control — key-based SSH</div>
+          <div class="muted" style="font-size:12.5px">Only during <code>ensure_endpoint_up</code> / <code>stop_endpoint</code>.</div>
+          <div class="arrow">↓ ssh (no Duo on Anvil)</div>
+          <div class="node"><div class="t">Anvil login node</div><div class="d"><span class="mono">globus-compute-endpoint</span> configure / start / stop → runs the endpoint <b>manager</b></div></div>
+        </div>
+      </div>
+      <div class="col">
+        <div class="chan work">
+          <div class="h">② Work — Globus Compute</div>
+          <div class="muted" style="font-size:12.5px">Every <code>run_shell</code>: a <span class="mono">ShellFunction</span> via the SDK <span class="mono">Executor</span>, Globus&nbsp;Auth token.</div>
+          <div class="arrow">↓ AMQP · no SSH</div>
+          <div class="node"><div class="t">Globus Compute cloud</div><div class="d">routes the task to your endpoint by UUID</div></div>
+          <div class="arrow">↓ manager asks Slurm for a node</div>
+          <div class="node"><div class="t">Compute node (worker)</div><div class="d">runs your shell command; result streams back over AMQP</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h2>The four tools Claude calls</h2>
+  <table>
+    <tr><th>Tool</th><th>What it does</th><th>Channel</th></tr>
+    <tr><td><code>ensure_endpoint_up</code></td><td>SSH-provision the endpoint on the login node (idempotent: reuse if already running); report when the manager is online.</td><td>SSH</td></tr>
+    <tr><td><code>run_shell</code></td><td>Run a shell command on the warm compute node; return a structured outcome. Sessions persist <code>cwd</code>/<code>env</code>.</td><td>Globus</td></tr>
+    <tr><td><code>reset_session</code></td><td>Clear a session's saved working directory + environment (fresh slate).</td><td>Globus</td></tr>
+    <tr><td><code>stop_endpoint</code></td><td>SSH <code>stop</code> → cancel the Slurm block + stop the manager → allocation stops being charged.</td><td>SSH</td></tr>
+  </table>
+
+  <h2>Lifecycle of a request</h2>
+  <div class="grid2">
+    <div>
+      <p><b style="color:var(--ctrl)">ensure_endpoint_up</b> — stand it up</p>
+      <ol class="steps">
+        <li>Server already chose <code>SlurmFacility</code> (from <code>HPC_BRIDGE_FACILITY=anvil</code>).</li>
+        <li>Over SSH: <code>configure</code> (if new) → write the manager + engine config → <code>start --detach</code>.</li>
+        <li>The <b>manager</b> registers with Globus and gets a UUID.</li>
+        <li>Poll status via the SDK → return <span class="mono">{status:up, endpoint_id}</span>.</li>
+      </ol>
+    </div>
+    <div>
+      <p><b style="color:var(--work)">run_shell("nproc")</b> — do work</p>
+      <ol class="steps">
+        <li>Wrap the command in the session shim, submit a <code>ShellFunction</code> via a long-lived <code>Executor</code> (AMQP, Globus token).</li>
+        <li><b>First</b> call: the manager asks Slurm for a node — the ~40–70&nbsp;s <i>cold start</i>. The worker runs it.</li>
+        <li>Result → <code>ShellOutcome</code> (<span class="mono">exit_code, stdout, cwd, session_spend</span>). Later calls hit the warm worker (~1–2&nbsp;s).</li>
+      </ol>
+    </div>
+  </div>
+
+  <h2>Why it feels like a REPL</h2>
+  <p>Globus runs <b>each command in a fresh subprocess</b> on the worker, so <code>cd</code>/<code>export</code> wouldn't survive between calls. The server invisibly wraps every command to <b>rehydrate, then persist</b> the working directory + environment in small files on Anvil's <b>Lustre scratch</b>:</p>
+  <p class="mono" style="background:#f1f3f6;border-radius:8px;padding:9px 12px;font-size:12.5px">cd "$(saved cwd)"; source "$(saved env)"; &lt;your command&gt;; &nbsp;then save the new cwd + env</p>
+  <p>So <code>cd build</code> in one turn and <code>make</code> in the next "just work" — Claude sees a persistent shell with zero discipline required.</p>
+
+  <h2>Warm vs. cold (and the cost knob)</h2>
+  <div class="grid2">
+    <div><ul class="tight">
+      <li><code>interactive</code> → Slurm <code>min_blocks=1</code>: the node is <b>held warm</b> for fast back-and-forth — but the allocation is charged the whole time. <i>That's why ending with <code>stop_endpoint</code> matters.</i></li>
+      <li><code>batch</code> (default) → <code>min_blocks=0</code>: <b>scales to zero</b> between commands — cheap, but each command pays a cold start.</li>
+    </ul></div>
+    <div><ul class="tight">
+      <li>Every result carries <code>block_state</code> + <code>session_spend</code>, so warmth and cost are visible to Claude without a separate tool.</li>
+      <li>The endpoint is a <b>v4 Manager Endpoint Process</b>: the manager lives on the login node; a worker (User&nbsp;Endpoint&nbsp;Process) is spawned on a compute node only when the first task arrives.</li>
+    </ul></div>
+  </div>
+
+  <h2>How it's wired — and how it generalizes</h2>
+  <ul class="tight">
+    <li><b>The repo <i>is</i> the plugin</b> (<code>.claude-plugin/plugin.json</code> + <code>.mcp.json</code>). <code>.mcp.json</code> launches the server over stdio with <code>uv run --directory &lt;plugin&gt; --extra integration hpc-bridge</code> (<code>uv&nbsp;run</code> so it always builds current source).</li>
+    <li><b>Config is environment</b>: <code>HPC_BRIDGE_FACILITY</code>, SSH user/key, and the Slurm <code>account</code> tell the server which machine and how to reach it.</li>
+    <li><b>Machine specifics are data</b>: everything about Anvil lives in one <code>MachineProfile</code> (account, <code>ib0</code>, <code>debug</code> partition, the worker's <code>module load</code> + venv). The lifecycle / dispatch / session / cost code is facility-agnostic, behind one <code>Facility</code> seam — so NERSC, Midway, DeltaAI, … are each just <b>another profile</b>.</li>
+  </ul>
+
+  <h2>What's built vs. designed</h2>
+  <div class="grid2">
+    <div>
+      <p><span class="pill built">BUILT</span></p>
+      <ul class="tight">
+        <li>Agent-driven provision → run → teardown on a real Slurm facility (Anvil), over key-based SSH + Globus Compute.</li>
+        <li>Session-persistent shell on the shared filesystem; cost-gated warm/batch profiles; structured, never-crashing tool results.</li>
+        <li>Profile-driven facility seam; cross-platform plugin packaging; BYO-endpoint mode.</li>
+      </ul>
+    </div>
+    <div>
+      <p><span class="pill design">DESIGNED, NOT YET BUILT</span></p>
+      <ul class="tight">
+        <li>Separate-UID <b>credential broker</b> + MFA-over-localhost for OTP facilities (NERSC/ALCF/OLCF/TACC). Anvil's key-based SSH let us skip it.</li>
+        <li>Durable task handles (recover results across restart); automatic idle-down; per-job resource requests (GPUs / N nodes / walltime).</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>The honest boundary</h2>
+  <p>The SSH key lives on your Mac and is used <b>only</b> for bootstrap — <code>run_shell</code> executes on the <i>Anvil</i> worker, so it can't read your Mac's key. But it <b>does run as you on Anvil</b>, so it can read your Anvil-side files and tokens. That irreducible "the agent runs as you" exposure is the same as handing an agent your shell, and it's the conversation to have with facility security before any broader deployment.</p>
+
+  <footer>
+    hpc-bridge · Extend an AI coding agent onto real HPC via a personal Globus Compute endpoint, managed as an interactive REPL.
+    See <code>docs/design/plugin-v1-design.md</code> and <code>docs/analysis/</code> for the full design + de-risking analysis.
+  </footer>
+
+</div>
+</body>
+</html>
