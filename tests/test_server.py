@@ -252,7 +252,7 @@ async def test_stop_endpoint_tears_down_and_resets():
             super().__init__()
             self.torn = None
 
-        async def teardown(self, eid):
+        async def teardown(self, eid, **kw):
             self.torn = eid
 
     f = _TeardownFacility()
@@ -639,7 +639,7 @@ async def test_stop_endpoint_removes_login_node_record(tmp_path):
             self.alias = "anvil.x"
             self.profile = _Prof()
 
-        async def teardown(self, eid):
+        async def teardown(self, eid, **kw):
             pass
 
     app = AppCtx(facility=_Fac(), profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
@@ -669,7 +669,7 @@ async def test_stop_endpoint_keeps_pin_when_teardown_fails(tmp_path):
             self.alias = "anvil.x"
             self.profile = _Prof()
 
-        async def teardown(self, eid):
+        async def teardown(self, eid, **kw):
             raise RuntimeError("ssh unreachable")
 
     app = AppCtx(facility=_Fac(), profile=Profile(), state=EndpointState(endpoint_id="eid-1"))

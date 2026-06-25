@@ -240,7 +240,7 @@ async def test_stop_endpoint_bounds_a_slow_teardown(monkeypatch):
 
     f = FakeFacility()
 
-    async def slow_teardown(eid):
+    async def slow_teardown(eid, *, skip_block_cancel=False, wipe_credentials=False):
         await asyncio.sleep(1)
 
     f.teardown = slow_teardown
@@ -274,6 +274,63 @@ async def test_stop_endpoint_releases_block_over_login_amqp(monkeypatch):
     await server._stop_endpoint(app)
     assert seen.get("shape") == "login"
     assert "scancel" in seen["cmd"] and "uep.eid-xyz" in seen["cmd"]
+
+
+async def test_stop_skips_ssh_cancel_when_amqp_released(monkeypatch):
+    # A successful AMQP release -> teardown skips its redundant SSH cancel_blocks (squeue+scancel),
+    # which was a big chunk of the live "stop hang".
+    from hpc_bridge import server
+    from hpc_bridge.lifecycle import EndpointState
+    from hpc_bridge.models import ShellOutcome
+    from hpc_bridge.server import ShapeRuntime
+
+    f = FakeFacility()
+    seen = {}
+
+    async def teardown(eid, *, skip_block_cancel=False, wipe_credentials=False):
+        seen["skip_block_cancel"] = skip_block_cancel
+
+    f.teardown = teardown
+    app = AppCtx(facility=f, profile=Profile(), state=EndpointState(endpoint_id="eid-xyz"))
+    app.shapes["login"] = ShapeRuntime(
+        user_endpoint_config={"provider_type": "LocalProvider"},
+        runner=_FakeRunner("eid", _Res(0, "", "")),
+        warm_confirmed_at=1.0,
+    )
+
+    async def ok_run_shell(a, command, session_id="default", shape="slurm"):
+        return ShellOutcome(phase="complete", block_state="warm")
+
+    monkeypatch.setattr(server, "_run_shell", ok_run_shell)
+    await server._stop_endpoint(app)
+    assert seen.get("skip_block_cancel") is True
+
+
+async def test_stop_amqp_release_is_bounded(monkeypatch):
+    # A slow/hanging login worker must NOT make the AMQP release itself the new hang (the live bug:
+    # the release ran unbounded before the capped teardown).
+    import asyncio
+
+    from hpc_bridge import server
+    from hpc_bridge.lifecycle import EndpointState
+    from hpc_bridge.server import ShapeRuntime
+
+    app = AppCtx(facility=FakeFacility(), profile=Profile(), state=EndpointState(endpoint_id="eid-xyz"))
+    app.shapes["login"] = ShapeRuntime(
+        user_endpoint_config={"provider_type": "LocalProvider"},
+        runner=_FakeRunner("eid", _Res(0, "", "")),
+        warm_confirmed_at=1.0,
+    )
+
+    async def hanging_run_shell(*a, **k):
+        await asyncio.sleep(30)  # a wedged login worker
+
+    monkeypatch.setattr(server, "_run_shell", hanging_run_shell)
+    monkeypatch.setattr(server, "AMQP_RELEASE_TIMEOUT_S", 0.05)
+    # If the release weren't bounded, _stop_endpoint would block on the 30s sleep and this wait_for
+    # would fire. It returning is the assertion.
+    res = await asyncio.wait_for(server._stop_endpoint(app), timeout=3.0)
+    assert res is not None
 
 
 async def test_stop_endpoint_skips_amqp_when_login_not_warm(monkeypatch):

@@ -28,7 +28,11 @@ from .session_shell import Session
 from .shapes import SHAPES, shape_config
 
 DEFAULT_SHAPE = "slurm"
-STOP_TIMEOUT_S = 90.0  # cap teardown so a slow/overloaded login node doesn't make stop feel hung
+# Block-release over the warm login shape (AMQP) — bounded so a slow worker can't make stop hang.
+AMQP_RELEASE_TIMEOUT_S = 25.0
+# Cap the SSH teardown (gce stop + the cancel_blocks backstop) so an overloaded login node can't
+# make stop feel hung. With the block already released over AMQP, this is usually just `gce stop`.
+STOP_TIMEOUT_S = 45.0
 
 
 @dataclass
@@ -683,33 +687,38 @@ async def connect_facility(facility: str, ctx: Context) -> ConnectFacilityResult
     return await _connect_facility(ctx.request_context.lifespan_context, facility)
 
 
-async def _release_blocks_over_login(app: AppCtx) -> None:
+async def _release_blocks_over_login(app: AppCtx) -> bool:
     """Cancel this endpoint's Slurm block(s) over the WARM login shape (AMQP) — instant, vs a fresh
-    SSH to a possibly-loaded login node. Best-effort, and only when the login shape is already warm
-    (else run_shell would SSH-bootstrap, defeating the point); teardown's SSH `cancel_blocks` is the
-    backstop. MUST run before `gce stop`, which kills the AMQP path. Finds our blocks precisely by the
-    UEP StdOut marker so it never touches another endpoint's jobs (mirrors RemoteEndpointCLI)."""
+    SSH to a possibly-loaded login node. Returns True if the scancel was dispatched (so teardown can
+    skip its redundant SSH cancel). Best-effort + bounded, and only when the login shape is already
+    warm (else run_shell would SSH-bootstrap, defeating the point). MUST run before `gce stop`, which
+    kills the AMQP path. Finds our blocks precisely by the UEP StdOut marker so it never touches
+    another endpoint's jobs (mirrors RemoteEndpointCLI)."""
     eid = app.state.endpoint_id
     login = app.shapes.get("login")
     if eid is None or login is None or login.runner is None or login.warm_confirmed_at is None:
-        return
+        return False
     cmd = (
         'ids=$(squeue -u "$USER" -h -O "JobID:30,StdOut:1024" 2>/dev/null '
         f"| grep -F {shlex.quote('uep.' + eid)} | awk '{{print $1}}'); "
         '[ -n "$ids" ] && scancel $ids; echo "released: ${ids:-none}"'
     )
     try:
-        await _run_shell(app, cmd, shape="login")
-    except Exception:  # noqa: BLE001 - best-effort; the SSH cancel_blocks in teardown backstops it
-        pass
+        # Bounded: a slow/busy login worker must not make the AMQP release itself the new hang.
+        out = await asyncio.wait_for(
+            _run_shell(app, cmd, shape="login"), timeout=AMQP_RELEASE_TIMEOUT_S
+        )
+        return out.phase == "complete"  # the scancel actually ran on the worker
+    except Exception:  # noqa: BLE001 - best-effort; teardown's SSH cancel_blocks backstops a miss
+        return False
 
 
 async def _stop_endpoint(app: AppCtx) -> EndpointStatus:
     """Tear down the current endpoint, release its compute, and reset session state."""
-    # Fast path: release the Slurm block over the warm login shape (AMQP) before the SSH teardown —
-    # a fresh SSH to a loaded login node is slow, but the login worker answers instantly. The SSH
-    # cancel_blocks inside teardown remains the backstop (idempotent) for when no login shape is warm.
-    await _release_blocks_over_login(app)
+    # Fast path: release the Slurm block (the cost) over the warm login shape (AMQP) before the SSH
+    # teardown — a fresh SSH to a loaded login node is slow, but the login worker answers fast. When
+    # that succeeds, teardown skips its redundant SSH cancel_blocks and only does `gce stop`.
+    released = await _release_blocks_over_login(app)
     async with app.lock:  # exclude concurrent dispatch/provision while we tear down
         eid = app.state.endpoint_id
         teardown = getattr(app.facility, "teardown", None)
@@ -721,18 +730,28 @@ async def _stop_endpoint(app: AppCtx) -> EndpointStatus:
             notice = "this facility has no teardown (local dev)"
         else:
             try:
-                # Each SSH call already has a 120s timeout, but 2-3 in series on an overloaded
-                # login node feels like a hang (and holds app.lock). Cap the whole teardown so the
-                # tool returns promptly; a timed-out stop keeps the pin and lets the block
-                # idle-release (min_blocks=0).
-                await asyncio.wait_for(teardown(eid), timeout=STOP_TIMEOUT_S)
+                # Cap the SSH teardown so an overloaded login node can't hold the lock — and the
+                # whole server — hostage. A timed-out stop keeps the pin and lets the block
+                # idle-release (min_blocks=0); the cost is already released over AMQP above.
+                await asyncio.wait_for(
+                    teardown(eid, skip_block_cancel=released), timeout=STOP_TIMEOUT_S
+                )
                 notice = "endpoint stopped; compute block released"
                 torn_down = True
             except asyncio.TimeoutError:
-                notice = (
-                    f"stop timed out after {STOP_TIMEOUT_S:.0f}s (login node may be overloaded); the "
-                    "Slurm block idle-releases on its own and the pin is kept for reconnect."
-                )
+                # Keep the pin (torn_down stays False): the manager may still be running, so a
+                # reconnect should rebind to it. The cost is the block, which idle-releases (or was
+                # already released over AMQP — said explicitly so the user knows spend has stopped).
+                if released:
+                    notice = (
+                        "compute block released (over AMQP); the manager stop is slow (login node "
+                        "overloaded) and was left to finish on its own — no further cost accrues."
+                    )
+                else:
+                    notice = (
+                        f"stop timed out after {STOP_TIMEOUT_S:.0f}s (login node may be overloaded); "
+                        "the Slurm block idle-releases on its own and the pin is kept for reconnect."
+                    )
             except Exception as exc:  # noqa: BLE001 - report, never crash the tool
                 notice = f"stop attempted; {type(exc).__name__}: {exc}"[:300]
         # Only drop the login-node pin if the daemon is actually gone. A failed teardown

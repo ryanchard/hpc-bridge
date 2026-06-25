@@ -22,7 +22,7 @@ flowchart LR
 
 ## How it shows up in the code
 
-- **SSH transport:** `ssh_exec()` ([[facility-remote]]) — key-only, `BatchMode`, reaps the child on timeout. Drives `bootstrap`, `gce stop`, and `login_exec` (the `login_shell` tool). Teardown's `scancel` now rides AMQP (`_release_blocks_over_login`, [[server]]); the SSH `cancel_blocks` is only the backstop, with a tight 30 s timeout.
+- **SSH transport:** `ssh_exec()` ([[facility-remote]]) — key-only, `BatchMode`, reaps the child on timeout. Drives `bootstrap`, `gce stop`, and `login_exec` (the `login_shell` tool). Teardown's `scancel` now rides AMQP (`_release_blocks_over_login`, [[server]], bounded 25 s); the SSH `cancel_blocks` is only the backstop (skipped entirely when the AMQP release succeeds), with a tight 30 s timeout.
 - **AMQP hot path:** `GlobusRunner` ([[runner]]) submits a `ShellFunction` through a long-lived Globus Compute `Executor`; the same Executor runs the canary ([[Warmth, the canary & cold-start]]). Reached from `run_shell` via [[server]] → `_run_shell`.
 
 > [!warning] The load-bearing invariant
