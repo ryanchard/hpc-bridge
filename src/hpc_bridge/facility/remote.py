@@ -138,7 +138,12 @@ def profile_from_catalog_entry(
     venv = venv or f"/home/{user}/hpc-bridge/gce-venv"
 
     def _resolve(template: str) -> str:
-        return template.replace("{venv}", venv).replace("{user}", user)
+        # Accept the plugin template ({user}/{venv}) AND the natural shell idiom ($USER/${USER}) —
+        # a BYO facility's scratch_root is embedded in the session shim *single-quoted*, so the
+        # remote shell never expands $USER; we must resolve it here or `mkdir` hits a literal $USER.
+        for tok in ("{user}", "${USER}", "$USER"):
+            template = template.replace(tok, user)
+        return template.replace("{venv}", venv)
 
     kw = entry.profile_kwargs()
     kw["env_setup"] = _resolve(kw["env_setup"])
