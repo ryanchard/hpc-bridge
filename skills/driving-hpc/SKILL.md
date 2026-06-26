@@ -41,7 +41,7 @@ This is a *policy gate*: discovery surfaces the options + the budget, the human 
 
 ## Stopping
 
-`stop_endpoint` is the explicit exit: it cancels the Slurm block and stops the manager (over SSH). Its result is **authoritative** — `"endpoint stopped; compute block released"` means the block is gone. **Don't** then `run_shell` a `squeue` to "double-check": that call would cold-start a *brand-new* endpoint (the one you just stopped is down), churning a bootstrap for nothing. If you truly must verify after a stop, use `login_shell("squeue -u $USER")` (raw SSH, stands nothing up) — but normally just trust the stop result.
+`stop_endpoint` means **stop spending**, not tear the endpoint down: it cancels the billed Slurm block over the login endpoint (AMQP, no SSH) and **leaves the login-node endpoint online** for reuse. Its result is authoritative — `"compute block released"` means the block is gone and no more SU accrue. The endpoint stays up, so reconnecting later (`connect_facility`/`ensure_endpoint_up`) is **zero-SSH**; you don't need to re-bootstrap, and a quick `run_shell(shape="login")` after a stop just reuses the still-online endpoint.
 
 ## When to use `login_shell` (raw SSH) instead
 

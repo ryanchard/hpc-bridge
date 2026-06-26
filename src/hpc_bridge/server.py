@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import shlex
 import sys
 import time
 from collections.abc import AsyncIterator, Callable
@@ -681,50 +682,63 @@ async def connect_facility(facility: str, ctx: Context) -> ConnectFacilityResult
     return await _connect_facility(ctx.request_context.lifespan_context, facility)
 
 
-async def _stop_endpoint(app: AppCtx) -> EndpointStatus:
-    """Tear down the current endpoint, release its compute, and reset session state.
+async def _release_blocks_over_login(app: AppCtx, eid: str) -> str:
+    """Cancel this endpoint's Slurm block(s) by running `scancel` on the **login shape (AMQP)** —
+    never SSH. That's the whole point of the login-node endpoint: talk to the cluster over Compute,
+    not a fresh SSH. Matches blocks precisely by the UEP StdOut marker (`uep.<eid>`) so it never
+    touches another endpoint's jobs. `run_shell` warms the (free) login worker first if needed; the
+    manager is up, so this never SSH-bootstraps. A failed cancel is backstopped by idle-release
+    (`min_blocks=0` + `max_idletime`), so the block self-reclaims within the idle grace regardless.
+    Returns a short status string for the notice."""
+    marker = shlex.quote(f"uep.{eid}")
+    cmd = (
+        'ids=$(squeue -u "$USER" -h -O "JobID:30,StdOut:1024" 2>/dev/null '
+        f"| grep -F {marker} | awk '{{print $1}}'); "
+        '[ -n "$ids" ] && scancel $ids; echo "released ${ids:-none}"'
+    )
+    out = await _run_shell(app, cmd, shape="login")
+    if out.phase == "complete" and out.exit_code == 0:
+        line = (out.stdout or "").strip().splitlines()
+        return line[-1] if line else "released none"
+    return f"cancel not confirmed ({out.notice or out.phase}); idle-release will reclaim it"
 
-    `teardown` cancels the Slurm block (`scancel`) and stops the manager — both over SSH, each
-    bounded by `ssh_exec`'s own (cancellable) timeout. The endpoint is being destroyed, so we don't
-    route the cancel over the (ephemeral) login worker; SSH is reliable and needed for `gce stop`
-    anyway. (The old multi-minute hang was `runner.close()` blocking on `Executor.shutdown(wait=True)`
-    — see [[runner]] — not the cancel; fixed independently.)"""
-    async with app.lock:  # exclude concurrent dispatch/provision while we tear down
-        eid = app.state.endpoint_id
-        teardown = getattr(app.facility, "teardown", None)
-        torn_down = False
-        if eid is None:
-            notice = "no endpoint was up"
-            torn_down = True  # nothing running -> the pin (if any) is safe to clear
-        elif teardown is None:
-            notice = "this facility has no teardown (local dev)"
-        else:
-            try:
-                await teardown(eid)
-                notice = "endpoint stopped; compute block released"
-                torn_down = True
-            except Exception as exc:  # noqa: BLE001 - report, never crash the tool
-                notice = f"stop attempted; {type(exc).__name__}: {exc}"[:300]
-        # Only drop the login-node pin if the daemon is actually gone. A failed teardown
-        # may leave it running on the pinned node, so we keep the pin for reconnect rather
-        # than orphan it (the exact bug pinning exists to prevent).
-        store = getattr(app.facility, "store", None)
-        alias = getattr(app.facility, "alias", None)
-        name = getattr(getattr(app.facility, "profile", None), "endpoint_name", None)
-        if torn_down and store is not None and alias is not None and name is not None:
-            store.remove(alias=alias, name=name)
-        for rt in app.shapes.values():
-            if rt.runner is not None:
-                rt.runner.close()
-        app.shapes.clear()  # session ended -> spend/warm state starts fresh next time
-        app.state = EndpointState()  # clear so the next ensure_endpoint_up re-provisions
-        return EndpointStatus(status="down", block_state="cold", endpoint_id=eid, notice=notice)
+
+async def _stop_endpoint(app: AppCtx) -> EndpointStatus:
+    """Release the compute block over the **login endpoint (AMQP)** and LEAVE the manager online for
+    reuse. "Stop" means *stop spending*, not destroy the endpoint: the login-node manager is the
+    whole point — it persists so the next session reuses it with **zero SSH** ([[Standing up the
+    endpoint|SSH-once]], #12). Fully pulling the endpoint down (`gce stop`, the facility's
+    `teardown()`) is a separate, rarer operation, not done here."""
+    eid = app.state.endpoint_id
+    if eid is None:
+        return EndpointStatus(status="down", block_state="cold", notice="no endpoint was up")
+    # Cancel the Slurm block over the login shape (AMQP) — no SSH.
+    result = await _release_blocks_over_login(app, eid)
+    async with app.lock:
+        # Drop the billed (slurm) shape so a later run re-provisions a FRESH block (its runner now
+        # points at the cancelled block). Keep the login shape, the manager, the endpoint_id, and
+        # the login-node pin — the endpoint stays online and reusable.
+        slurm = app.shapes.pop(DEFAULT_SHAPE, None)
+        if slurm is not None:
+            _bank_warm_interval(slurm, app)  # stop the spend clock for the released block
+            if slurm.runner is not None:
+                slurm.runner.close()
+    return EndpointStatus(
+        status="down",  # no billed compute block running (the manager stays online for reuse)
+        block_state="cold",
+        endpoint_id=eid,
+        session_spend=_total_session_spend(app),
+        notice=f"compute block released over AMQP ({result}); the login endpoint stays online for "
+        "reuse (reconnecting is zero-SSH).",
+    )
 
 
 @mcp.tool()
 async def stop_endpoint(ctx: Context) -> EndpointStatus:
-    """Stop the HPC endpoint and release its compute block(s). Call when finished with a
-    session so the allocation stops being charged for the held block."""
+    """Release the HPC compute block so the allocation stops being charged. Cancels the billed
+    Slurm block over the login endpoint (no SSH) and **leaves the login-node endpoint online** so a
+    later reconnect reuses it with zero SSH — "stop" means stop spending, not tear the endpoint
+    down. Call when you're done with a compute block."""
     return await _stop_endpoint(ctx.request_context.lifespan_context)
 
 
