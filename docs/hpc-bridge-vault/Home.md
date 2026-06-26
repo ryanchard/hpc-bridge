@@ -18,7 +18,8 @@ This vault has two halves:
 - [[Resource shapes & the spend floor]] — `login` vs `slurm`; `confirm_spend`
 - [[Session continuity]] — the cwd/env shim
 - [[Cost control]] — idle-release · spend clock · budget gate
-- [[Discovery today]] — login-shape probe · the Globus index
+- [[Discovery today]] — login-shape probe · the catalog
+- [[Facility catalog]] — index/seed → `MachineProfile`; `list_facilities` / `connect_facility`
 
 ## Modules — `src/hpc_bridge/`
 **Server & runtime:** [[server]] · [[runner]] · [[dispatch]] · [[lifecycle]] · [[session_shell]] · [[cost]] · [[models]] · [[profile]] · [[shapes]]
@@ -26,13 +27,13 @@ This vault has two halves:
 **Bootstrap & state:** [[endpoint]] · [[credentials]] · [[state]]
 
 ## Reference
-- [[The five MCP tools]] — the agent-facing surface
+- [[The MCP tools]] — the agent-facing surface
 - [[Plugin packaging]] — `.mcp.json` · `plugin.json` · the `driving-hpc` skill · `hpc-connect`
 - [[Configuration]] — environment variables
 
 ## Planned — designed, not built
 - [[Discovery channel model]] — the target model: channels, the provide-vs-discover matrix, the principles ([#7](https://github.com/ryanchard/hpc-bridge/issues/7))
-- [[Globus index discovery channel]] — the resolver that de-hardcodes the facility profile (the first build) ([#7](https://github.com/ryanchard/hpc-bridge/issues/7))
+- [[Globus index discovery channel]] — the catalog resolver + agentic selection (built); the fuller cascade is next ([#7](https://github.com/ryanchard/hpc-bridge/issues/7))
 
 ## Meta
 - [[Vault style guide]] — how to write & maintain these notes (for contributors and agents)

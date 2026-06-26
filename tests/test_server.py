@@ -361,24 +361,44 @@ async def test_server_registers_stop_endpoint_tool():
     assert any(t.name == "stop_endpoint" for t in tools)
 
 
-async def test_make_facility_selects_slurm_for_anvil(monkeypatch):
-    from hpc_bridge.server import make_facility
-
-    monkeypatch.delenv("HPC_BRIDGE_MACHINE", raising=False)
-    monkeypatch.setenv("HPC_BRIDGE_FACILITY", "anvil")
-    monkeypatch.setenv("HPC_BRIDGE_SSH_USER", "x-u")
-    monkeypatch.setenv("HPC_BRIDGE_SSH_KEY", "/tmp/anvil-key")
-    monkeypatch.setenv("HPC_BRIDGE_ACCOUNT", "ACC")
-    assert (await make_facility()).name == "anvil"
-
-
-async def test_make_facility_requires_env_for_anvil(monkeypatch):
+async def test_make_facility_rejects_removed_facility_env(monkeypatch):
     import pytest
 
     from hpc_bridge.server import make_facility
 
+    # HPC_BRIDGE_FACILITY was removed — machines are catalog data now. Setting it without
+    # HPC_BRIDGE_MACHINE fails loudly (a migration aid), not a silent fallback to local.
     monkeypatch.delenv("HPC_BRIDGE_MACHINE", raising=False)
     monkeypatch.setenv("HPC_BRIDGE_FACILITY", "anvil")
+    with pytest.raises(RuntimeError, match="HPC_BRIDGE_FACILITY was removed"):
+        await make_facility()
+
+
+async def test_lifespan_boots_unbound_when_facility_setup_fails(monkeypatch, capsys):
+    # A startup crash would silently register no tools (the agent just sees "no hpc-bridge tools"),
+    # so lifespan must catch a failed make_facility (here: the removed HPC_BRIDGE_FACILITY) and boot
+    # local/unbound instead — the agent then binds a machine via connect_facility.
+    from hpc_bridge.server import lifespan, mcp
+
+    monkeypatch.delenv("HPC_BRIDGE_MACHINE", raising=False)
+    monkeypatch.setenv("HPC_BRIDGE_FACILITY", "anvil")
+    async with lifespan(mcp) as app:
+        assert app.facility.name == "local"
+    assert "facility setup failed at startup" in capsys.readouterr().err
+
+
+async def test_make_facility_requires_env_for_catalog_machine(monkeypatch):
+    import pytest
+
+    import hpc_bridge.server as server
+    from hpc_bridge.catalog.bundled import BundledCatalog
+    from hpc_bridge.server import make_facility
+
+    # The catalog path still needs the user's SSH creds — a machine config is not credentials.
+    # The runtime catalog is the index; inject the seed loader so resolution reaches the creds check.
+    monkeypatch.setattr(server, "make_catalog", lambda: BundledCatalog())
+    monkeypatch.delenv("HPC_BRIDGE_FACILITY", raising=False)
+    monkeypatch.setenv("HPC_BRIDGE_MACHINE", "anvil")
     for v in ("HPC_BRIDGE_SSH_USER", "HPC_BRIDGE_SSH_KEY", "HPC_BRIDGE_ACCOUNT"):
         monkeypatch.delenv(v, raising=False)
     with pytest.raises(RuntimeError, match="required"):
@@ -394,7 +414,9 @@ async def test_make_facility_defaults_local(monkeypatch):
 
 
 async def test_make_facility_reconnects_to_pinned_login_node(monkeypatch):
+    import hpc_bridge.server as server
     import hpc_bridge.state as state_mod
+    from hpc_bridge.catalog.bundled import BundledCatalog
     from hpc_bridge.state import EndpointRecord
     from hpc_bridge.server import make_facility
 
@@ -412,8 +434,9 @@ async def test_make_facility_reconnects_to_pinned_login_node(monkeypatch):
             return rec
 
     monkeypatch.setattr(state_mod, "LoginNodeStore", _FakeStore)
-    monkeypatch.delenv("HPC_BRIDGE_MACHINE", raising=False)
-    monkeypatch.setenv("HPC_BRIDGE_FACILITY", "anvil")
+    monkeypatch.setattr(server, "make_catalog", lambda: BundledCatalog())
+    monkeypatch.delenv("HPC_BRIDGE_FACILITY", raising=False)
+    monkeypatch.setenv("HPC_BRIDGE_MACHINE", "purdue:anvil")
     monkeypatch.setenv("HPC_BRIDGE_SSH_USER", "x-u")
     monkeypatch.setenv("HPC_BRIDGE_SSH_KEY", "/tmp/k")
     monkeypatch.setenv("HPC_BRIDGE_ACCOUNT", "ACC")
@@ -425,7 +448,9 @@ async def test_make_facility_builds_from_catalog_when_machine_set(monkeypatch):
     # HPC_BRIDGE_MACHINE sources the profile from the catalog (bundled seed here; the live
     # Globus Search index when HPC_BRIDGE_SEARCH_INDEX is set). FACILITY is unset, so a slurm
     # "anvil" facility can ONLY come from the catalog branch.
+    import hpc_bridge.server as server
     import hpc_bridge.state as state_mod
+    from hpc_bridge.catalog.bundled import BundledCatalog
     from hpc_bridge.server import make_facility
 
     class _NoPinStore:  # isolate from any real ~/.hpc-bridge/endpoints.json on this machine
@@ -436,8 +461,8 @@ async def test_make_facility_builds_from_catalog_when_machine_set(monkeypatch):
             return None
 
     monkeypatch.setattr(state_mod, "LoginNodeStore", _NoPinStore)
+    monkeypatch.setattr(server, "make_catalog", lambda: BundledCatalog())
     monkeypatch.delenv("HPC_BRIDGE_FACILITY", raising=False)
-    monkeypatch.delenv("HPC_BRIDGE_SEARCH_INDEX", raising=False)  # -> bundled seed
     monkeypatch.setenv("HPC_BRIDGE_MACHINE", "purdue:anvil")
     monkeypatch.setenv("HPC_BRIDGE_SSH_USER", "x-u")
     monkeypatch.setenv("HPC_BRIDGE_SSH_KEY", "/tmp/k")
@@ -454,9 +479,13 @@ async def test_make_facility_builds_from_catalog_when_machine_set(monkeypatch):
 async def test_make_facility_catalog_unknown_machine_errors(monkeypatch):
     import pytest
 
+    import hpc_bridge.server as server
+    from hpc_bridge.catalog.bundled import BundledCatalog
     from hpc_bridge.server import make_facility
 
-    monkeypatch.delenv("HPC_BRIDGE_SEARCH_INDEX", raising=False)
+    # Inject the seed loader as the catalog: an unknown machine is a hard "not found", not a
+    # silent fallback.
+    monkeypatch.setattr(server, "make_catalog", lambda: BundledCatalog())
     monkeypatch.setenv("HPC_BRIDGE_MACHINE", "nope:nope")
     with pytest.raises(RuntimeError, match="not found"):
         await make_facility()

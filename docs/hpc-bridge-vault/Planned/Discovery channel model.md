@@ -1,7 +1,7 @@
 # Discovery channel model
 
 > [!warning] Planned · the conceptual frame
-> The target model for *where* hpc-bridge learns what a facility is, and what the user must supply versus what Claude can discover. Mostly **not built** — today the facility shape is a hardcoded `anvil_profile` ([[Discovery today]]). This is the durable model; the concrete first build is [[Globus index discovery channel]]. Tracking: [#7](https://github.com/ryanchard/hpc-bridge/issues/7). Absorbs the former `docs/design/discovery-channels.md`.
+> The target model for *where* hpc-bridge learns what a facility is, and what the user must supply versus what Claude can discover. **Partly built** — the facility shape now comes from the [[Facility catalog|catalog]] (index/seed), not a hardcoded profile; the *fuller cascade* (login-probe + human fallback, ablation, trace) is what remains. The concrete build is [[Globus index discovery channel]]. Tracking: [#7](https://github.com/ryanchard/hpc-bridge/issues/7). Absorbs the former `docs/design/discovery-channels.md`.
 
 ## One abstraction — the human is terminal
 
@@ -30,7 +30,7 @@ Three tiers, named by *who answers*:
 
 - **Tier 1 — irreducible user input** (the human channel, always active): the **SSH key** (a secret, never discoverable) and the **login name**. The **SSH host** lands here *only when the index is unavailable*.
 - **Tier 2 — consequential choices** (gates: discovered options, the human picks): which facility, which partition, the spend confirmation — already built ([[Resource shapes & the spend floor]]).
-- **Tier 3 — machine-discoverable** (no user input): everything `anvil_profile` hardcodes — answered by the index (static), the login node (live), or the local client (identity). **`anvil_profile` is ~90% a frozen discovery, not configuration; users provide credentials, not configuration.**
+- **Tier 3 — machine-discoverable** (no user input): everything the old `anvil_profile` hardcoded — now answered by the index (static), the login node (live), or the local client (identity). **The machine profile is ~90% a frozen discovery, not configuration; users provide credentials, not configuration.**
 
 ### The per-fact matrix
 
@@ -65,7 +65,7 @@ Two facts — **`ssh_host` and `interface`** — are the reason the index earns 
 - **The Socratic fallback is *staged*.** The human's job in the fallback is to get us **onto the machine** (host, key, auth, account); once SSH'd, the login node becomes available and probes the rest. Losing the index loses the *cheap* discovery, not discovery itself — it re-layers to human-bootstrap → live-probe.
 - **Elicit-then-validate.** The human is a *noisy* channel. The [[Warmth, the canary & cold-start|canary]] is the universal denoiser — "probe-then-validate" generalizes to "elicit-then-validate". We don't need to be *right*, we need to be *checkable*.
 - **Trust: read-only plugin, curator-only writes.** The plugin never writes the index — an open-write catalog of executable config (`env_setup` bash, UUIDs) is an injection vector. New machines are curated via an ingest tool (PR review = the audit trail), and the agent only ever sees a `CatalogSummary` (no executable config / raw UUIDs). The aspirational write-back — a canary-validated stand-up *proposing* a `provenance: plugin-validated` entry — is **reserved, not built**. *(Refined from the `facility-catalog` design; supersedes the earlier "plugin write-back loop.")*
-- **Keep the degraded cascade agent-driven, not deterministic.** The *happy* path (index `get_subject` → `MachineProfile` + bundled fallback) is cheap and exact → code. The *degraded cascade* (which channel next, what to ask) is judgment → the `driving-hpc` recipe. Hardcode the cascade and you've rebuilt the rigid per-machine class.
+- **Keep the degraded cascade agent-driven, not deterministic.** The *happy* path (index `get_subject` → `MachineProfile`) is cheap and exact → code. The *degraded cascade* (which channel next, what to ask) is judgment → the `driving-hpc` recipe. Hardcode the cascade and you've rebuilt the rigid per-machine class.
 - **Ablation is load-bearing.** Per-channel disable flags (`HPC_BRIDGE_DISABLE_CHANNELS=…`) (1) keep fallbacks alive (force-exercise the rarely-fired paths) and (2) operationalize this matrix into tests (disable a fact's channel, assert the fallback delivers).
 
 ## The resolution trace (one construct, three jobs)

@@ -26,7 +26,9 @@ class LocalFacility:
             "engine": {
                 "type": "GlobusComputeEngine",
                 "max_workers_per_node": 1,
-                "run_in_sandbox": False,
+                # ShellFunctions expect a per-task sandbox dir; our session shim cd's to an
+                # absolute <scratch>/sessions/<id> path so the sandbox landing dir is harmless.
+                "run_in_sandbox": True,
                 "provider": {
                     "type": "LocalProvider",
                     "init_blocks": 1 if warm else 0,

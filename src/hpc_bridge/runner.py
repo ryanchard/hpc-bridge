@@ -111,5 +111,9 @@ class GlobusRunner:
 
     def close(self) -> None:
         if self._ex is not None:
-            self._ex.shutdown()
+            # shutdown() DEFAULTS to wait=True, which blocks until every pending future resolves
+            # (the AMQP drain) — that was the multi-minute "stop hang": the scancel ran fast, then
+            # close() blocked here. We never need pending results at teardown/runner-swap, so don't
+            # wait, and cancel anything not yet registered with the web service.
+            self._ex.shutdown(wait=False, cancel_futures=True)
             self._ex = None

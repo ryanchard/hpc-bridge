@@ -36,5 +36,8 @@ flowchart TD
 > [!warning] Branch on the boolean `is_slurm`, never a string compare
 > The manager runs `user_opts` through `_sanitize_user_json`, which `json.dumps`'s every *string* (so `"SlurmProvider"` arrives as `'"SlurmProvider"'`). A template `{% if provider_type == 'SlurmProvider' %}` then silently fails and drops the whole provider block. Booleans pass through untouched, so the template branches on the `is_slurm` bool ([[shapes]]). This was a real, hard-to-see bug ([#5](https://github.com/ryanchard/hpc-bridge/issues/5)).
 
+> [!note] `run_in_sandbox: true` — and why it's safe
+> The engine sets `run_in_sandbox: true`: ShellFunctions expect a sandbox, and without it every task logs *"Task sandboxing will not work due to endpoint misconfiguration."* Sandboxing runs each task in `tasks_working_dir/<TASK_UUID>` — harmless here because the [[Session continuity|session shim]] immediately `cd`s to an absolute `<scratch>/sessions/<id>` path, overriding the sandbox landing dir. The config is written at `configure` time, so a flip only takes effect on a **freshly bootstrapped** endpoint, not a reused one.
+
 ## See also
 [[Resource shapes & the spend floor]] · [[shapes]] · [[facility-remote]] · [[Standing up the endpoint]] · [[Two-channel architecture]]

@@ -24,13 +24,15 @@ class FakeExecutor:
     def __init__(self):
         self.submitted = []
         self.shutdowns = 0
+        self.shutdown_kwargs = None
 
     def submit(self, fn):
         self.submitted.append(fn)
         return FakeFuture("RESULT")
 
-    def shutdown(self):
+    def shutdown(self, wait=True, cancel_futures=False):
         self.shutdowns += 1
+        self.shutdown_kwargs = {"wait": wait, "cancel_futures": cancel_futures}
 
 
 def test_executor_created_once_and_closed():
@@ -47,6 +49,9 @@ def test_executor_created_once_and_closed():
     assert calls == [1]
     r.close()
     assert ex.shutdowns == 1
+    # close() must NOT block on the AMQP drain (shutdown defaults to wait=True) — that was the
+    # multi-minute stop hang. It shuts down non-blocking and cancels un-registered futures.
+    assert ex.shutdown_kwargs == {"wait": False, "cancel_futures": True}
 
 
 async def test_run_submits_shellfunction_and_returns_result():
@@ -93,7 +98,7 @@ class _CanaryExecutor:
         self.submitted.append(fn)
         return self._fut
 
-    def shutdown(self):
+    def shutdown(self, wait=True, cancel_futures=False):
         pass
 
 

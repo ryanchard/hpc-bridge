@@ -58,6 +58,12 @@ class SshTarget:
         ]
 
 
+# Teardown SSH ops (gce stop, squeue, scancel) hit a possibly-loaded login node with *fresh*
+# connections; bound them tighter than the 120s default so stop_endpoint releases the allocation
+# promptly instead of dragging on a slow sshd.
+_TEARDOWN_SSH_S = 30.0
+
+
 async def ssh_exec(
     target: SshTarget, remote_cmd: str, *, stdin: str | None = None, timeout: float = 120.0
 ) -> tuple[int, str, str]:
@@ -111,41 +117,6 @@ class MachineProfile:
     scratch_root: str | None = None  # session-shell root on the shared filesystem
 
 
-def anvil_profile(
-    *,
-    account: str,
-    user: str,
-    partition: str = "debug",
-    module: str = "anaconda/2024.02-py311",
-    endpoint_name: str = "hpc-bridge",
-    display_name: str = "HPC-Bridge Anvil",
-    walltime: str = "00:30:00",
-    max_workers_per_node: int = 2,
-    nodes_per_block: int = 1,
-    max_blocks: int = 1,
-    available_accelerators: int | list[str] | None = None,
-) -> MachineProfile:
-    """Anvil (Purdue/ACCESS) profile — validated 2026-06-03 (worker on compute node a006)."""
-    venv = f"/home/{user}/hpc-bridge/gce-venv"
-    env = f"module load {module} && source {venv}/bin/activate"
-    return MachineProfile(
-        name="anvil",
-        endpoint_name=endpoint_name,
-        display_name=display_name,
-        env_setup=env,
-        interface="ib0",
-        partition=partition,
-        account=account,
-        worker_init=env,
-        walltime=walltime,
-        max_workers_per_node=max_workers_per_node,
-        nodes_per_block=nodes_per_block,
-        max_blocks=max_blocks,
-        available_accelerators=available_accelerators,
-        scratch_root=f"/anvil/scratch/{user}/.hpc-bridge",
-    )
-
-
 def profile_from_catalog_entry(
     entry: CatalogEntry,
     *,
@@ -158,12 +129,11 @@ def profile_from_catalog_entry(
 
     The catalog stores user-agnostic templates; this resolves them at provision time:
     ``{user}`` is the SSH login user and ``{venv}`` is the remote globus-compute-endpoint venv
-    (defaults to the ``anvil_profile()`` convention). ``account`` and the derived ``worker_init``
-    (= the resolved ``env_setup``, replayed on the compute worker) are supplied here, never stored
-    in the catalog. ``partition`` overrides the entry's default when given. For the Anvil entry
-    this reproduces ``anvil_profile()`` exactly (verified by test) — the bridge that lets the
-    catalog drive provisioning. Substitution uses ``str.replace`` (not ``str.format``) so literal
-    shell braces in ``env_setup`` are left untouched.
+    (defaults to the ``/home/{user}/hpc-bridge/gce-venv`` convention). ``account`` and the derived
+    ``worker_init`` (= the resolved ``env_setup``, replayed on the compute worker) are supplied
+    here, never stored in the catalog. ``partition`` overrides the entry's default when given.
+    Substitution uses ``str.replace`` (not ``str.format``) so literal shell braces in ``env_setup``
+    are left untouched.
     """
     venv = venv or f"/home/{user}/hpc-bridge/gce-venv"
 
@@ -197,9 +167,9 @@ class RemoteEndpointCLI:
         self.env_setup = env_setup
         self.remote_dir = remote_dir
 
-    async def _gce(self, *args: str) -> tuple[int, str, str]:
+    async def _gce(self, *args: str, timeout: float = 120.0) -> tuple[int, str, str]:
         inner = f"{self.env_setup} && globus-compute-endpoint " + " ".join(shlex.quote(a) for a in args)
-        return await ssh_exec(self.target, f"bash -lc {shlex.quote(inner)}")
+        return await ssh_exec(self.target, f"bash -lc {shlex.quote(inner)}", timeout=timeout)
 
     async def login_exec(self, command: str) -> tuple[int, str, str]:
         """Run a read-only command on the login node over SSH for facility discovery
@@ -320,8 +290,9 @@ class RemoteEndpointCLI:
         return await self.endpoint_id(name), host
 
     async def stop(self, name: str) -> None:
-        # Best-effort: `stop` can throw a psutil traceback yet still cancel the block.
-        await self._gce("stop", name)
+        # Best-effort + bounded: `stop` can throw a psutil traceback yet still cancel the block, and
+        # a fresh SSH to a loaded login node is slow — don't let it hold teardown hostage.
+        await self._gce("stop", name, timeout=_TEARDOWN_SSH_S)
 
     async def wipe_storage_db(self) -> None:
         """Remove the seeded credential from the remote host (best-effort)."""
@@ -338,7 +309,9 @@ class RemoteEndpointCLI:
         marker = f"uep.{endpoint_id}"
         try:
             squeue = 'squeue -u "$USER" -h -O "JobID:30,StdOut:1024" 2>/dev/null'
-            rc, out, _err = await ssh_exec(self.target, f"bash -lc {shlex.quote(squeue)}")
+            rc, out, _err = await ssh_exec(
+                self.target, f"bash -lc {shlex.quote(squeue)}", timeout=_TEARDOWN_SSH_S
+            )
         except Exception:  # noqa: BLE001 - scheduler unreachable -> nothing to cancel
             return []
         if rc != 0:
@@ -350,7 +323,11 @@ class RemoteEndpointCLI:
         ]
         if ids:
             try:
-                await ssh_exec(self.target, f"bash -lc {shlex.quote('scancel ' + ' '.join(ids))}")
+                await ssh_exec(
+                    self.target,
+                    f"bash -lc {shlex.quote('scancel ' + ' '.join(ids))}",
+                    timeout=_TEARDOWN_SSH_S,
+                )
             except Exception:  # noqa: BLE001 - best-effort
                 pass
         return ids
@@ -439,6 +416,7 @@ class SlurmFacility:
         template = """\
 engine:
   type: GlobusComputeEngine
+  run_in_sandbox: true
   max_workers_per_node: {{ max_workers_per_node | default(@@MAXW@@) }}
   address:
     type: address_by_interface
@@ -580,13 +558,13 @@ engine:
         return EndpointHandle(endpoint_id=eid, name=name, login_host=host)
 
     async def teardown(self, endpoint_id: str, *, wipe_credentials: bool = False) -> None:
-        """Stop the endpoint and cancel its Slurm block(s) — the cost-control exit.
-        Credentials are kept by default so a later session can reconnect; pass
-        wipe_credentials=True to also remove the remote storage.db."""
+        """Stop the endpoint and cancel its Slurm block(s) — the cost-control exit. Both ops run
+        over SSH, each bounded by `_TEARDOWN_SSH_S`. Credentials are kept by default so a later
+        session can reconnect; pass wipe_credentials=True to also remove the remote storage.db."""
         await self.cli.stop(self.profile.endpoint_name)
-        # Backstop: `stop` kills the manager, but an ungraceful stop leaves Parsl's block
-        # holding the allocation until walltime (no manager left to scale it in). Explicitly
-        # cancel this endpoint's blocks so "teardown released the compute" is actually true.
+        # `stop` kills the manager, but an ungraceful stop leaves Parsl's block holding the
+        # allocation until walltime (no manager left to scale it in). Explicitly cancel this
+        # endpoint's blocks so "teardown released the compute" actually holds.
         await self.cli.cancel_blocks(endpoint_id)
         if wipe_credentials:
             await self.cli.wipe_storage_db()

@@ -48,7 +48,7 @@ class RaisingRunner:
     def __init__(self, exc):
         self.exc = exc
 
-    async def run(self, command):
+    async def run(self, command, timeout=None):
         raise self.exc
 
 
