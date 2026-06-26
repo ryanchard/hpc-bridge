@@ -66,31 +66,36 @@ class FacilityDetails(BaseModel):
     Session-local: never written to the shared catalog."""
 
     ssh_host: str = Field(
-        description="Login host to SSH to for the one-time bootstrap, e.g. 'frontier.olcf.ornl.gov'."
+        description="Login host to SSH to for the one-time bootstrap.",
+        examples=["anvil.rcac.purdue.edu", "frontier.olcf.ornl.gov"],
     )
     interface: str = Field(
         description="High-speed network interface the compute workers bind to so they can phone "
-        "home (address_by_interface) — e.g. 'ib0' on Anvil, 'hsn0' on Frontier. Wrong value ⇒ "
-        "workers never register."
+        "home (address_by_interface). Wrong value ⇒ workers never register.",
+        examples=["ib0", "hsn0"],
     )
     env_setup: str = Field(
         description="Bash that puts `globus-compute-endpoint` on PATH on the login node — usually a "
-        "`module load …` and/or `source <venv>/bin/activate`. '{user}'/'{venv}' are templated."
+        "`module load …` and/or `source <venv>/bin/activate`. '{user}'/'{venv}' are templated.",
+        examples=["module load anaconda && source {venv}/bin/activate"],
     )
     scratch_root: str = Field(
-        description="A writable path on the shared filesystem for session state, e.g. "
-        "'/anvil/scratch/{user}/.hpc-bridge' ('{user}' is templated to the SSH login name)."
+        description="A writable path on the shared filesystem for session state ('{user}' is "
+        "templated to the SSH login name).",
+        examples=["/anvil/scratch/{user}/.hpc-bridge", "/lustre/orion/scratch/{user}/.hpc-bridge"],
     )
     partition: str = Field(
-        description="Default Slurm partition/queue for compute blocks, e.g. 'shared' or 'batch'."
+        description="Default Slurm partition/queue for compute blocks.",
+        examples=["shared", "batch", "debug"],
     )
     scheduler: Literal["slurm"] = Field(
         default="slurm", description="Scheduler. Only 'slurm' is supported in this version."
     )
     allocation_command: str | None = Field(
         default=None,
-        description="Optional: a login-node command that lists the user's allocations/balances "
-        "(e.g. 'mybalance'). Omit if the facility has none — you'll then pass account= directly.",
+        description="Optional: a login-node command that lists the user's allocations/balances. "
+        "Omit if the facility has none — you'll then pass account= directly.",
+        examples=["mybalance", "xdusage -p <project>"],
     )
     allocation_parser: Literal["sbank", "iris", "mybalance"] | None = Field(
         default=None,
