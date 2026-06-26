@@ -31,9 +31,7 @@ A Slurm block **spends your allocation**, so don't provision blind. Pick a machi
 
 **3. Provision the billed block, confirming spend.** `ensure_endpoint_up(shape="slurm", account="<allocation>", partition="<choice>", confirm_spend=True)`. The manager is already up from step 0, so this just kicks the Slurm block. The account, partition, and spend acknowledgement **persist for the session** (later calls reuse them) until you change them or `stop_endpoint`. A first call returning `provisioning` is normal.
 
-**4. Wait THROUGH the endpoint.** Poll `run_shell("squeue -u $USER -h -o '%i|%P|%T|%r'", shape="login")` — over the network, no SSH — for the pilot's state (`PENDING`→`RUNNING`) and *why* it pends (`Priority`, `Resources`). Once `RUNNING`, call `ensure_endpoint_up(shape="slurm")` **once** to confirm the worker registered (`up`).
-   - **Waiting is free — don't panic-cancel a queued job.** A `PENDING` job spends **no** SU; only a `RUNNING` one does. A `Priority`/`Resources` reason just means it's queued its turn (seconds to many minutes, normal on a busy cluster) — report the reason to the user, keep polling, don't tear it down.
-   - **Cadence:** poll at a relaxed, lengthening interval; wait between polls however your harness normally waits — just don't busy-loop or re-poll back-to-back, and don't re-call `ensure_endpoint_up` repeatedly while it's pending. (The queue state comes from the `run_shell` **tool**, not a local shell, so a local `until`/`Monitor` loop can't watch it.)
+**4. Wait for the block, then confirm.** The pilot starts `PENDING` and flips to `RUNNING` once Slurm gives it a node; watch its state with `run_shell("squeue -u $USER -h -o '%i|%P|%T|%r'", shape="login")` — over the endpoint, no SSH. Once `RUNNING`, call `ensure_endpoint_up(shape="slurm")` once to confirm the worker registered. A `PENDING` job spends no SU.
 
 This is a *policy gate*: discovery surfaces the options + the budget, the human picks, and the pick drives provisioning.
 
@@ -43,7 +41,7 @@ This is a *policy gate*: discovery surfaces the options + the budget, the human 
 
 ## Stopping
 
-`stop_endpoint` is the explicit exit: it cancels the Slurm block (over the warm login shape) and stops the manager. Its result is **authoritative** — `"endpoint stopped; compute block released"` means the block is gone. **Don't** then `run_shell` a `squeue` to "double-check": that call would cold-start a *brand-new* endpoint (the one you just stopped is down), churning a bootstrap for nothing. If you truly must verify after a stop, use `login_shell("squeue -u $USER")` (raw SSH, stands nothing up) — but normally just trust the stop result.
+`stop_endpoint` is the explicit exit: it cancels the Slurm block and stops the manager (over SSH). Its result is **authoritative** — `"endpoint stopped; compute block released"` means the block is gone. **Don't** then `run_shell` a `squeue` to "double-check": that call would cold-start a *brand-new* endpoint (the one you just stopped is down), churning a bootstrap for nothing. If you truly must verify after a stop, use `login_shell("squeue -u $USER")` (raw SSH, stands nothing up) — but normally just trust the stop result.
 
 ## When to use `login_shell` (raw SSH) instead
 
