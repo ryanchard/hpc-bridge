@@ -54,7 +54,7 @@ class CatalogSummary(BaseModel):
     facility: str
     description: str
     display_name: str
-    provenance: Literal["curated", "community", "scraped", "plugin-validated"]
+    provenance: Literal["curated", "community", "scraped", "plugin-validated", "session"]
     last_validated: datetime.date
 
 
@@ -70,18 +70,18 @@ class CatalogEntry(BaseModel):
 
     # identifiers (look up, never infer)
     compute_mep_uuid: str | None = None
-    transfer_endpoint_uuid: str
+    transfer_endpoint_uuid: str | None = None  # Globus Transfer (not wired yet) — compute-only entries omit it
 
     # access
     ssh_host: str
     auth_method: Literal["ssh-key", "mfa-otp", "sfapi"] = "ssh-key"  # only ssh-key wired in v1
 
-    allocation: Allocation
+    allocation: Allocation | None = None  # a facility may have no auto-listable allocation tool
     compute: Compute
     defaults: Defaults
 
     # trust / provenance
-    provenance: Literal["curated", "community", "scraped", "plugin-validated"] = "curated"
+    provenance: Literal["curated", "community", "scraped", "plugin-validated", "session"] = "curated"
     last_validated: datetime.date
 
     @field_validator("compute_mep_uuid", "transfer_endpoint_uuid")

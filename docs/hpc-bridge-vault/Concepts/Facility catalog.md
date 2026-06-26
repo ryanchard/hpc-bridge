@@ -26,10 +26,11 @@ A `Protocol` with `get(machine)` (exact → provisioning) and `discover(query)` 
 > [!note] Auth — reuse the Compute identity
 > Reads use `SearchClient(app=Client().app)` — the same Globus identity Compute already holds — needing a one-time search-scope consent (`hpc-bridge-catalog`); until granted, catalog discovery **hard-fails** (no bundled fallback). This unlocks `visible_to`-restricted entries. See [[Globus index discovery channel]].
 
-## Two ways in — startup or agentic
+## Three ways in — startup, agentic, or BYO
 
 - **Startup (env-pinned):** `HPC_BRIDGE_MACHINE=<id>` → `make_facility` resolves the entry from the catalog at boot.
 - **Agentic (runtime):** `list_facilities()` → `connect_facility(facility)` binds the machine (late-binds `AppCtx.facility`), brings up its **free login shape**, runs the allocation `command` over Compute, parses it, and returns the allocations → `ensure_endpoint_up(account=…)`. → [[The MCP tools]]
+- **BYO / Socratic (runtime):** a machine the index can't resolve isn't a dead-end — `connect_facility` returns `needs_facility_details`, the agent elicits the config from the **user** (`FacilityDetails`), and the server builds a **session-local** entry (`provenance="session"`, on `AppCtx.session_facilities`, **never indexed**) that drives the same flow. The login-shape canary validates it. → [[Globus index discovery channel]]
 
 Allocation output is parsed by a **deterministic, plugin-side parser** keyed by `entry.allocation.parser` (`catalog/parsers.py` — `mybalance` built; `sbank`/`iris` reserved). Stdout is parsed in code, **never** handed to the model — inference is exactly what the catalog removes.
 

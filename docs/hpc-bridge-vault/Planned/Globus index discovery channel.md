@@ -28,15 +28,23 @@ Machine + allocation are now **agent-chosen at runtime**, not fixed by env ([[Th
 - **`ensure_endpoint_up(account=…)`** → the chosen allocation threads into the Slurm shape's `user_endpoint_config` (mirrors `partition`); `account` is no longer env-only.
 - `_facility_from_entry` / `_unsupported_entry_reason` factored out of `make_facility`'s startup path and shared with `connect_facility`.
 
+## The Socratic fallback — built (session-local)
+
+A machine the index can't resolve is **no longer a hard failure**. `connect_facility(X)` returns `phase="needs_facility_details"`; the agent elicits the config from the **user** (the `FacilityDetails` schema is the question list — `ssh_host`, `interface`, `env_setup`, `scratch_root`, `partition`, optional allocation command), calls `connect_facility(X, details=…)`, and the server builds a **session-local** `CatalogEntry` (`provenance="session"`, remembered on `AppCtx.session_facilities`), then runs the **normal** flow. The login-shape canary **validates** the supplied values (a wrong `interface`/`env_setup` ⇒ the worker never registers) — *elicit-then-validate*, the [[Discovery channel model|human channel]] wired in.
+
+- **Trust:** the session-local entry holds executable config (`env_setup`, `ssh_host`) but it's **user-supplied** (Tier-1, like credentials), **never written to the index** (curator-only writes stay the boundary). The agent is a conduit for the user's answers; it must not invent config. SSH user + key still come from the env.
+- **Also covers index-down:** if `make_catalog()` errors, the same fallback fires (supply `details` to proceed) rather than a hard fail.
+- **Deferred:** write-back / seed-emission for curation; parsers beyond `mybalance`; persisting session facilities across restarts; non-Slurm.
+
 ## Our extras (later slices, optional)
 
-From [[Discovery channel model]], not in the catalog yet: per-channel **ablation flags** + the **resolution trace** (resolution is single-source so a per-fact trace is less load-bearing today); the explicit **Socratic** human-elicitation fallback — **the next slice** (today an unknown machine, or no index, is a hard failure). Fold the rest in if/when the matrix-as-tests discipline is wanted.
+From [[Discovery channel model]], not in the catalog yet: per-channel **ablation flags** + the **resolution trace** (resolution is single-source so a per-fact trace is less load-bearing today). Fold in if/when the matrix-as-tests discipline is wanted.
 
 ## Status
 
-- **Merged:** Plan 1 — the catalog data layer · catalog-driven `make_facility` · the `hpc-bridge-catalog` ingest curator ([#15](https://github.com/ryanchard/hpc-bridge/pull/15)).
-- **Built (in review, this PR):** Plan 2 — `list_facilities` + `connect_facility` + the `mybalance` parser + account-from-selection. 5 → 7 [[The MCP tools|MCP tools]].
-- **Deferred:** ACCESS MCP / Operations API channels; the ablation/trace/Socratic extras (see [[Discovery channel model]]).
+- **Merged:** Plan 1 (catalog data layer · catalog-driven `make_facility` · `hpc-bridge-catalog` ingest, [#15](https://github.com/ryanchard/hpc-bridge/pull/15)) **and** Plan 2 (`list_facilities` + `connect_facility` + `mybalance` parser + account-from-selection, [#17](https://github.com/ryanchard/hpc-bridge/pull/17)).
+- **Built (this branch):** the **Socratic fallback** above — `needs_facility_details` + session-local `connect_facility(details=…)`.
+- **Deferred:** ACCESS MCP / Operations API channels; the ablation/trace extras; seed-emission/write-back (see [[Discovery channel model]]).
 
 ## See also
 [[Discovery channel model]] · [[Discovery today]] · [[facility-remote]] · [[Happy path]] · [[Home]]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import os
 import re
 import shlex
@@ -14,14 +15,20 @@ from pathlib import Path
 from mcp.server.fastmcp import Context, FastMCP
 
 from . import dispatch, session_shell
-from .catalog.entry import CatalogSummary
+from .catalog.entry import Allocation, CatalogEntry, CatalogSummary, Compute, Defaults
 from .catalog.parsers import PARSERS
 from .cost import cap_output, estimate_spend
 from .endpoint import EndpointCLI
 from .facility.base import Facility
 from .facility.local import LocalFacility
 from .lifecycle import EndpointState, ensure_warm
-from .models import ConnectFacilityResult, EndpointStatus, LoginShellResult, ShellOutcome
+from .models import (
+    ConnectFacilityResult,
+    EndpointStatus,
+    FacilityDetails,
+    LoginShellResult,
+    ShellOutcome,
+)
 from .profile import Profile
 from .runner import CanaryResult, GlobusRunner
 from .session_shell import Session
@@ -61,6 +68,9 @@ class AppCtx:
     charge_factor: float = 0.0
     max_output_chars: int = 1_000_000
     shapes: dict[str, ShapeRuntime] = field(default_factory=dict)
+    # Session-local facilities the agent supplied for machines NOT in the catalog (the Socratic
+    # fallback) — keyed by the id passed to connect_facility. Never written to the shared index.
+    session_facilities: dict[str, CatalogEntry] = field(default_factory=dict)
     runner_factory: Callable[..., GlobusRunner] = GlobusRunner
     # serializes provision / runner-swap / teardown so concurrent tool calls can't race AppCtx state
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -593,21 +603,76 @@ async def list_facilities(query: str = "") -> list[CatalogSummary]:
     return await _list_facilities(query)
 
 
-async def _connect_facility(app: AppCtx, facility: str) -> ConnectFacilityResult:
-    try:
-        entry = await make_catalog().get(facility)
-    except Exception as exc:  # noqa: BLE001 - no catalog (no index / search scope) -> hard fail
-        return ConnectFacilityResult(
-            phase="failed", facility=facility, notice=f"catalog unavailable: {exc}"[:300]
-        )
+def _entry_from_details(facility: str, details: FacilityDetails) -> CatalogEntry:
+    """Build a SESSION-LOCAL CatalogEntry from user-supplied details — the Socratic fallback for a
+    machine not in the catalog. provenance="session"; never written to the shared index. Identity is
+    defaulted from the id; the transfer endpoint is omitted (compute-only); the allocation block is
+    set only when a listing command + a parser were given (else the human supplies the account)."""
+    alloc = None
+    if details.allocation_command and details.allocation_parser:
+        alloc = Allocation(command=details.allocation_command, parser=details.allocation_parser)
+    name = details.display_name or facility
+    return CatalogEntry(
+        id=facility,
+        facility_key="session",
+        facility=name,
+        description="session-local facility (user-supplied, not catalogued)",
+        display_name=name,
+        transfer_endpoint_uuid=None,
+        ssh_host=details.ssh_host,
+        allocation=alloc,
+        compute=Compute(
+            scheduler=details.scheduler,
+            interface=details.interface,
+            env_setup=details.env_setup,
+            scratch_root=details.scratch_root,
+            endpoint_name=details.endpoint_name,
+            amqp_port=details.amqp_port,
+        ),
+        defaults=Defaults(partition=details.partition, walltime=details.walltime),
+        provenance="session",
+        last_validated=datetime.date.today(),
+    )
+
+
+async def _connect_facility(
+    app: AppCtx, facility: str, details: FacilityDetails | None = None
+) -> ConnectFacilityResult:
+    # Resolve the entry: a session-local one the agent already supplied wins; else the catalog. An
+    # index error is treated as "unresolved" (the agent can still supply details), not a hard fail.
+    entry = app.session_facilities.get(facility)
     if entry is None:
-        return ConnectFacilityResult(
-            phase="not_found",
-            facility=facility,
-            notice=f"{facility!r} is not in the catalog — call list_facilities() to see options",
-        )
+        try:
+            entry = await make_catalog().get(facility)
+        except Exception as exc:  # noqa: BLE001 - index/scope unavailable -> fall back to details
+            if details is None:
+                return ConnectFacilityResult(
+                    phase="needs_facility_details",
+                    facility=facility,
+                    notice=f"catalog unavailable ({type(exc).__name__}); supply this facility's "
+                    "config via details= (ask the user) to proceed.",
+                )
+            entry = None  # fall through and build from the supplied details
+    if entry is None:
+        if details is None:
+            return ConnectFacilityResult(
+                phase="needs_facility_details",
+                facility=facility,
+                notice=f"{facility!r} isn't in the catalog. Either list_facilities() if you meant a "
+                "catalogued one, or supply this facility's config via details= (the details schema "
+                "is the question list — ask the user), then call again.",
+            )
+        try:
+            entry = _entry_from_details(facility, details)
+        except Exception as exc:  # noqa: BLE001 - bad details -> structured failure, not a crash
+            return ConnectFacilityResult(
+                phase="failed",
+                facility=facility,
+                notice=f"invalid facility details: {type(exc).__name__}: {exc}"[:300],
+            )
+        app.session_facilities[facility] = entry  # remember it for the provisioning loop
     reason = _unsupported_entry_reason(entry)
-    if reason is None and entry.allocation.parser not in PARSERS:
+    if reason is None and entry.allocation is not None and entry.allocation.parser not in PARSERS:
         reason = (
             f"allocation parser {entry.allocation.parser!r} not implemented yet "
             f"(have: {sorted(PARSERS)})"
@@ -651,6 +716,14 @@ async def _connect_facility(app: AppCtx, facility: str) -> ConnectFacilityResult
             facility=facility,
             notice="bringing up the login node; call connect_facility again shortly to read your allocations",
         )
+    if entry.allocation is None:  # no auto-listable allocations -> the human supplies the account
+        return ConnectFacilityResult(
+            phase="needs_account",
+            facility=facility,
+            allocations=[],
+            notice="login node is up; this facility has no allocation listing — charge a block by "
+            "passing the account directly: ensure_endpoint_up(account=…, partition=…, confirm_spend=True).",
+        )
     out = await _run_shell(app, entry.allocation.command, shape="login")
     if out.phase != "complete" or out.exit_code != 0:
         return ConnectFacilityResult(
@@ -669,17 +742,25 @@ async def _connect_facility(app: AppCtx, facility: str) -> ConnectFacilityResult
 
 
 @mcp.tool()
-async def connect_facility(facility: str, ctx: Context) -> ConnectFacilityResult:
-    """Select an HPC facility from the catalog and bring up its (free) login node, then list the
-    allocations a Slurm block can be charged to.
+async def connect_facility(
+    facility: str, ctx: Context, details: FacilityDetails | None = None
+) -> ConnectFacilityResult:
+    """Select an HPC facility and bring up its (free) login node, then list the allocations a Slurm
+    block can be charged to.
 
     `facility` is an id/subject/alias from list_facilities() (e.g. "anvil" or "purdue:anvil"). This
     binds the facility, stands up the login shape (SSH cold-bootstrap once, or reuse an online
-    endpoint — no Slurm account needed), runs the facility's allocation command over Compute, and
-    returns phase="needs_account" with the parsed allocations. Pick one, then
+    endpoint — no Slurm account needed), runs the allocation command over Compute, and returns
+    phase="needs_account" with the parsed allocations. Pick one, then
     ensure_endpoint_up(account=…, partition=…, confirm_spend=True). phase="provisioning" means the
-    login node is still warming — call again shortly."""
-    return await _connect_facility(ctx.request_context.lifespan_context, facility)
+    login node is still warming — call again shortly.
+
+    NOT in the catalog → phase="needs_facility_details": the facility isn't catalogued. Gather its
+    config from the user (the `details` schema lists exactly what's needed — ssh_host, interface,
+    env_setup, scratch_root, partition, …) and call again with details=…; that registers a
+    session-local facility and proceeds (the login-shape canary validates the values). Credentials
+    (the SSH user + key) come from the environment, never details."""
+    return await _connect_facility(ctx.request_context.lifespan_context, facility, details)
 
 
 async def _release_blocks_over_login(app: AppCtx, eid: str) -> str:

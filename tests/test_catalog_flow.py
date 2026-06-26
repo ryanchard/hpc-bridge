@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from hpc_bridge.models import FacilityDetails
 from hpc_bridge.profile import Profile
 from hpc_bridge.runner import CanaryResult
 from hpc_bridge.server import AppCtx, _ensure_endpoint_up, _list_facilities, mcp
@@ -147,7 +148,9 @@ async def test_connect_facility_brings_up_login_and_lists_allocations(monkeypatc
     assert app.facility is f and app.machine == "anvil"  # late-bound the chosen facility
 
 
-async def test_connect_facility_unknown_machine_is_not_found(monkeypatch):
+async def test_connect_facility_unknown_returns_needs_facility_details(monkeypatch):
+    # Not in the catalog -> the Socratic fallback: ask for the facility's config via details=,
+    # not a dead-end. (The agent then elicits and calls again with details.)
     from hpc_bridge import server
 
     app = AppCtx(facility=FakeFacility(), profile=Profile())
@@ -155,7 +158,8 @@ async def test_connect_facility_unknown_machine_is_not_found(monkeypatch):
         server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
     )
     res = await server._connect_facility(app, "nope")
-    assert res.phase == "not_found" and res.allocations == []
+    assert res.phase == "needs_facility_details" and res.allocations == []
+    assert res.notice and "details=" in res.notice
 
 
 async def test_connect_facility_provisioning_when_login_worker_cold(monkeypatch):
@@ -189,15 +193,16 @@ def _no_catalog():
     raise RuntimeError("HPC_BRIDGE_SEARCH_INDEX is required")
 
 
-async def test_connect_facility_hard_fails_without_catalog(monkeypatch):
-    # No index / search scope -> make_catalog raises -> connect surfaces a structured failure,
-    # never a hardcoded default.
+async def test_connect_facility_index_unavailable_falls_back_to_details(monkeypatch):
+    # No index / search scope -> instead of a hard fail, fall back to eliciting the facility config:
+    # the agent can still proceed by supplying details=. (Index-down shouldn't block a BYO facility.)
     from hpc_bridge import server
 
     monkeypatch.setattr(server, "make_catalog", _no_catalog)
     app = AppCtx(facility=FakeFacility(), profile=Profile())
     res = await server._connect_facility(app, "anvil")
-    assert res.phase == "failed" and res.notice and "catalog unavailable" in res.notice
+    assert res.phase == "needs_facility_details"
+    assert res.notice and "catalog unavailable" in res.notice
 
 
 async def test_list_facilities_empty_without_catalog(monkeypatch):
@@ -228,4 +233,105 @@ async def test_connect_facility_moves_scratch_root_to_the_facility(monkeypatch):
     monkeypatch.setattr(server, "_facility_from_entry", lambda entry, *, account: f)
     await server._connect_facility(app, "anvil")
     assert app.scratch_root == "/anvil/scratch/me/.hpc-bridge"
+
+
+# --- agentic fallback: connect_facility elicits an un-indexed facility (session-local) -----------
+
+
+def _details(**over):
+    base = dict(
+        ssh_host="frontier.olcf.ornl.gov",
+        interface="hsn0",
+        env_setup="module load x && source {venv}/bin/activate",
+        scratch_root="/lustre/{user}/.hpc-bridge",
+        partition="batch",
+        allocation_command="mybalance",
+        allocation_parser="mybalance",
+    )
+    base.update(over)
+    return FacilityDetails(**base)
+
+
+def _byo_app(monkeypatch, f):
+    # An app whose catalog has only anvil, with the facility build + runner faked so a supplied
+    # facility's login shape "warms" and returns MYBALANCE — mirrors the existing connect tests.
+    from hpc_bridge import server
+
+    f.workers = 1
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, MYBALANCE, ""))
+    monkeypatch.setattr(
+        server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
+    )
+    monkeypatch.setattr(server, "_facility_from_entry", lambda entry, *, account: f)
+    return app
+
+
+async def test_connect_with_details_builds_session_entry_and_reaches_needs_account(monkeypatch):
+    from hpc_bridge import server
+
+    app = _byo_app(monkeypatch, FakeFacility())
+    res = await server._connect_facility(app, "frontier", details=_details())
+    assert res.phase == "needs_account"
+    assert [a.account for a in res.allocations] == ["cis250223", "cis250223-gpu"]
+    # remembered as a session-local entry so the provisioning loop doesn't re-elicit
+    assert "frontier" in app.session_facilities
+    assert app.session_facilities["frontier"].provenance == "session"
+    assert app.machine == "frontier"
+
+
+async def test_session_facility_resolves_on_recall_without_details(monkeypatch):
+    from hpc_bridge import server
+
+    app = _byo_app(monkeypatch, FakeFacility())
+    await server._connect_facility(app, "frontier", details=_details())  # supply once
+    res = await server._connect_facility(app, "frontier")  # re-call WITHOUT details
+    assert res.phase == "needs_account"  # resolved from session_facilities, not needs_facility_details
+
+
+async def test_connect_details_without_allocation_asks_for_account(monkeypatch):
+    from hpc_bridge import server
+
+    app = _byo_app(monkeypatch, FakeFacility())
+    res = await server._connect_facility(
+        app, "frontier", details=_details(allocation_command=None, allocation_parser=None)
+    )
+    assert res.phase == "needs_account" and res.allocations == []
+    assert res.notice and "account" in res.notice
+    assert app.session_facilities["frontier"].allocation is None
+
+
+async def test_connect_details_unsupported_parser_is_unsupported(monkeypatch):
+    from hpc_bridge import server
+
+    app = _byo_app(monkeypatch, FakeFacility())
+    res = await server._connect_facility(app, "frontier", details=_details(allocation_parser="sbank"))
+    assert res.phase == "unsupported" and "sbank" in (res.notice or "")
+
+
+async def test_connect_index_error_with_details_proceeds(monkeypatch):
+    # Index down + details supplied -> build the session entry and proceed, don't hard-stop.
+    from hpc_bridge import server
+
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, MYBALANCE, ""))
+    monkeypatch.setattr(server, "make_catalog", _no_catalog)  # raises
+    monkeypatch.setattr(server, "_facility_from_entry", lambda entry, *, account: f)
+    res = await server._connect_facility(app, "frontier", details=_details())
+    assert res.phase == "needs_account" and "frontier" in app.session_facilities
+
+
+def test_entry_from_details_builds_session_local_entry():
+    from hpc_bridge.server import _entry_from_details
+
+    e = _entry_from_details("frontier", _details(display_name="Frontier (BYO)"))
+    assert e.id == "frontier" and e.provenance == "session"
+    assert e.transfer_endpoint_uuid is None and e.subject == "session:frontier"
+    assert e.compute.interface == "hsn0" and e.compute.scheduler == "slurm"
+    assert e.allocation is not None and e.allocation.parser == "mybalance"
+    # no allocation tool -> allocation omitted
+    bare = _entry_from_details("x", _details(allocation_command=None, allocation_parser=None))
+    assert bare.allocation is None
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 NodeHours = float
 
@@ -58,10 +58,64 @@ class AllocationOption(BaseModel):
     type: str | None = None  # e.g. CPU / GPU, when the facility distinguishes them
 
 
+class FacilityDetails(BaseModel):
+    """User-supplied config for a facility that isn't in the catalog — the elicitation template for
+    `connect_facility`'s `needs_facility_details` phase. The field descriptions ARE the questions to
+    ask the user; the agent fills this in from their answers. SSH login user + key come from the
+    environment (HPC_BRIDGE_SSH_USER/KEY), not here — this is facility config, not credentials.
+    Session-local: never written to the shared catalog."""
+
+    ssh_host: str = Field(
+        description="Login host to SSH to for the one-time bootstrap, e.g. 'frontier.olcf.ornl.gov'."
+    )
+    interface: str = Field(
+        description="High-speed network interface the compute workers bind to so they can phone "
+        "home (address_by_interface) — e.g. 'ib0' on Anvil, 'hsn0' on Frontier. Wrong value ⇒ "
+        "workers never register."
+    )
+    env_setup: str = Field(
+        description="Bash that puts `globus-compute-endpoint` on PATH on the login node — usually a "
+        "`module load …` and/or `source <venv>/bin/activate`. '{user}'/'{venv}' are templated."
+    )
+    scratch_root: str = Field(
+        description="A writable path on the shared filesystem for session state, e.g. "
+        "'/anvil/scratch/{user}/.hpc-bridge' ('{user}' is templated to the SSH login name)."
+    )
+    partition: str = Field(
+        description="Default Slurm partition/queue for compute blocks, e.g. 'shared' or 'batch'."
+    )
+    scheduler: Literal["slurm"] = Field(
+        default="slurm", description="Scheduler. Only 'slurm' is supported in this version."
+    )
+    allocation_command: str | None = Field(
+        default=None,
+        description="Optional: a login-node command that lists the user's allocations/balances "
+        "(e.g. 'mybalance'). Omit if the facility has none — you'll then pass account= directly.",
+    )
+    allocation_parser: Literal["sbank", "iris", "mybalance"] | None = Field(
+        default=None,
+        description="Which built-in parser reads `allocation_command`'s output. Only 'mybalance' is "
+        "implemented today; omit (with allocation_command) if unsure.",
+    )
+    walltime: str = Field(default="00:30:00", description="Default block walltime (HH:MM:SS).")
+    amqp_port: int = Field(default=443, description="AMQPS port (443 is near-universally allowed).")
+    endpoint_name: str = Field(default="hpc-bridge", description="On-disk/registration endpoint name.")
+    display_name: str | None = Field(
+        default=None, description="Optional human label for the facility (defaults to the id)."
+    )
+
+
 class ConnectFacilityResult(BaseModel):
     # needs_account: login node is up; `allocations` are the choices -> ensure_endpoint_up(account=…).
-    # provisioning: login node still warming (call again). not_found/unsupported/failed: see notice.
-    phase: Literal["needs_account", "provisioning", "not_found", "unsupported", "failed"]
+    # provisioning: login node still warming (call again). needs_facility_details: not in the catalog
+    # -> supply `details` (ask the user). unsupported/failed: see notice.
+    phase: Literal[
+        "needs_account",
+        "provisioning",
+        "needs_facility_details",
+        "unsupported",
+        "failed",
+    ]
     facility: str  # the id/subject that was connected (echoes connect_facility's arg)
     allocations: list[AllocationOption] = []
     notice: str | None = None
