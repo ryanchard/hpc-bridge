@@ -33,7 +33,8 @@ This vault has two halves:
 
 ## Planned — designed, not built
 - [[Discovery channel model]] — the target model: channels, the provide-vs-discover matrix, the principles ([#7](https://github.com/ryanchard/hpc-bridge/issues/7))
-- [[Globus index discovery channel]] — the catalog resolver + agentic selection (built); the fuller cascade is next ([#7](https://github.com/ryanchard/hpc-bridge/issues/7))
+- [[Globus index discovery channel]] — the catalog resolver + agentic selection + the raw-SSH discover-then-confirm sweep for un-indexed facilities ([#7](https://github.com/ryanchard/hpc-bridge/issues/7))
+- [[Persistent SSH session]] — one reused SSH connection (ControlMaster) → authenticate once, not ~10× ([#7](https://github.com/ryanchard/hpc-bridge/issues/7))
 
 ## Meta
 - [[Vault style guide]] — how to write & maintain these notes (for contributors and agents)
