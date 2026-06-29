@@ -1,7 +1,7 @@
 # Globus index discovery channel
 
 > [!warning] Planned · transient
-> **Plan 1 (the catalog data layer) is merged.** **Plan 2 (the agentic selection flow) is built — in review (this PR).** Tracking: [#7](https://github.com/ryanchard/hpc-bridge/issues/7). This note is the spec + status; it churns as the work lands.
+> **Plans 1–2 (catalog data layer + agentic selection flow) are merged**, as is the **discover-first sweep + persistent SSH** (this note's "built" sections). Tracking: [#7](https://github.com/ryanchard/hpc-bridge/issues/7). This note is the spec + status; it churns as the work lands — remaining: seed-emission / write-back.
 
 ## Goal
 
@@ -39,7 +39,7 @@ A machine the index can't resolve is **no longer a hard failure**. `connect_faci
 
 ### Discover-first — built (this branch)
 
-Pure elicitation was too much to ask: `interface` / `env_setup` / `scratch_root` / `partition` are facts the login node can *tell* you. So an index miss now **discovers before it asks**. `connect_facility(X, ssh_host="…")` builds a **bare `SshTarget`** (just `ssh_host` + env creds — nothing else from `FacilityDetails` is needed to open SSH), runs **one batched login-node probe** ([[discovery|discovery.py]] · `discover_facility_details`), and returns `phase="proposed_facility_details"` with a filled-in `FacilityDetails` **draft** + notes flagging the low-confidence fields. The agent reviews/corrects the draft *with the user* (above all `interface`) and calls `connect_facility(X, details=…)`, re-entering the **same** session-local flow above — the canary still validates. With no host, `needs_facility_details` simply asks for one. `_propose_or_ask` (`server.py:764`) is the router; the probe rides the [[Persistent SSH session]] master the bootstrap then reuses (no extra auth).
+Pure elicitation was too much to ask: `interface` / `env_setup` / `scratch_root` / `partition` are facts the login node can *tell* you. So an index miss now **discovers before it asks**. `connect_facility(X, ssh_host="…")` builds a **bare `SshTarget`** (just `ssh_host` + env creds — nothing else from `FacilityDetails` is needed to open SSH), runs **one batched login-node probe** ([[discovery|discovery.py]] · `discover_facility_details`), and returns `phase="proposed_facility_details"` with a filled-in `FacilityDetails` **draft** + notes flagging the low-confidence fields. The agent reviews/corrects the draft *with the user* (above all `interface`) and calls `connect_facility(X, details=…)`, re-entering the **same** session-local flow above — the canary still validates. With no host, `needs_facility_details` simply asks for one. `_propose_or_ask` (`server.py:796`) is the router; the probe rides the persistent-SSH ([[facility-remote]]) master the bootstrap then reuses (no extra auth).
 
 The [[Discovery channel model|human channel]] minimized: **the user provides access, the agent discovers the config.** "Elicit-then-validate" becomes **probe → propose → confirm → validate** — proposing *discovered* facts (user-confirmed, canary-checked) is not "inventing."
 
@@ -50,7 +50,7 @@ From [[Discovery channel model]], not in the catalog yet: per-channel **ablation
 ## Status
 
 - **Merged:** Plan 1 (catalog data layer · catalog-driven `make_facility` · `hpc-bridge-catalog` ingest, [#15](https://github.com/ryanchard/hpc-bridge/pull/15)) **and** Plan 2 (`list_facilities` + `connect_facility` + `mybalance` parser + account-from-selection, [#17](https://github.com/ryanchard/hpc-bridge/pull/17)).
-- **Built (this branch):** the **Socratic fallback** + **discover-first sweep** above — `connect_facility(ssh_host=…)` → `proposed_facility_details` → confirm → session-local `connect_facility(details=…)` — plus [[Persistent SSH session]] (ControlMaster). Pending live validation.
+- **Built + merged:** the **Socratic fallback** + **discover-first sweep** above — `connect_facility(ssh_host=…)` → `proposed_facility_details` → confirm → session-local `connect_facility(details=…)` — plus persistent SSH ([[facility-remote]], ControlMaster). Validated live on the globus1 cluster.
 - **Deferred:** ACCESS MCP / Operations API channels; the ablation/trace extras; seed-emission/write-back (see [[Discovery channel model]]).
 
 ## See also

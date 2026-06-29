@@ -11,7 +11,7 @@ One entry per machine, a **superset of `MachineProfile`**, split by *who control
 - **`defaults:`** — per-run tunables the agent/user **may override** (`partition`, `walltime`, nodes/blocks, accelerators).
 - plus identity, `ssh_host`, `auth_method`, the allocation `command` + named `parser`, and `provenance` / `last_validated`.
 
-`{user}`/`{venv}` are templated at provision time; `worker_init` is *derived* (= `env_setup`); `account` is **never stored** (per-user, from allocation selection). `profile_kwargs()` → `profile_from_catalog_entry` ([[facility-remote]]) is the binding seam to `MachineProfile`. The Anvil entry resolves to the known-good config we've stood up live (verified by test).
+`{user}`/`{venv}` are templated at provision time; `worker_init` is *derived* (= `env_setup`); `account` is **never stored** (per-user, from allocation selection). `profile_kwargs()` → `profile_from_catalog_entry` ([[facility-remote]]) is the binding seam to `MachineProfile` — and derives `endpoint_name` = `hpc-bridge-<id>` when a seed omits it (never the bare `hpc-bridge`, which would collide — endpoints are keyed by identity + name). The Anvil entry resolves to the known-good config we've stood up live (verified by test).
 
 ## The provider seam — `CatalogProvider` (`catalog/base.py`)
 
@@ -30,7 +30,7 @@ A `Protocol` with `get(machine)` (exact → provisioning) and `discover(query)` 
 
 - **Startup (env-pinned):** `HPC_BRIDGE_MACHINE=<id>` → `make_facility` resolves the entry from the catalog at boot.
 - **Agentic (runtime):** `list_facilities()` → `connect_facility(facility)` binds the machine (late-binds `AppCtx.facility`), brings up its **free login shape**, runs the allocation `command` over Compute, parses it, and returns the allocations → `ensure_endpoint_up(account=…)`. → [[The MCP tools]]
-- **BYO / Socratic (runtime):** a machine the index can't resolve isn't a dead-end — `connect_facility` returns `needs_facility_details`, the agent elicits the config from the **user** (`FacilityDetails`), and the server builds a **session-local** entry (`provenance="session"`, on `AppCtx.session_facilities`, **never indexed**) that drives the same flow. The login-shape canary validates it. → [[Globus index discovery channel]]
+- **BYO / discovery (runtime):** a machine the index can't resolve isn't a dead-end — pass `connect_facility(facility, ssh_host=…)` and the server **probes the login node** ([[discovery]]) to *propose* a `FacilityDetails` draft (`proposed_facility_details`) the user confirms (or, with no host, returns `needs_facility_details` and asks). The confirmed `details=` builds a **session-local** entry (`provenance="session"`, on `AppCtx.session_facilities`, **never indexed**, endpoint name `hpc-bridge-<facility>`) that drives the same flow; the login-shape canary validates it. → [[Globus index discovery channel]]
 
 Allocation output is parsed by a **deterministic, plugin-side parser** keyed by `entry.allocation.parser` (`catalog/parsers.py` — `mybalance` built; `sbank`/`iris` reserved). Stdout is parsed in code, **never** handed to the model — inference is exactly what the catalog removes.
 

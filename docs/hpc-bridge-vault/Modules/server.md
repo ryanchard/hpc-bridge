@@ -10,7 +10,7 @@
 | Tool | Helper | Does |
 |---|---|---|
 | `list_facilities` | `_list_facilities` | browse the [[Facility catalog\|catalog]] (agent-safe summaries) |
-| `connect_facility` | `_connect_facility` | bind a facility, bring up its login shape, list allocations |
+| `connect_facility` | `_connect_facility` | bind a facility (or probe + propose an un-indexed one via `ssh_host`), bring up its login shape, list allocations |
 | `ensure_endpoint_up` | `_ensure_endpoint_up` | provision/probe; report warm via the canary; thread account/partition |
 | `run_shell` | `_run_shell` | dispatch a command to the warm block / login shape |
 | `reset_session` | `_reset_session` | clear a session's cwd/env |
@@ -21,14 +21,15 @@
 
 ## How it works
 
-- **State.** `AppCtx` (`:50`) holds the facility, profile, endpoint state, the per-shape `ShapeRuntime` (`:31` — its Executor, canary result, and spend clock), and an `asyncio.Lock`. `lifespan` (`:133`) builds it from `make_facility` + env.
+- **State.** `AppCtx` (`:61`) holds the facility, profile, endpoint state, the per-shape `ShapeRuntime` (`:42` — its Executor, canary result, and spend clock), the session-local facilities dict, and an `asyncio.Lock`. `lifespan` (`:285`) builds it from `make_facility` + env.
 - **Facility selection.** `make_facility` returns a `SlurmFacility` resolved from the [[Facility catalog|catalog]] (`HPC_BRIDGE_MACHINE`, or `connect_facility` at runtime — by id *or* subject) or a `LocalFacility`, reading the login-node pin from [[state]] and rebinding the CLI to it. `lifespan` **boots resiliently** — a failed `make_facility` (stale env, no index) warns and starts unbound rather than crashing; `connect_facility` then binds and **moves `scratch_root`** to the facility ([[Session continuity]]).
-- **The provision choke point.** `_provision` (`:297`): bootstrap if there's no endpoint → `ensure_warm` ([[lifecycle]]) → on `"warm"`, confirm a *live worker* via `_confirm_worker` (`:201`, the canary) → `_settle_billing`. Both `ensure_endpoint_up` and `run_shell` (via `_ensure_warm_runner`) reach it.
+- **Un-indexed discovery.** When `_connect_facility` (`:692`) misses the catalog, `_propose_or_ask` (`:796`) builds a bare `SshTarget` (SSH user from `_ssh_config_user` / `ssh -G`, `:87`; key + host from `~/.ssh/config` + env) and runs the [[discovery]] probe → `proposed_facility_details`. On confirm, `_entry_from_details` (`:658`) builds a session-local entry whose endpoint name comes from `_session_endpoint_name` (`:649`) — `hpc-bridge-<facility>`. `_control_settings` (`:105`) configures the shared ControlMaster ([[facility-remote]]).
+- **The provision choke point.** `_provision` (`:460`): bootstrap if there's no endpoint → `ensure_warm` ([[lifecycle]]) → on `"warm"`, confirm a *live worker* via `_confirm_worker` (`:364`, the canary) → `_settle_billing`. Both `ensure_endpoint_up` and `run_shell` (via `_ensure_warm_runner`) reach it.
 - **The lock.** Serialises provision / runner-swap / stop so concurrent tool calls can't race `AppCtx`. Dispatch happens *outside* the lock, so a long command doesn't serialise everything else. `stop_endpoint` `scancel`s the block over the login shape (AMQP) via `_release_blocks_over_login`, then drops the billed shape under the lock — leaving the manager online for reuse. The runner `close()` is non-blocking ([[runner]]) so a stop returns promptly.
-- **The spend floor.** `_provision` returns `"needs_confirmation"` for a billed (slurm) shape until `confirm_spend=True` — see [[Resource shapes & the spend floor]]. Partition selection is threaded in via `_apply_partition` (`:332`).
+- **The spend floor.** `_provision` returns `"needs_confirmation"` for a billed (slurm) shape until `confirm_spend=True` — see [[Resource shapes & the spend floor]]. Partition selection is threaded in via `_apply_partition` (`:496`).
 
 > [!warning] "warm" means a *worker* answered — not "manager online"
-> `manager_online` (a cheap web query) only reflects the login-node manager. In the MEP model the first task forks the UEP and submits the block, so the manager reads online while the next command would cold-start. `_confirm_worker` submits a **canary** through the real Executor; only a returned result ⇒ warm. `CANARY_TTL_S` (`:158`) then trusts that for 45 s so an interactive burst doesn't pay the round-trip each call. See [[Warmth, the canary & cold-start]].
+> `manager_online` (a cheap web query) only reflects the login-node manager. In the MEP model the first task forks the UEP and submits the block, so the manager reads online while the next command would cold-start. `_confirm_worker` submits a **canary** through the real Executor; only a returned result ⇒ warm. `CANARY_TTL_S` (`:321`) then trusts that for 45 s so an interactive burst doesn't pay the round-trip each call. See [[Warmth, the canary & cold-start]].
 
 ## See also
 [[Two-channel architecture]] · [[Warmth, the canary & cold-start]] · [[Resource shapes & the spend floor]] · [[The MCP tools]] · [[runner]] · [[lifecycle]] · [[facility-remote]]

@@ -26,8 +26,8 @@ flowchart TD
 
 ## How it shows up in the code
 
-- The template + default vars: `SlurmFacility.config_template()` ([[facility-remote]], `remote.py:378`).
-- The manager + UEP config written at provision: `provision()` (`remote.py:512`).
+- The template + default vars: `SlurmFacility.config_template()` ([[facility-remote]], `remote.py:450`).
+- The manager + UEP config written at provision: `provision()` (`remote.py:585`).
 - The shape → vars mapping: `shape_config()` ([[shapes]]).
 
 > [!warning] `config.yaml` must be engine-free

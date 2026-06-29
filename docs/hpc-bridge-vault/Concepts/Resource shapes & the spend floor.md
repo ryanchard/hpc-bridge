@@ -19,7 +19,7 @@ Each shape has its own [[server|`ShapeRuntime`]] — its own Executor, canary, a
 
 ## The spend floor
 
-A billed `slurm` shape returns `needs_confirmation` and **starts nothing** until `ensure_endpoint_up(confirm_spend=True)` — a deterministic gate enforced in `_provision` ([[server]], `server.py:297`). It covers `run_shell` too (its canary would otherwise kick a block). The `login` shape is free and exempt. The chosen `partition` is threaded in per task via `_apply_partition` (`server.py:332`) and persists for the session.
+A billed `slurm` shape returns `needs_confirmation` and **starts nothing** until `ensure_endpoint_up(confirm_spend=True)` — a deterministic gate enforced in `_provision` ([[server]], `server.py:460`). It covers `run_shell` too (its canary would otherwise kick a block). The `login` shape is free and exempt. The chosen `partition` is threaded in per task via `_apply_partition` (`server.py:496`) and persists for the session.
 
 This is the front-end half of [[Cost control]] — the idle-release net catches the *back* end.
 

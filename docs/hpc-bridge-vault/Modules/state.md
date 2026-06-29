@@ -5,7 +5,7 @@
 
 ## What it does
 
-- **`EndpointRecord`** (`state.py:18`) — `endpoint_id`, `login_host` (resolved FQDN), `alias` (the round-robin SSH alias), `user`, `key_path`, `name`, `provisioned_at`.
+- **`EndpointRecord`** (`state.py:19`) — `endpoint_id`, `login_host` (resolved FQDN), `alias` (the round-robin SSH alias), `user`, `key_path`, `name`, `provisioned_at`.
 - **`LoginNodeStore`** (`:33`) — JSON at `~/.hpc-bridge/endpoints.json`, keyed by `(alias, name)`. `put`/`get`/`remove`/`all`.
 
 > [!warning] Written `0600` from creation
