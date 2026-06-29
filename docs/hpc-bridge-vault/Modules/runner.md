@@ -8,7 +8,7 @@
 - **`GlobusRunner`** (`runner.py:46`) — built per shape with an `endpoint_id` + `user_endpoint_config`. It lazily creates a Globus Compute `Executor` (the SDK captures the `user_endpoint_config` at build time) and reuses it for all dispatch.
 - **`run(command)`** — submits a `ShellFunction(command)` and returns its `{returncode, stdout, stderr}`. Commands are escaped via `_escape_for_shellfunction` (`:40`) because `ShellFunction` runs `cmd.format()` (bare `{}`/`}` would break formatting).
 - **`canary(timeout)`** — submits `_CANARY_CMD` (`:23`), a trivial probe that echoes a sentinel plus the worker's host/Python/dill; `_parse_canary` (`:31`) extracts them into a `CanaryResult` (`:8`). Drives [[Warmth, the canary & cold-start]].
-- **`close()`** — shuts down the Executor with `wait=False, cancel_futures=True` (see the warning below). Called on teardown, runner-swap, and machine switch.
+- **`close()`** — shuts down the Executor with `wait=False, cancel_futures=True` (see the warning below). Called on stop (the dropped billed shape), runner-swap, and machine switch.
 
 ## Key points
 

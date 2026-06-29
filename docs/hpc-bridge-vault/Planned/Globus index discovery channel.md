@@ -28,15 +28,30 @@ Machine + allocation are now **agent-chosen at runtime**, not fixed by env ([[Th
 - **`ensure_endpoint_up(account=…)`** → the chosen allocation threads into the Slurm shape's `user_endpoint_config` (mirrors `partition`); `account` is no longer env-only.
 - `_facility_from_entry` / `_unsupported_entry_reason` factored out of `make_facility`'s startup path and shared with `connect_facility`.
 
+## The Socratic fallback — built (session-local)
+
+A machine the index can't resolve is **no longer a hard failure**. `connect_facility(X)` returns `phase="needs_facility_details"`; the agent elicits the config from the **user** (the `FacilityDetails` schema is the question list — `ssh_host`, `interface`, `env_setup`, `scratch_root`, `partition`, optional allocation command), calls `connect_facility(X, details=…)`, and the server builds a **session-local** `CatalogEntry` (`provenance="session"`, remembered on `AppCtx.session_facilities`), then runs the **normal** flow. The login-shape canary **validates** the supplied values (a wrong `interface`/`env_setup` ⇒ the worker never registers) — *elicit-then-validate*, the [[Discovery channel model|human channel]] wired in.
+
+- **Trust:** the session-local entry holds executable config (`env_setup`, `ssh_host`) but it's **user-supplied** (Tier-1, like credentials), **never written to the index** (curator-only writes stay the boundary). The agent is a conduit for the user's answers; it must not *invent* config — it **proposes discovered facts** for the user to confirm. SSH user + key come from `~/.ssh/config` (read live; optional env overrides), never a boot-env var the running server can't see.
+- **Isolated endpoint name:** a session facility registers as `hpc-bridge-<facility>` (e.g. `hpc-bridge-globus`), never the bare `hpc-bridge`. Globus Compute keys endpoints by *identity + name*, so a shared name lets `find_online_endpoint` reuse another facility's (or a stale "online") registration — stranding a canary that can never warm. `_entry_from_details` derives it for session facilities; curated seeds set it explicitly (e.g. `hpc-bridge-anvil`). **The standard is `hpc-bridge-<facility>` everywhere — the bare `hpc-bridge` is banned.**
+- **Also covers index-down:** if `make_catalog()` errors, the same fallback fires (supply `details` to proceed) rather than a hard fail.
+- **Deferred:** write-back / seed-emission for curation; parsers beyond `mybalance`; persisting session facilities across restarts; non-Slurm.
+
+### Discover-first — built (this branch)
+
+Pure elicitation was too much to ask: `interface` / `env_setup` / `scratch_root` / `partition` are facts the login node can *tell* you. So an index miss now **discovers before it asks**. `connect_facility(X, ssh_host="…")` builds a **bare `SshTarget`** (just `ssh_host` + env creds — nothing else from `FacilityDetails` is needed to open SSH), runs **one batched login-node probe** ([[discovery|discovery.py]] · `discover_facility_details`), and returns `phase="proposed_facility_details"` with a filled-in `FacilityDetails` **draft** + notes flagging the low-confidence fields. The agent reviews/corrects the draft *with the user* (above all `interface`) and calls `connect_facility(X, details=…)`, re-entering the **same** session-local flow above — the canary still validates. With no host, `needs_facility_details` simply asks for one. `_propose_or_ask` (`server.py:764`) is the router; the probe rides the [[Persistent SSH session]] master the bootstrap then reuses (no extra auth).
+
+The [[Discovery channel model|human channel]] minimized: **the user provides access, the agent discovers the config.** "Elicit-then-validate" becomes **probe → propose → confirm → validate** — proposing *discovered* facts (user-confirmed, canary-checked) is not "inventing."
+
 ## Our extras (later slices, optional)
 
-From [[Discovery channel model]], not in the catalog yet: per-channel **ablation flags** + the **resolution trace** (resolution is single-source so a per-fact trace is less load-bearing today); the explicit **Socratic** human-elicitation fallback — **the next slice** (today an unknown machine, or no index, is a hard failure). Fold the rest in if/when the matrix-as-tests discipline is wanted.
+From [[Discovery channel model]], not in the catalog yet: per-channel **ablation flags** + the **resolution trace** (resolution is single-source so a per-fact trace is less load-bearing today). Fold in if/when the matrix-as-tests discipline is wanted.
 
 ## Status
 
-- **Merged:** Plan 1 — the catalog data layer · catalog-driven `make_facility` · the `hpc-bridge-catalog` ingest curator ([#15](https://github.com/ryanchard/hpc-bridge/pull/15)).
-- **Built (in review, this PR):** Plan 2 — `list_facilities` + `connect_facility` + the `mybalance` parser + account-from-selection. 5 → 7 [[The MCP tools|MCP tools]].
-- **Deferred:** ACCESS MCP / Operations API channels; the ablation/trace/Socratic extras (see [[Discovery channel model]]).
+- **Merged:** Plan 1 (catalog data layer · catalog-driven `make_facility` · `hpc-bridge-catalog` ingest, [#15](https://github.com/ryanchard/hpc-bridge/pull/15)) **and** Plan 2 (`list_facilities` + `connect_facility` + `mybalance` parser + account-from-selection, [#17](https://github.com/ryanchard/hpc-bridge/pull/17)).
+- **Built (this branch):** the **Socratic fallback** + **discover-first sweep** above — `connect_facility(ssh_host=…)` → `proposed_facility_details` → confirm → session-local `connect_facility(details=…)` — plus [[Persistent SSH session]] (ControlMaster). Pending live validation.
+- **Deferred:** ACCESS MCP / Operations API channels; the ablation/trace extras; seed-emission/write-back (see [[Discovery channel model]]).
 
 ## See also
 [[Discovery channel model]] · [[Discovery today]] · [[facility-remote]] · [[Happy path]] · [[Home]]

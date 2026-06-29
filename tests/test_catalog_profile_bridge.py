@@ -14,7 +14,7 @@ def test_bridge_reconstructs_the_anvil_config():
     # hardcoded anvil_profile() removed, this is the anvil-config oracle.
     p = profile_from_catalog_entry(_anvil_entry(), user="u1", account="ACCT-CPU")
     assert p.name == "anvil"
-    assert p.endpoint_name == "hpc-bridge" and p.display_name == "HPC-Bridge Anvil"
+    assert p.endpoint_name == "hpc-bridge-anvil" and p.display_name == "HPC-Bridge Anvil"
     assert p.interface == "ib0" and p.partition == "debug" and p.account == "ACCT-CPU"
     assert p.env_setup == (
         "module load anaconda/2024.02-py311 && source /home/u1/hpc-bridge/gce-venv/bin/activate"
@@ -41,3 +41,25 @@ def test_bridge_resolves_templates_and_overrides():
 def test_bridge_defaults_venv_to_convention():
     p = profile_from_catalog_entry(_anvil_entry(), user="alice", account="A")
     assert "/home/alice/hpc-bridge/gce-venv/bin/activate" in p.env_setup
+
+
+def test_bridge_resolves_dollar_user_idiom():
+    # A BYO facility's user naturally gives the shell idiom $USER / ${USER}, not the {user} template.
+    # scratch_root is embedded *single-quoted* in the session shim, so the remote shell can't expand
+    # it — the bridge must, or `mkdir` hits a literal /scratch/$USER (the live BYO-test bug).
+    import datetime
+
+    from hpc_bridge.catalog.entry import CatalogEntry, Compute, Defaults
+
+    e = CatalogEntry(
+        id="byo", facility_key="session", facility="BYO", description="d", display_name="BYO",
+        transfer_endpoint_uuid=None, ssh_host="h", allocation=None,
+        compute=Compute(
+            scheduler="slurm", interface="ib0",
+            env_setup="source /home/$USER/v/bin/activate", scratch_root="/scratch/${USER}/.hpc-bridge",
+        ),
+        defaults=Defaults(partition="p"), provenance="session", last_validated=datetime.date.today(),
+    )
+    p = profile_from_catalog_entry(e, user="carol", account="A")
+    assert p.scratch_root == "/scratch/carol/.hpc-bridge"  # ${USER} resolved (not left literal)
+    assert "$USER" not in p.env_setup and "/home/carol/v/bin/activate" in p.env_setup

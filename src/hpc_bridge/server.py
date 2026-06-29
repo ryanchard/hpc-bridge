@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import os
 import re
+import shlex
 import sys
 import time
 from collections.abc import AsyncIterator, Callable
@@ -13,14 +15,21 @@ from pathlib import Path
 from mcp.server.fastmcp import Context, FastMCP
 
 from . import dispatch, session_shell
-from .catalog.entry import CatalogSummary
+from .catalog.entry import Allocation, CatalogEntry, CatalogSummary, Compute, Defaults
 from .catalog.parsers import PARSERS
 from .cost import cap_output, estimate_spend
+from .discovery import discover_facility_details
 from .endpoint import EndpointCLI
 from .facility.base import Facility
 from .facility.local import LocalFacility
 from .lifecycle import EndpointState, ensure_warm
-from .models import ConnectFacilityResult, EndpointStatus, LoginShellResult, ShellOutcome
+from .models import (
+    ConnectFacilityResult,
+    EndpointStatus,
+    FacilityDetails,
+    LoginShellResult,
+    ShellOutcome,
+)
 from .profile import Profile
 from .runner import CanaryResult, GlobusRunner
 from .session_shell import Session
@@ -60,6 +69,9 @@ class AppCtx:
     charge_factor: float = 0.0
     max_output_chars: int = 1_000_000
     shapes: dict[str, ShapeRuntime] = field(default_factory=dict)
+    # Session-local facilities the agent supplied for machines NOT in the catalog (the Socratic
+    # fallback) — keyed by the id passed to connect_facility. Never written to the shared index.
+    session_facilities: dict[str, CatalogEntry] = field(default_factory=dict)
     runner_factory: Callable[..., GlobusRunner] = GlobusRunner
     # serializes provision / runner-swap / teardown so concurrent tool calls can't race AppCtx state
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -72,14 +84,54 @@ def _require_env(name: str) -> str:
     return val
 
 
+def _ssh_config_user(host: str) -> str:
+    """The login name OpenSSH would use for `host`, honoring ~/.ssh/config — via a local, no-connect
+    `ssh -G`. Sources the user from the config the user already maintains, not a boot-env var the
+    already-running server can't see. Falls back to the local username if `ssh -G` is unavailable."""
+    import getpass
+    import subprocess
+
+    try:
+        out = subprocess.run(["ssh", "-G", host], capture_output=True, text=True, timeout=10).stdout
+        for line in out.splitlines():
+            k, _, v = line.strip().partition(" ")
+            if k.lower() == "user" and v.strip():
+                return v.strip()
+    except Exception:  # noqa: BLE001 - no ssh binary / odd host -> local username
+        pass
+    return getpass.getuser()
+
+
+def _control_settings() -> tuple[str | None, int]:
+    """ControlMaster socket dir + persist for SSH multiplexing — one authentication for the whole
+    bootstrap+discovery. Shared by _slurm_facility and the discovery probe so they reuse ONE master
+    (same user@host ⇒ same %C socket). HPC_BRIDGE_SSH_CONTROL_PERSIST=0 disables it (control_dir=None)."""
+    try:
+        persist = int((os.environ.get("HPC_BRIDGE_SSH_CONTROL_PERSIST", "60") or "60").strip())
+    except ValueError:
+        persist = 60
+    if persist <= 0:
+        return None, 60
+    cd = os.path.expanduser("~/.hpc-bridge/cm")
+    os.makedirs(cd, mode=0o700, exist_ok=True)
+    os.chmod(cd, 0o700)  # the socket lets commands run on the master without re-auth
+    return cd, persist
+
+
 def _slurm_facility(profile, *, alias: str, user: str) -> Facility:
     """Wire a Slurm `MachineProfile` into a `SlurmFacility` over SSH — shared by the catalog
     and the hardcoded-Anvil paths."""
     from .facility.remote import RemoteEndpointCLI, SlurmFacility, SshTarget
     from .state import LoginNodeStore
 
+    control_dir, persist = _control_settings()  # multiplex all SSH over one ControlMaster (MFA-once)
+    key = os.environ.get("HPC_BRIDGE_SSH_KEY", "").strip()  # else defer to ~/.ssh/config IdentityFile
     target = SshTarget(
-        host=alias, user=user, key_path=os.path.expanduser(_require_env("HPC_BRIDGE_SSH_KEY"))
+        host=alias,
+        user=user,
+        key_path=os.path.expanduser(key) if key else None,
+        control_dir=control_dir,
+        control_persist=persist,
     )
     cli = RemoteEndpointCLI(target, profile.env_setup)
     store = LoginNodeStore()
@@ -110,8 +162,10 @@ def _facility_from_entry(entry, *, account: str) -> Facility:
     agentic flow; ensure_endpoint_up(account=…) overrides it per Slurm block."""
     from .facility.remote import profile_from_catalog_entry
 
-    user = _require_env("HPC_BRIDGE_SSH_USER")
     alias = os.environ.get("HPC_BRIDGE_SSH_HOST", "").strip() or entry.ssh_host
+    # Login name: optional env override, else read live from ~/.ssh/config (`ssh -G`) — never a
+    # *required* boot-env var. The key is deferred to the config's IdentityFile in _slurm_facility.
+    user = os.environ.get("HPC_BRIDGE_SSH_USER", "").strip() or _ssh_config_user(alias)
     profile = profile_from_catalog_entry(
         entry,
         user=user,
@@ -592,21 +646,85 @@ async def list_facilities(query: str = "") -> list[CatalogSummary]:
     return await _list_facilities(query)
 
 
-async def _connect_facility(app: AppCtx, facility: str) -> ConnectFacilityResult:
-    try:
-        entry = await make_catalog().get(facility)
-    except Exception as exc:  # noqa: BLE001 - no catalog (no index / search scope) -> hard fail
-        return ConnectFacilityResult(
-            phase="failed", facility=facility, notice=f"catalog unavailable: {exc}"[:300]
-        )
+def _session_endpoint_name(facility: str) -> str:
+    """A facility-specific endpoint name for a session-local facility, so it never SHARES a Globus
+    Compute registration with another facility. Endpoints are keyed by (identity, name): a bare
+    'hpc-bridge' collides with the curated Anvil endpoint and any stale 'online' registration, which
+    find_online_endpoint would then wrongly reuse — leaving a canary that can never warm."""
+    slug = re.sub(r"[^a-z0-9]+", "-", facility.lower()).strip("-") or "session"
+    return f"hpc-bridge-{slug}"
+
+
+def _entry_from_details(facility: str, details: FacilityDetails) -> CatalogEntry:
+    """Build a SESSION-LOCAL CatalogEntry from user-supplied details — the Socratic fallback for a
+    machine not in the catalog. provenance="session"; never written to the shared index. Identity is
+    defaulted from the id; the transfer endpoint is omitted (compute-only); the allocation block is
+    set only when a listing command + a parser were given (else the human supplies the account)."""
+    alloc = None
+    if details.allocation_command and details.allocation_parser:
+        alloc = Allocation(command=details.allocation_command, parser=details.allocation_parser)
+    ep_name = details.endpoint_name or _session_endpoint_name(facility)
+    return CatalogEntry(
+        id=facility,
+        facility_key="session",
+        facility=details.display_name or facility,
+        description="session-local facility (user-supplied, not catalogued)",
+        # The endpoint's UI title (manager config display_name) follows the same convention as its
+        # registration name — `hpc-bridge-<facility>`, not the bare id — so the two never diverge.
+        display_name=details.display_name or ep_name,
+        transfer_endpoint_uuid=None,
+        ssh_host=details.ssh_host,
+        allocation=alloc,
+        compute=Compute(
+            scheduler=details.scheduler,
+            interface=details.interface,
+            env_setup=details.env_setup,
+            scratch_root=details.scratch_root,
+            endpoint_name=ep_name,
+            amqp_port=details.amqp_port,
+        ),
+        defaults=Defaults(partition=details.partition, walltime=details.walltime),
+        provenance="session",
+        last_validated=datetime.date.today(),
+    )
+
+
+async def _connect_facility(
+    app: AppCtx, facility: str, ssh_host: str | None = None, details: FacilityDetails | None = None
+) -> ConnectFacilityResult:
+    # Resolve the entry: a session-local one the agent already supplied wins; else the catalog. An
+    # index error is treated as "unresolved" (the agent can still supply details), not a hard fail.
+    entry = app.session_facilities.get(facility)
     if entry is None:
-        return ConnectFacilityResult(
-            phase="not_found",
-            facility=facility,
-            notice=f"{facility!r} is not in the catalog — call list_facilities() to see options",
-        )
+        try:
+            entry = await make_catalog().get(facility)
+        except Exception as exc:  # noqa: BLE001 - index/scope unavailable -> fall back to details
+            if details is None:
+                return await _propose_or_ask(
+                    app, facility, ssh_host,
+                    f"catalog unavailable ({type(exc).__name__}); give me this facility's SSH host "
+                    "(ssh_host=… or HPC_BRIDGE_SSH_HOST) to probe it, or supply details= directly.",
+                )
+            entry = None  # fall through and build from the supplied details
+    if entry is None:
+        if details is None:
+            return await _propose_or_ask(
+                app, facility, ssh_host,
+                f"{facility!r} isn't in the catalog. Give me its SSH host (ssh_host=… or "
+                "HPC_BRIDGE_SSH_HOST) and I'll probe the login node to propose a config, or supply "
+                "details= directly (or list_facilities() if you meant a catalogued one).",
+            )
+        try:
+            entry = _entry_from_details(facility, details)
+        except Exception as exc:  # noqa: BLE001 - bad details -> structured failure, not a crash
+            return ConnectFacilityResult(
+                phase="failed",
+                facility=facility,
+                notice=f"invalid facility details: {type(exc).__name__}: {exc}"[:300],
+            )
+        app.session_facilities[facility] = entry  # remember it for the provisioning loop
     reason = _unsupported_entry_reason(entry)
-    if reason is None and entry.allocation.parser not in PARSERS:
+    if reason is None and entry.allocation is not None and entry.allocation.parser not in PARSERS:
         reason = (
             f"allocation parser {entry.allocation.parser!r} not implemented yet "
             f"(have: {sorted(PARSERS)})"
@@ -650,6 +768,14 @@ async def _connect_facility(app: AppCtx, facility: str) -> ConnectFacilityResult
             facility=facility,
             notice="bringing up the login node; call connect_facility again shortly to read your allocations",
         )
+    if entry.allocation is None:  # no auto-listable allocations -> the human supplies the account
+        return ConnectFacilityResult(
+            phase="needs_account",
+            facility=facility,
+            allocations=[],
+            notice="login node is up; this facility has no allocation listing — charge a block by "
+            "passing the account directly: ensure_endpoint_up(account=…, partition=…, confirm_spend=True).",
+        )
     out = await _run_shell(app, entry.allocation.command, shape="login")
     if out.phase != "complete" or out.exit_code != 0:
         return ConnectFacilityResult(
@@ -667,64 +793,132 @@ async def _connect_facility(app: AppCtx, facility: str) -> ConnectFacilityResult
     )
 
 
+async def _propose_or_ask(
+    app: AppCtx, facility: str, ssh_host: str | None, ask_notice: str
+) -> ConnectFacilityResult:
+    """Index miss + no details: if we have an SSH host, probe the login node and PROPOSE a draft
+    config; otherwise ask the agent for the host (SSH access is the one irreducible input). The
+    discovery target carries the same ControlMaster socket as the later bootstrap, so probing warms
+    the master the bootstrap then rides — no extra authentication."""
+    host = (ssh_host or os.environ.get("HPC_BRIDGE_SSH_HOST", "")).strip()
+    if not host:
+        return ConnectFacilityResult(
+            phase="needs_facility_details", facility=facility, notice=ask_notice
+        )
+    from .facility.remote import SshTarget
+
+    try:
+        control_dir, persist = _control_settings()
+        key = os.environ.get("HPC_BRIDGE_SSH_KEY", "").strip()
+        target = SshTarget(
+            host=host,
+            user=os.environ.get("HPC_BRIDGE_SSH_USER", "").strip() or None,  # else ~/.ssh/config User
+            key_path=os.path.expanduser(key) if key else None,  # else config's IdentityFile
+            control_dir=control_dir,
+            control_persist=persist,
+        )
+        draft, notes = await discover_facility_details(target)
+    except Exception as exc:  # noqa: BLE001 - probe/connect/creds failure -> structured result
+        return ConnectFacilityResult(
+            phase="failed",
+            facility=facility,
+            notice=f"discovery over SSH to {host!r} failed: {type(exc).__name__}: {exc}"[:400],
+        )
+    notice = (
+        "probed the login node and proposed this config — review/correct it WITH THE USER "
+        "(confirm the flagged fields, above all `interface`), then call connect_facility(details=…). "
+        "Notes: " + " | ".join(notes)
+    )
+    return ConnectFacilityResult(
+        phase="proposed_facility_details",
+        facility=facility,
+        proposed_details=draft,
+        notice=notice[:1800],
+    )
+
+
 @mcp.tool()
-async def connect_facility(facility: str, ctx: Context) -> ConnectFacilityResult:
-    """Select an HPC facility from the catalog and bring up its (free) login node, then list the
-    allocations a Slurm block can be charged to.
+async def connect_facility(
+    facility: str, ctx: Context, ssh_host: str | None = None, details: FacilityDetails | None = None
+) -> ConnectFacilityResult:
+    """Select an HPC facility and bring up its (free) login node, then list the allocations a Slurm
+    block can be charged to.
 
     `facility` is an id/subject/alias from list_facilities() (e.g. "anvil" or "purdue:anvil"). This
     binds the facility, stands up the login shape (SSH cold-bootstrap once, or reuse an online
-    endpoint — no Slurm account needed), runs the facility's allocation command over Compute, and
-    returns phase="needs_account" with the parsed allocations. Pick one, then
+    endpoint — no Slurm account needed), runs the allocation command over Compute, and returns
+    phase="needs_account" with the parsed allocations. Pick one, then
     ensure_endpoint_up(account=…, partition=…, confirm_spend=True). phase="provisioning" means the
-    login node is still warming — call again shortly."""
-    return await _connect_facility(ctx.request_context.lifespan_context, facility)
+    login node is still warming — call again shortly.
+
+    NOT in the catalog → discover, don't interrogate. Pass `ssh_host` (the login host/alias; SSH
+    user + key come from the environment) and the tool PROBES the login node, returning
+    phase="proposed_facility_details" with a `proposed_details` draft — review/correct it with the
+    user (above all `interface`), then call again with details=… to register a session-local
+    facility and proceed (the login-shape canary validates the values). With neither ssh_host nor
+    details you get phase="needs_facility_details" asking for the host. Credentials never go in
+    details."""
+    app = ctx.request_context.lifespan_context
+    return await _connect_facility(app, facility, ssh_host=ssh_host, details=details)
+
+
+async def _release_blocks_over_login(app: AppCtx, eid: str) -> str:
+    """Cancel this endpoint's Slurm block(s) by running `scancel` on the **login shape (AMQP)** —
+    never SSH. That's the whole point of the login-node endpoint: talk to the cluster over Compute,
+    not a fresh SSH. Matches blocks precisely by the UEP StdOut marker (`uep.<eid>`) so it never
+    touches another endpoint's jobs. `run_shell` warms the (free) login worker first if needed; the
+    manager is up, so this never SSH-bootstraps. A failed cancel is backstopped by idle-release
+    (`min_blocks=0` + `max_idletime`), so the block self-reclaims within the idle grace regardless.
+    Returns a short status string for the notice."""
+    marker = shlex.quote(f"uep.{eid}")
+    cmd = (
+        'ids=$(squeue -u "$USER" -h -O "JobID:30,StdOut:1024" 2>/dev/null '
+        f"| grep -F {marker} | awk '{{print $1}}'); "
+        '[ -n "$ids" ] && scancel $ids; echo "released ${ids:-none}"'
+    )
+    out = await _run_shell(app, cmd, shape="login")
+    if out.phase == "complete" and out.exit_code == 0:
+        line = (out.stdout or "").strip().splitlines()
+        return line[-1] if line else "released none"
+    return f"cancel not confirmed ({out.notice or out.phase}); idle-release will reclaim it"
 
 
 async def _stop_endpoint(app: AppCtx) -> EndpointStatus:
-    """Tear down the current endpoint, release its compute, and reset session state.
-
-    `teardown` cancels the Slurm block (`scancel`) and stops the manager — both over SSH, each
-    bounded by `ssh_exec`'s own (cancellable) timeout. The endpoint is being destroyed, so we don't
-    route the cancel over the (ephemeral) login worker; SSH is reliable and needed for `gce stop`
-    anyway. (The old multi-minute hang was `runner.close()` blocking on `Executor.shutdown(wait=True)`
-    — see [[runner]] — not the cancel; fixed independently.)"""
-    async with app.lock:  # exclude concurrent dispatch/provision while we tear down
-        eid = app.state.endpoint_id
-        teardown = getattr(app.facility, "teardown", None)
-        torn_down = False
-        if eid is None:
-            notice = "no endpoint was up"
-            torn_down = True  # nothing running -> the pin (if any) is safe to clear
-        elif teardown is None:
-            notice = "this facility has no teardown (local dev)"
-        else:
-            try:
-                await teardown(eid)
-                notice = "endpoint stopped; compute block released"
-                torn_down = True
-            except Exception as exc:  # noqa: BLE001 - report, never crash the tool
-                notice = f"stop attempted; {type(exc).__name__}: {exc}"[:300]
-        # Only drop the login-node pin if the daemon is actually gone. A failed teardown
-        # may leave it running on the pinned node, so we keep the pin for reconnect rather
-        # than orphan it (the exact bug pinning exists to prevent).
-        store = getattr(app.facility, "store", None)
-        alias = getattr(app.facility, "alias", None)
-        name = getattr(getattr(app.facility, "profile", None), "endpoint_name", None)
-        if torn_down and store is not None and alias is not None and name is not None:
-            store.remove(alias=alias, name=name)
-        for rt in app.shapes.values():
-            if rt.runner is not None:
-                rt.runner.close()
-        app.shapes.clear()  # session ended -> spend/warm state starts fresh next time
-        app.state = EndpointState()  # clear so the next ensure_endpoint_up re-provisions
-        return EndpointStatus(status="down", block_state="cold", endpoint_id=eid, notice=notice)
+    """Release the compute block over the **login endpoint (AMQP)** and LEAVE the manager online for
+    reuse. "Stop" means *stop spending*, not destroy the endpoint: the login-node manager is the
+    whole point — it persists so the next session reuses it with **zero SSH** ([[Standing up the
+    endpoint|SSH-once]], #12). Fully pulling the endpoint down (`gce stop`, the facility's
+    `teardown()`) is a separate, rarer operation, not done here."""
+    eid = app.state.endpoint_id
+    if eid is None:
+        return EndpointStatus(status="down", block_state="cold", notice="no endpoint was up")
+    # Cancel the Slurm block over the login shape (AMQP) — no SSH.
+    result = await _release_blocks_over_login(app, eid)
+    async with app.lock:
+        # Drop the billed (slurm) shape so a later run re-provisions a FRESH block (its runner now
+        # points at the cancelled block). Keep the login shape, the manager, the endpoint_id, and
+        # the login-node pin — the endpoint stays online and reusable.
+        slurm = app.shapes.pop(DEFAULT_SHAPE, None)
+        if slurm is not None:
+            _bank_warm_interval(slurm, app)  # stop the spend clock for the released block
+            if slurm.runner is not None:
+                slurm.runner.close()
+    return EndpointStatus(
+        status="down",  # no billed compute block running (the manager stays online for reuse)
+        block_state="cold",
+        endpoint_id=eid,
+        session_spend=_total_session_spend(app),
+        notice=f"compute block released over AMQP ({result}); the login endpoint stays online for "
+        "reuse (reconnecting is zero-SSH).",
+    )
 
 
 @mcp.tool()
 async def stop_endpoint(ctx: Context) -> EndpointStatus:
-    """Stop the HPC endpoint and release its compute block(s). Call when finished with a
-    session so the allocation stops being charged for the held block."""
+    """Release the HPC compute block so the allocation stops being charged. Cancels the billed
+    Slurm block over the login endpoint (no SSH) and **leaves the login-node endpoint online** so a
+    later reconnect reuses it with zero SSH — "stop" means stop spending, not tear the endpoint
+    down. Call when you're done with a compute block."""
     return await _stop_endpoint(ctx.request_context.lifespan_context)
 
 

@@ -244,27 +244,41 @@ async def test_ensure_endpoint_up_reports_down_on_provision_failure():
     assert res.notice and "Linux" in res.notice
 
 
-async def test_stop_endpoint_tears_down_and_resets():
+async def test_stop_releases_block_over_login_and_keeps_endpoint(monkeypatch):
+    # Option A: stop `scancel`s the block over the LOGIN shape (AMQP, no SSH) and LEAVES the manager
+    # online for reuse — it must NOT call the facility teardown / gce stop, and must keep the
+    # endpoint_id + login shape so a reconnect is zero-SSH.
+    from hpc_bridge import server
+    from hpc_bridge.models import ShellOutcome
     from hpc_bridge.server import ShapeRuntime, _stop_endpoint
 
-    class _TeardownFacility(FakeFacility):
-        def __init__(self):
-            super().__init__()
-            self.torn = None
+    class _NoTeardown(FakeFacility):
+        async def teardown(self, eid):  # must NOT be called under Option A
+            raise AssertionError("stop must not tear the endpoint down")
 
-        async def teardown(self, eid):
-            self.torn = eid
-
-    f = _TeardownFacility()
+    f = _NoTeardown()
     app = AppCtx(facility=f, profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
-    app.shapes["slurm"] = ShapeRuntime(
-        user_endpoint_config={}, runner=_FakeRunner("eid-1", _Res(0, "", ""))
+    slurm_runner = _FakeRunner("eid-1", _Res(0, "", ""))
+    app.shapes["slurm"] = ShapeRuntime(user_endpoint_config={"is_slurm": True}, runner=slurm_runner)
+    app.shapes["login"] = ShapeRuntime(
+        user_endpoint_config={"provider_type": "LocalProvider"}, warm_confirmed_at=1.0
     )
+    seen = {}
+
+    async def fake_run_shell(a, command, session_id="default", shape="slurm"):
+        seen["shape"], seen["cmd"] = shape, command
+        return ShellOutcome(phase="complete", exit_code=0, stdout="released 123\n", block_state="warm")
+
+    monkeypatch.setattr(server, "_run_shell", fake_run_shell)
     res = await _stop_endpoint(app)
-    assert res.status == "down" and res.block_state == "cold"
-    assert f.torn == "eid-1"  # facility teardown called with the live endpoint
-    assert app.shapes == {} and app.state.endpoint_id is None  # reset for re-provision
-    assert "released" in (res.notice or "")
+    assert seen["shape"] == "login"  # the scancel rode AMQP, not SSH
+    assert "scancel" in seen["cmd"] and "uep.eid-1" in seen["cmd"]
+    assert "slurm" not in app.shapes  # billed shape dropped -> a later run re-provisions fresh
+    assert slurm_runner.closed  # its (now-dead) runner was closed
+    assert "login" in app.shapes  # login shape kept (warm, free, for cheap reconnect)
+    assert app.state.endpoint_id == "eid-1"  # endpoint NOT torn down
+    assert res.endpoint_id == "eid-1" and res.block_state == "cold"
+    assert "online for reuse" in (res.notice or "")
 
 
 # --- partition loop: the discovery gate's selection -> provisioning -------------------------
@@ -387,22 +401,60 @@ async def test_lifespan_boots_unbound_when_facility_setup_fails(monkeypatch, cap
     assert "facility setup failed at startup" in capsys.readouterr().err
 
 
-async def test_make_facility_requires_env_for_catalog_machine(monkeypatch):
-    import pytest
-
+async def test_make_facility_sources_ssh_user_from_config_when_env_absent(monkeypatch):
+    # SSH creds are NO LONGER required boot-env vars (they don't reach an already-running server):
+    # with HPC_BRIDGE_SSH_USER/KEY absent, the login name comes from ~/.ssh/config (`ssh -G`) and the
+    # key defers to the config's IdentityFile. (Account is separate — still env-pinned at startup.)
     import hpc_bridge.server as server
+    import hpc_bridge.state as state_mod
     from hpc_bridge.catalog.bundled import BundledCatalog
     from hpc_bridge.server import make_facility
 
-    # The catalog path still needs the user's SSH creds — a machine config is not credentials.
-    # The runtime catalog is the index; inject the seed loader so resolution reaches the creds check.
+    class _NoPinStore:
+        def __init__(self, *a, **k):
+            pass
+
+        def get(self, *, alias, name):
+            return None
+
+    monkeypatch.setattr(state_mod, "LoginNodeStore", _NoPinStore)
     monkeypatch.setattr(server, "make_catalog", lambda: BundledCatalog())
+    monkeypatch.setattr(server, "_ssh_config_user", lambda host: "cfg-user")  # from ~/.ssh/config
     monkeypatch.delenv("HPC_BRIDGE_FACILITY", raising=False)
     monkeypatch.setenv("HPC_BRIDGE_MACHINE", "anvil")
-    for v in ("HPC_BRIDGE_SSH_USER", "HPC_BRIDGE_SSH_KEY", "HPC_BRIDGE_ACCOUNT"):
+    monkeypatch.setenv("HPC_BRIDGE_ACCOUNT", "ACC")  # the one boot value still required (billing)
+    for v in ("HPC_BRIDGE_SSH_USER", "HPC_BRIDGE_SSH_KEY", "HPC_BRIDGE_SSH_HOST"):
         monkeypatch.delenv(v, raising=False)
-    with pytest.raises(RuntimeError, match="required"):
-        await make_facility()
+    fac = await make_facility()
+    assert fac.name == "anvil"
+    assert fac.cli.target.user == "cfg-user"  # login name from ssh_config, not an env var
+    assert fac.cli.target.key_path is None  # key deferred to ~/.ssh/config IdentityFile
+    assert "/home/cfg-user/hpc-bridge/gce-venv/bin/activate" in fac.profile.env_setup  # templated
+
+
+def test_ssh_config_user_parses_ssh_dash_g(monkeypatch):
+    import subprocess
+
+    from hpc_bridge.server import _ssh_config_user
+
+    class _R:
+        stdout = "hostname globus1.cs.uchicago.edu\nuser glabs\nidentityfile ~/.ssh/globus\n"
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _R())
+    assert _ssh_config_user("globus1") == "glabs"  # read the User ~/.ssh/config resolves
+
+
+def test_ssh_config_user_falls_back_to_local_user(monkeypatch):
+    import getpass
+    import subprocess
+
+    from hpc_bridge.server import _ssh_config_user
+
+    def _boom(*a, **k):
+        raise FileNotFoundError("no ssh")
+
+    monkeypatch.setattr(subprocess, "run", _boom)
+    assert _ssh_config_user("whatever") == getpass.getuser()  # ssh missing -> local username
 
 
 async def test_make_facility_defaults_local(monkeypatch):
@@ -619,7 +671,11 @@ async def test_server_registers_login_shell_tool():
     assert any(t.name == "login_shell" for t in tools)
 
 
-async def test_stop_endpoint_removes_login_node_record(tmp_path):
+async def test_stop_keeps_login_node_pin_for_reuse(tmp_path, monkeypatch):
+    # Option A: stop leaves the endpoint online, so the login-node pin MUST survive — a reconnect
+    # rebinds straight to the pinned node (zero SSH). Stop never removes it.
+    from hpc_bridge import server
+    from hpc_bridge.models import ShellOutcome
     from hpc_bridge.server import _stop_endpoint
     from hpc_bridge.state import EndpointRecord, LoginNodeStore
 
@@ -629,54 +685,20 @@ async def test_stop_endpoint_removes_login_node_record(tmp_path):
         key_path="/k", name="hpc-bridge", provisioned_at="2026-06-06T00:00:00Z",
     ))
 
-    class _Prof:
-        endpoint_name = "hpc-bridge"
-
     class _Fac(FakeFacility):
         def __init__(self):
             super().__init__()
             self.store = store
             self.alias = "anvil.x"
-            self.profile = _Prof()
 
-        async def teardown(self, eid):
-            pass
+    async def fake_run_shell(a, command, session_id="default", shape="slurm"):
+        return ShellOutcome(phase="complete", exit_code=0, stdout="released none\n", block_state="warm")
 
+    monkeypatch.setattr(server, "_run_shell", fake_run_shell)
     app = AppCtx(facility=_Fac(), profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
     await _stop_endpoint(app)
-    assert store.get(alias="anvil.x", name="hpc-bridge") is None  # stale pin cleared
-
-
-async def test_stop_endpoint_keeps_pin_when_teardown_fails(tmp_path):
-    # A failed teardown may leave the daemon running on the pinned node, so the pin must
-    # survive — dropping it would orphan the still-running endpoint on reconnect.
-    from hpc_bridge.server import _stop_endpoint
-    from hpc_bridge.state import EndpointRecord, LoginNodeStore
-
-    store = LoginNodeStore(tmp_path / "endpoints.json")
-    store.put(EndpointRecord(
-        endpoint_id="eid-1", login_host="login03.x", alias="anvil.x", user="u",
-        key_path="/k", name="hpc-bridge", provisioned_at="2026-06-06T00:00:00Z",
-    ))
-
-    class _Prof:
-        endpoint_name = "hpc-bridge"
-
-    class _Fac(FakeFacility):
-        def __init__(self):
-            super().__init__()
-            self.store = store
-            self.alias = "anvil.x"
-            self.profile = _Prof()
-
-        async def teardown(self, eid):
-            raise RuntimeError("ssh unreachable")
-
-    app = AppCtx(facility=_Fac(), profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
-    res = await _stop_endpoint(app)
-    assert "stop attempted" in (res.notice or "")
     rec = store.get(alias="anvil.x", name="hpc-bridge")
-    assert rec is not None and rec.login_host == "login03.x"  # pin kept for reconnect
+    assert rec is not None and rec.login_host == "login03.x"  # pin kept for cheap reconnect
 
 
 # --- budget gate: the deterministic spend floor (confirm before a billed block) -------------

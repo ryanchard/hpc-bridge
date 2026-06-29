@@ -18,7 +18,7 @@
     env_setup: "module load anaconda/2024.02-py311 && source {venv}/bin/activate"
     scratch_root: "/anvil/scratch/{user}/.hpc-bridge"
     # amqp_port: 443 -> default
-    # endpoint_name: hpc-bridge -> default
+    endpoint_name: hpc-bridge-anvil   # convention: hpc-bridge-<facility>, never the bare name (collides)
   defaults:
     partition: debug
     walltime: "00:30:00"
