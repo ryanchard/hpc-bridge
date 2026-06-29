@@ -41,20 +41,52 @@ from .base import EndpointHandle
 @dataclass(frozen=True)
 class SshTarget:
     host: str
-    user: str
-    key_path: str
+    # user/key_path optional: when None, defer to the user's ~/.ssh/config (User/IdentityFile), which
+    # OpenSSH reads live — so access needs no boot-env var the already-running server can't see.
+    user: str | None = None
+    key_path: str | None = None
     connect_timeout: int = 20
+    # When set, multiplex every connection over one ControlMaster socket under this (0700) dir, so
+    # the whole bootstrap+discovery authenticates ONCE instead of per-call — the MFA-once win, and
+    # what makes a multi-command discovery sweep cheap. None ⇒ no multiplexing (argv unchanged).
+    control_dir: str | None = None
+    control_persist: int = 60
+
+    def _control_path(self) -> str:
+        # %C hashes localhost/user/host/port: short (fits macOS' ~104-char socket-path limit) and
+        # auto-distinct after `rebind` swaps host, so the alias master and the pinned-node master
+        # land on separate sockets with no bookkeeping.
+        return f"{self.control_dir}/%C"
 
     def argv(self, remote_cmd: str) -> list[str]:
-        # Key-only, never-prompt: BatchMode fails fast instead of hanging on a
-        # password/MFA prompt (and proves the key-only assumption at Anvil).
-        return [
-            "ssh", "-i", self.key_path,
-            "-o", "IdentitiesOnly=yes",
+        # Never-prompt (BatchMode fails fast instead of hanging on a password/MFA prompt). With an
+        # explicit key we pin it (IdentitiesOnly); with none we DEFER to ~/.ssh/config's IdentityFile.
+        # A pre-opened master (e.g. one Duo on an MFA facility) is reused regardless of BatchMode;
+        # ControlMaster=auto opens one non-interactively on a key host.
+        opts = ["ssh"]
+        if self.key_path:
+            opts += ["-i", self.key_path, "-o", "IdentitiesOnly=yes"]
+        opts += [
             "-o", "BatchMode=yes",
             "-o", f"ConnectTimeout={self.connect_timeout}",
             "-o", "StrictHostKeyChecking=accept-new",
-            f"{self.user}@{self.host}", remote_cmd,
+        ]
+        if self.control_dir:
+            opts += [
+                "-o", "ControlMaster=auto",
+                "-o", f"ControlPath={self._control_path()}",
+                "-o", f"ControlPersist={self.control_persist}",
+            ]
+        opts += [f"{self.user}@{self.host}" if self.user else self.host, remote_cmd]
+        return opts
+
+    def control_argv(self, request: str) -> list[str]:
+        """argv for an `ssh -O <request>` control command (e.g. 'exit', 'check') against this
+        target's master socket. Only meaningful when control_dir is set."""
+        return [
+            "ssh", "-O", request,
+            "-o", f"ControlPath={self._control_path()}",
+            f"{self.user}@{self.host}" if self.user else self.host,
         ]
 
 
@@ -367,6 +399,23 @@ class RemoteEndpointCLI:
         """Re-point this CLI at a specific host (the pinned FQDN) for reconnect."""
         self.target = replace(self.target, host=host)
 
+    async def close(self) -> None:
+        """Close the SSH ControlMaster for this target (best-effort, bounded).
+
+        `ControlPersist` self-reaps an idle master, so this is just a prompt, explicit teardown of
+        the shared connection at endpoint end — not load-bearing. No-op when multiplexing is off."""
+        if self.target.control_dir is None:
+            return
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *self.target.control_argv("exit"),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(proc.communicate(), _TEARDOWN_SSH_S)
+        except Exception:  # noqa: BLE001 - no master / already gone / slow sshd: ControlPersist reaps it
+            pass
+
 
 # ---------------------------------------------------------------- the facility
 
@@ -573,6 +622,7 @@ engine:
         await self.cli.cancel_blocks(endpoint_id)
         if wipe_credentials:
             await self.cli.wipe_storage_db()
+        await self.cli.close()  # drop the shared SSH master; the endpoint is gone
 
     async def login_exec(self, command: str) -> tuple[int, str, str]:
         """Read-only login-node command for discovery — no block, no allocation (delegates

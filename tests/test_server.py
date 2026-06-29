@@ -401,22 +401,60 @@ async def test_lifespan_boots_unbound_when_facility_setup_fails(monkeypatch, cap
     assert "facility setup failed at startup" in capsys.readouterr().err
 
 
-async def test_make_facility_requires_env_for_catalog_machine(monkeypatch):
-    import pytest
-
+async def test_make_facility_sources_ssh_user_from_config_when_env_absent(monkeypatch):
+    # SSH creds are NO LONGER required boot-env vars (they don't reach an already-running server):
+    # with HPC_BRIDGE_SSH_USER/KEY absent, the login name comes from ~/.ssh/config (`ssh -G`) and the
+    # key defers to the config's IdentityFile. (Account is separate — still env-pinned at startup.)
     import hpc_bridge.server as server
+    import hpc_bridge.state as state_mod
     from hpc_bridge.catalog.bundled import BundledCatalog
     from hpc_bridge.server import make_facility
 
-    # The catalog path still needs the user's SSH creds — a machine config is not credentials.
-    # The runtime catalog is the index; inject the seed loader so resolution reaches the creds check.
+    class _NoPinStore:
+        def __init__(self, *a, **k):
+            pass
+
+        def get(self, *, alias, name):
+            return None
+
+    monkeypatch.setattr(state_mod, "LoginNodeStore", _NoPinStore)
     monkeypatch.setattr(server, "make_catalog", lambda: BundledCatalog())
+    monkeypatch.setattr(server, "_ssh_config_user", lambda host: "cfg-user")  # from ~/.ssh/config
     monkeypatch.delenv("HPC_BRIDGE_FACILITY", raising=False)
     monkeypatch.setenv("HPC_BRIDGE_MACHINE", "anvil")
-    for v in ("HPC_BRIDGE_SSH_USER", "HPC_BRIDGE_SSH_KEY", "HPC_BRIDGE_ACCOUNT"):
+    monkeypatch.setenv("HPC_BRIDGE_ACCOUNT", "ACC")  # the one boot value still required (billing)
+    for v in ("HPC_BRIDGE_SSH_USER", "HPC_BRIDGE_SSH_KEY", "HPC_BRIDGE_SSH_HOST"):
         monkeypatch.delenv(v, raising=False)
-    with pytest.raises(RuntimeError, match="required"):
-        await make_facility()
+    fac = await make_facility()
+    assert fac.name == "anvil"
+    assert fac.cli.target.user == "cfg-user"  # login name from ssh_config, not an env var
+    assert fac.cli.target.key_path is None  # key deferred to ~/.ssh/config IdentityFile
+    assert "/home/cfg-user/hpc-bridge/gce-venv/bin/activate" in fac.profile.env_setup  # templated
+
+
+def test_ssh_config_user_parses_ssh_dash_g(monkeypatch):
+    import subprocess
+
+    from hpc_bridge.server import _ssh_config_user
+
+    class _R:
+        stdout = "hostname globus1.cs.uchicago.edu\nuser glabs\nidentityfile ~/.ssh/globus\n"
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _R())
+    assert _ssh_config_user("globus1") == "glabs"  # read the User ~/.ssh/config resolves
+
+
+def test_ssh_config_user_falls_back_to_local_user(monkeypatch):
+    import getpass
+    import subprocess
+
+    from hpc_bridge.server import _ssh_config_user
+
+    def _boom(*a, **k):
+        raise FileNotFoundError("no ssh")
+
+    monkeypatch.setattr(subprocess, "run", _boom)
+    assert _ssh_config_user("whatever") == getpass.getuser()  # ssh missing -> local username
 
 
 async def test_make_facility_defaults_local(monkeypatch):

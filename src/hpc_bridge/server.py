@@ -18,6 +18,7 @@ from . import dispatch, session_shell
 from .catalog.entry import Allocation, CatalogEntry, CatalogSummary, Compute, Defaults
 from .catalog.parsers import PARSERS
 from .cost import cap_output, estimate_spend
+from .discovery import discover_facility_details
 from .endpoint import EndpointCLI
 from .facility.base import Facility
 from .facility.local import LocalFacility
@@ -83,14 +84,54 @@ def _require_env(name: str) -> str:
     return val
 
 
+def _ssh_config_user(host: str) -> str:
+    """The login name OpenSSH would use for `host`, honoring ~/.ssh/config — via a local, no-connect
+    `ssh -G`. Sources the user from the config the user already maintains, not a boot-env var the
+    already-running server can't see. Falls back to the local username if `ssh -G` is unavailable."""
+    import getpass
+    import subprocess
+
+    try:
+        out = subprocess.run(["ssh", "-G", host], capture_output=True, text=True, timeout=10).stdout
+        for line in out.splitlines():
+            k, _, v = line.strip().partition(" ")
+            if k.lower() == "user" and v.strip():
+                return v.strip()
+    except Exception:  # noqa: BLE001 - no ssh binary / odd host -> local username
+        pass
+    return getpass.getuser()
+
+
+def _control_settings() -> tuple[str | None, int]:
+    """ControlMaster socket dir + persist for SSH multiplexing — one authentication for the whole
+    bootstrap+discovery. Shared by _slurm_facility and the discovery probe so they reuse ONE master
+    (same user@host ⇒ same %C socket). HPC_BRIDGE_SSH_CONTROL_PERSIST=0 disables it (control_dir=None)."""
+    try:
+        persist = int((os.environ.get("HPC_BRIDGE_SSH_CONTROL_PERSIST", "60") or "60").strip())
+    except ValueError:
+        persist = 60
+    if persist <= 0:
+        return None, 60
+    cd = os.path.expanduser("~/.hpc-bridge/cm")
+    os.makedirs(cd, mode=0o700, exist_ok=True)
+    os.chmod(cd, 0o700)  # the socket lets commands run on the master without re-auth
+    return cd, persist
+
+
 def _slurm_facility(profile, *, alias: str, user: str) -> Facility:
     """Wire a Slurm `MachineProfile` into a `SlurmFacility` over SSH — shared by the catalog
     and the hardcoded-Anvil paths."""
     from .facility.remote import RemoteEndpointCLI, SlurmFacility, SshTarget
     from .state import LoginNodeStore
 
+    control_dir, persist = _control_settings()  # multiplex all SSH over one ControlMaster (MFA-once)
+    key = os.environ.get("HPC_BRIDGE_SSH_KEY", "").strip()  # else defer to ~/.ssh/config IdentityFile
     target = SshTarget(
-        host=alias, user=user, key_path=os.path.expanduser(_require_env("HPC_BRIDGE_SSH_KEY"))
+        host=alias,
+        user=user,
+        key_path=os.path.expanduser(key) if key else None,
+        control_dir=control_dir,
+        control_persist=persist,
     )
     cli = RemoteEndpointCLI(target, profile.env_setup)
     store = LoginNodeStore()
@@ -121,8 +162,10 @@ def _facility_from_entry(entry, *, account: str) -> Facility:
     agentic flow; ensure_endpoint_up(account=…) overrides it per Slurm block."""
     from .facility.remote import profile_from_catalog_entry
 
-    user = _require_env("HPC_BRIDGE_SSH_USER")
     alias = os.environ.get("HPC_BRIDGE_SSH_HOST", "").strip() or entry.ssh_host
+    # Login name: optional env override, else read live from ~/.ssh/config (`ssh -G`) — never a
+    # *required* boot-env var. The key is deferred to the config's IdentityFile in _slurm_facility.
+    user = os.environ.get("HPC_BRIDGE_SSH_USER", "").strip() or _ssh_config_user(alias)
     profile = profile_from_catalog_entry(
         entry,
         user=user,
@@ -603,6 +646,15 @@ async def list_facilities(query: str = "") -> list[CatalogSummary]:
     return await _list_facilities(query)
 
 
+def _session_endpoint_name(facility: str) -> str:
+    """A facility-specific endpoint name for a session-local facility, so it never SHARES a Globus
+    Compute registration with another facility. Endpoints are keyed by (identity, name): a bare
+    'hpc-bridge' collides with the curated Anvil endpoint and any stale 'online' registration, which
+    find_online_endpoint would then wrongly reuse — leaving a canary that can never warm."""
+    slug = re.sub(r"[^a-z0-9]+", "-", facility.lower()).strip("-") or "session"
+    return f"hpc-bridge-{slug}"
+
+
 def _entry_from_details(facility: str, details: FacilityDetails) -> CatalogEntry:
     """Build a SESSION-LOCAL CatalogEntry from user-supplied details — the Socratic fallback for a
     machine not in the catalog. provenance="session"; never written to the shared index. Identity is
@@ -611,13 +663,15 @@ def _entry_from_details(facility: str, details: FacilityDetails) -> CatalogEntry
     alloc = None
     if details.allocation_command and details.allocation_parser:
         alloc = Allocation(command=details.allocation_command, parser=details.allocation_parser)
-    name = details.display_name or facility
+    ep_name = details.endpoint_name or _session_endpoint_name(facility)
     return CatalogEntry(
         id=facility,
         facility_key="session",
-        facility=name,
+        facility=details.display_name or facility,
         description="session-local facility (user-supplied, not catalogued)",
-        display_name=name,
+        # The endpoint's UI title (manager config display_name) follows the same convention as its
+        # registration name — `hpc-bridge-<facility>`, not the bare id — so the two never diverge.
+        display_name=details.display_name or ep_name,
         transfer_endpoint_uuid=None,
         ssh_host=details.ssh_host,
         allocation=alloc,
@@ -626,7 +680,7 @@ def _entry_from_details(facility: str, details: FacilityDetails) -> CatalogEntry
             interface=details.interface,
             env_setup=details.env_setup,
             scratch_root=details.scratch_root,
-            endpoint_name=details.endpoint_name,
+            endpoint_name=ep_name,
             amqp_port=details.amqp_port,
         ),
         defaults=Defaults(partition=details.partition, walltime=details.walltime),
@@ -636,7 +690,7 @@ def _entry_from_details(facility: str, details: FacilityDetails) -> CatalogEntry
 
 
 async def _connect_facility(
-    app: AppCtx, facility: str, details: FacilityDetails | None = None
+    app: AppCtx, facility: str, ssh_host: str | None = None, details: FacilityDetails | None = None
 ) -> ConnectFacilityResult:
     # Resolve the entry: a session-local one the agent already supplied wins; else the catalog. An
     # index error is treated as "unresolved" (the agent can still supply details), not a hard fail.
@@ -646,21 +700,19 @@ async def _connect_facility(
             entry = await make_catalog().get(facility)
         except Exception as exc:  # noqa: BLE001 - index/scope unavailable -> fall back to details
             if details is None:
-                return ConnectFacilityResult(
-                    phase="needs_facility_details",
-                    facility=facility,
-                    notice=f"catalog unavailable ({type(exc).__name__}); supply this facility's "
-                    "config via details= (ask the user) to proceed.",
+                return await _propose_or_ask(
+                    app, facility, ssh_host,
+                    f"catalog unavailable ({type(exc).__name__}); give me this facility's SSH host "
+                    "(ssh_host=… or HPC_BRIDGE_SSH_HOST) to probe it, or supply details= directly.",
                 )
             entry = None  # fall through and build from the supplied details
     if entry is None:
         if details is None:
-            return ConnectFacilityResult(
-                phase="needs_facility_details",
-                facility=facility,
-                notice=f"{facility!r} isn't in the catalog. Either list_facilities() if you meant a "
-                "catalogued one, or supply this facility's config via details= (the details schema "
-                "is the question list — ask the user), then call again.",
+            return await _propose_or_ask(
+                app, facility, ssh_host,
+                f"{facility!r} isn't in the catalog. Give me its SSH host (ssh_host=… or "
+                "HPC_BRIDGE_SSH_HOST) and I'll probe the login node to propose a config, or supply "
+                "details= directly (or list_facilities() if you meant a catalogued one).",
             )
         try:
             entry = _entry_from_details(facility, details)
@@ -741,9 +793,53 @@ async def _connect_facility(
     )
 
 
+async def _propose_or_ask(
+    app: AppCtx, facility: str, ssh_host: str | None, ask_notice: str
+) -> ConnectFacilityResult:
+    """Index miss + no details: if we have an SSH host, probe the login node and PROPOSE a draft
+    config; otherwise ask the agent for the host (SSH access is the one irreducible input). The
+    discovery target carries the same ControlMaster socket as the later bootstrap, so probing warms
+    the master the bootstrap then rides — no extra authentication."""
+    host = (ssh_host or os.environ.get("HPC_BRIDGE_SSH_HOST", "")).strip()
+    if not host:
+        return ConnectFacilityResult(
+            phase="needs_facility_details", facility=facility, notice=ask_notice
+        )
+    from .facility.remote import SshTarget
+
+    try:
+        control_dir, persist = _control_settings()
+        key = os.environ.get("HPC_BRIDGE_SSH_KEY", "").strip()
+        target = SshTarget(
+            host=host,
+            user=os.environ.get("HPC_BRIDGE_SSH_USER", "").strip() or None,  # else ~/.ssh/config User
+            key_path=os.path.expanduser(key) if key else None,  # else config's IdentityFile
+            control_dir=control_dir,
+            control_persist=persist,
+        )
+        draft, notes = await discover_facility_details(target)
+    except Exception as exc:  # noqa: BLE001 - probe/connect/creds failure -> structured result
+        return ConnectFacilityResult(
+            phase="failed",
+            facility=facility,
+            notice=f"discovery over SSH to {host!r} failed: {type(exc).__name__}: {exc}"[:400],
+        )
+    notice = (
+        "probed the login node and proposed this config — review/correct it WITH THE USER "
+        "(confirm the flagged fields, above all `interface`), then call connect_facility(details=…). "
+        "Notes: " + " | ".join(notes)
+    )
+    return ConnectFacilityResult(
+        phase="proposed_facility_details",
+        facility=facility,
+        proposed_details=draft,
+        notice=notice[:1800],
+    )
+
+
 @mcp.tool()
 async def connect_facility(
-    facility: str, ctx: Context, details: FacilityDetails | None = None
+    facility: str, ctx: Context, ssh_host: str | None = None, details: FacilityDetails | None = None
 ) -> ConnectFacilityResult:
     """Select an HPC facility and bring up its (free) login node, then list the allocations a Slurm
     block can be charged to.
@@ -755,12 +851,15 @@ async def connect_facility(
     ensure_endpoint_up(account=…, partition=…, confirm_spend=True). phase="provisioning" means the
     login node is still warming — call again shortly.
 
-    NOT in the catalog → phase="needs_facility_details": the facility isn't catalogued. Gather its
-    config from the user (the `details` schema lists exactly what's needed — ssh_host, interface,
-    env_setup, scratch_root, partition, …) and call again with details=…; that registers a
-    session-local facility and proceeds (the login-shape canary validates the values). Credentials
-    (the SSH user + key) come from the environment, never details."""
-    return await _connect_facility(ctx.request_context.lifespan_context, facility, details)
+    NOT in the catalog → discover, don't interrogate. Pass `ssh_host` (the login host/alias; SSH
+    user + key come from the environment) and the tool PROBES the login node, returning
+    phase="proposed_facility_details" with a `proposed_details` draft — review/correct it with the
+    user (above all `interface`), then call again with details=… to register a session-local
+    facility and proceed (the login-shape canary validates the values). With neither ssh_host nor
+    details you get phase="needs_facility_details" asking for the host. Credentials never go in
+    details."""
+    app = ctx.request_context.lifespan_context
+    return await _connect_facility(app, facility, ssh_host=ssh_host, details=details)
 
 
 async def _release_blocks_over_login(app: AppCtx, eid: str) -> str:

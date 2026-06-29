@@ -61,8 +61,8 @@ class AllocationOption(BaseModel):
 class FacilityDetails(BaseModel):
     """User-supplied config for a facility that isn't in the catalog — the elicitation template for
     `connect_facility`'s `needs_facility_details` phase. The field descriptions ARE the questions to
-    ask the user; the agent fills this in from their answers. SSH login user + key come from the
-    environment (HPC_BRIDGE_SSH_USER/KEY), not here — this is facility config, not credentials.
+    ask the user; the agent fills this in from their answers. SSH login user + key come from your
+    ~/.ssh/config (or optional HPC_BRIDGE_SSH_USER/KEY overrides), not here — facility config, not creds.
     Session-local: never written to the shared catalog."""
 
     ssh_host: str = Field(
@@ -104,7 +104,12 @@ class FacilityDetails(BaseModel):
     )
     walltime: str = Field(default="00:30:00", description="Default block walltime (HH:MM:SS).")
     amqp_port: int = Field(default=443, description="AMQPS port (443 is near-universally allowed).")
-    endpoint_name: str = Field(default="hpc-bridge", description="On-disk/registration endpoint name.")
+    endpoint_name: str | None = Field(
+        default=None,
+        description="On-disk/registration endpoint name. Leave unset for a session facility — it "
+        "defaults to hpc-bridge-<facility> so it never collides with another facility's endpoint "
+        "(Globus Compute keys endpoints by identity + name).",
+    )
     display_name: str | None = Field(
         default=None, description="Optional human label for the facility (defaults to the id)."
     )
@@ -113,14 +118,20 @@ class FacilityDetails(BaseModel):
 class ConnectFacilityResult(BaseModel):
     # needs_account: login node is up; `allocations` are the choices -> ensure_endpoint_up(account=…).
     # provisioning: login node still warming (call again). needs_facility_details: not in the catalog
-    # -> supply `details` (ask the user). unsupported/failed: see notice.
+    # and no SSH host to probe -> supply `details` (or an ssh_host to discover them).
+    # proposed_facility_details: probed the login node -> `proposed_details` is a draft to confirm
+    # with the user, then call again with details=. unsupported/failed: see notice.
     phase: Literal[
         "needs_account",
         "provisioning",
         "needs_facility_details",
+        "proposed_facility_details",
         "unsupported",
         "failed",
     ]
     facility: str  # the id/subject that was connected (echoes connect_facility's arg)
     allocations: list[AllocationOption] = []
+    # A draft discovered by probing the login node (phase="proposed_facility_details"): review/correct
+    # it with the user, then connect_facility(details=…). None for every other phase.
+    proposed_details: FacilityDetails | None = None
     notice: str | None = None

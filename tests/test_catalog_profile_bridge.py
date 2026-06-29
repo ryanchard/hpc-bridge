@@ -14,7 +14,7 @@ def test_bridge_reconstructs_the_anvil_config():
     # hardcoded anvil_profile() removed, this is the anvil-config oracle.
     p = profile_from_catalog_entry(_anvil_entry(), user="u1", account="ACCT-CPU")
     assert p.name == "anvil"
-    assert p.endpoint_name == "hpc-bridge" and p.display_name == "HPC-Bridge Anvil"
+    assert p.endpoint_name == "hpc-bridge-anvil" and p.display_name == "HPC-Bridge Anvil"
     assert p.interface == "ib0" and p.partition == "debug" and p.account == "ACCT-CPU"
     assert p.env_setup == (
         "module load anaconda/2024.02-py311 && source /home/u1/hpc-bridge/gce-venv/bin/activate"

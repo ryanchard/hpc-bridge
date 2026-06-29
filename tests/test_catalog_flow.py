@@ -157,6 +157,7 @@ async def test_connect_facility_unknown_returns_needs_facility_details(monkeypat
     monkeypatch.setattr(
         server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
     )
+    monkeypatch.delenv("HPC_BRIDGE_SSH_HOST", raising=False)  # no host -> the ask path, not discovery
     res = await server._connect_facility(app, "nope")
     assert res.phase == "needs_facility_details" and res.allocations == []
     assert res.notice and "details=" in res.notice
@@ -199,6 +200,7 @@ async def test_connect_facility_index_unavailable_falls_back_to_details(monkeypa
     from hpc_bridge import server
 
     monkeypatch.setattr(server, "make_catalog", _no_catalog)
+    monkeypatch.delenv("HPC_BRIDGE_SSH_HOST", raising=False)  # no host -> the ask path, not discovery
     app = AppCtx(facility=FakeFacility(), profile=Profile())
     res = await server._connect_facility(app, "anvil")
     assert res.phase == "needs_facility_details"
@@ -323,6 +325,106 @@ async def test_connect_index_error_with_details_proceeds(monkeypatch):
     assert res.phase == "needs_account" and "frontier" in app.session_facilities
 
 
+# --- agentic discovery: probe the login node and PROPOSE a draft (don't dump the form) -----------
+
+
+async def test_connect_unknown_with_ssh_host_proposes_discovered_details(monkeypatch):
+    from hpc_bridge import server
+    from hpc_bridge.models import FacilityDetails
+
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    monkeypatch.setattr(
+        server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
+    )
+    draft = FacilityDetails(
+        ssh_host="login.newfac.edu", interface="ib0", env_setup="source {venv}/bin/activate",
+        scratch_root="/scratch/{user}/.hpc-bridge", partition="debug",
+    )
+
+    async def fake_discover(target):
+        assert target.host == "login.newfac.edu"  # bare SshTarget built from ssh_host
+        return draft, ["interface: proposed `ib0` — CONFIRM"]
+
+    monkeypatch.setattr(server, "discover_facility_details", fake_discover)
+    monkeypatch.setenv("HPC_BRIDGE_SSH_USER", "u")
+    monkeypatch.setenv("HPC_BRIDGE_SSH_KEY", "/k")
+    monkeypatch.setattr(server, "_control_settings", lambda: (None, 60))  # no real socket dir in tests
+    res = await server._connect_facility(app, "newfac", ssh_host="login.newfac.edu")
+    assert res.phase == "proposed_facility_details"
+    assert res.proposed_details is draft and res.proposed_details.interface == "ib0"
+    assert res.notice and "interface" in res.notice
+    assert "newfac" not in app.session_facilities  # propose only; register on confirmation (details=)
+
+
+async def test_connect_unknown_uses_ssh_host_from_env(monkeypatch):
+    from hpc_bridge import server
+    from hpc_bridge.models import FacilityDetails
+
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    monkeypatch.setattr(
+        server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
+    )
+    seen = {}
+
+    async def fake_discover(target):
+        seen["host"] = target.host
+        return (
+            FacilityDetails(ssh_host=target.host, interface="ib0", env_setup="x",
+                            scratch_root="/s/{user}", partition="p"),
+            [],
+        )
+
+    monkeypatch.setattr(server, "discover_facility_details", fake_discover)
+    monkeypatch.setenv("HPC_BRIDGE_SSH_USER", "u")
+    monkeypatch.setenv("HPC_BRIDGE_SSH_KEY", "/k")
+    monkeypatch.setenv("HPC_BRIDGE_SSH_HOST", "envhost")
+    monkeypatch.setattr(server, "_control_settings", lambda: (None, 60))
+    res = await server._connect_facility(app, "newfac")  # no ssh_host param -> env fallback
+    assert res.phase == "proposed_facility_details" and seen["host"] == "envhost"
+
+
+async def test_connect_unknown_without_host_asks_for_access(monkeypatch):
+    from hpc_bridge import server
+
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    monkeypatch.setattr(
+        server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
+    )
+    monkeypatch.delenv("HPC_BRIDGE_SSH_HOST", raising=False)
+    res = await server._connect_facility(app, "newfac")  # no host, no details -> ask for access
+    assert res.phase == "needs_facility_details"
+    assert res.notice and "SSH host" in res.notice
+
+
+async def test_connect_unknown_discovery_defers_creds_to_ssh_config(monkeypatch):
+    # The transcript bug: discovery hard-required HPC_BRIDGE_SSH_USER/KEY env, which a running server
+    # can't be given mid-session. Now it builds a config-deferring target — no env creds needed.
+    from hpc_bridge import server
+    from hpc_bridge.models import FacilityDetails
+
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    monkeypatch.setattr(
+        server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
+    )
+    seen = {}
+
+    async def fake_discover(target):
+        seen["user"], seen["key"] = target.user, target.key_path
+        return (
+            FacilityDetails(ssh_host=target.host, interface="ib0", env_setup="x",
+                            scratch_root="/s/{user}", partition="p"),
+            [],
+        )
+
+    monkeypatch.setattr(server, "discover_facility_details", fake_discover)
+    monkeypatch.setattr(server, "_control_settings", lambda: (None, 60))
+    for v in ("HPC_BRIDGE_SSH_USER", "HPC_BRIDGE_SSH_KEY"):
+        monkeypatch.delenv(v, raising=False)
+    res = await server._connect_facility(app, "newfac", ssh_host="globus1")
+    assert res.phase == "proposed_facility_details"
+    assert seen["user"] is None and seen["key"] is None  # deferred to ~/.ssh/config, zero env creds
+
+
 def test_entry_from_details_builds_session_local_entry():
     from hpc_bridge.server import _entry_from_details
 
@@ -331,7 +433,13 @@ def test_entry_from_details_builds_session_local_entry():
     assert e.transfer_endpoint_uuid is None and e.subject == "session:frontier"
     assert e.compute.interface == "hsn0" and e.compute.scheduler == "slurm"
     assert e.allocation is not None and e.allocation.parser == "mybalance"
+    assert e.compute.endpoint_name == "hpc-bridge-frontier"  # isolated per-facility, not bare hpc-bridge
+    assert e.display_name == "Frontier (BYO)"  # explicit display_name preserved
     # no allocation tool -> allocation omitted
     bare = _entry_from_details("x", _details(allocation_command=None, allocation_parser=None))
     assert bare.allocation is None
+    assert bare.display_name == "hpc-bridge-x"  # UI title defaults to the endpoint name, not the bare id
+    # facility id is slugified into the endpoint name; an explicit name is preserved (override)
+    assert _entry_from_details("uchicago:globus", _details()).compute.endpoint_name == "hpc-bridge-uchicago-globus"
+    assert _entry_from_details("frontier", _details(endpoint_name="my-ep")).compute.endpoint_name == "my-ep"
 

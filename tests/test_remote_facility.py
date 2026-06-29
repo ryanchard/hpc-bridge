@@ -223,6 +223,9 @@ class _FakeRemoteCLI:
     def rebind(self, host):
         self.calls.append(("rebind", host))
 
+    async def close(self):
+        self.calls.append(("close",))
+
 
 def _kinds(cli):
     return [c[0] for c in cli.calls]
@@ -732,3 +735,107 @@ async def test_teardown_wipes_credentials_when_requested():
     cli = _FakeRemoteCLI()
     await SlurmFacility(_profile(), cli=cli).teardown("fake-eid", wipe_credentials=True)
     assert ("wipe", "hpc-bridge") in cli.calls
+
+
+# --- Persistent SSH (ControlMaster multiplexing) --------------------------------------------
+
+
+def test_argv_unchanged_without_control_dir():
+    # No multiplexing configured -> argv is byte-identical to the pre-ControlMaster baseline.
+    assert SshTarget("h", "u", "/k").argv("CMD") == [
+        "ssh", "-i", "/k",
+        "-o", "IdentitiesOnly=yes",
+        "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=20",
+        "-o", "StrictHostKeyChecking=accept-new",
+        "u@h", "CMD",
+    ]
+
+
+def test_argv_adds_controlmaster_when_control_dir_set():
+    argv = SshTarget("h", "u", "/k", control_dir="/cm", control_persist=45).argv("CMD")
+    assert argv[:11] == [  # base options unchanged...
+        "ssh", "-i", "/k",
+        "-o", "IdentitiesOnly=yes",
+        "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=20",
+        "-o", "StrictHostKeyChecking=accept-new",
+    ]
+    assert argv[-8:] == [  # ...then the three multiplexing options (%C-keyed), then the target
+        "-o", "ControlMaster=auto",
+        "-o", "ControlPath=/cm/%C",
+        "-o", "ControlPersist=45",
+        "u@h", "CMD",
+    ]
+
+
+def test_control_argv_builds_exit_request():
+    argv = SshTarget("h", "u", "/k", control_dir="/cm").control_argv("exit")
+    assert argv == ["ssh", "-O", "exit", "-o", "ControlPath=/cm/%C", "u@h"]
+
+
+async def test_close_sends_ssh_o_exit_when_multiplexed(monkeypatch):
+    captured = {}
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self, payload=None):
+            return (b"", b"")
+
+    async def fake_create(*argv, **kw):
+        captured["argv"] = argv
+        return _FakeProc()
+
+    monkeypatch.setattr(remote.asyncio, "create_subprocess_exec", fake_create)
+    await RemoteEndpointCLI(SshTarget("h", "u", "k", control_dir="/cm"), "true").close()
+    assert captured["argv"][:3] == ("ssh", "-O", "exit")
+    assert "ControlPath=/cm/%C" in captured["argv"] and "u@h" in captured["argv"]
+
+
+async def test_close_is_noop_without_control_dir(monkeypatch):
+    called = {"n": 0}
+
+    async def fake_create(*a, **k):
+        called["n"] += 1
+
+    monkeypatch.setattr(remote.asyncio, "create_subprocess_exec", fake_create)
+    await RemoteEndpointCLI(SshTarget("h", "u", "k"), "true").close()
+    assert called["n"] == 0  # no master configured -> nothing to close
+
+
+async def test_teardown_closes_the_ssh_master():
+    cli = _FakeRemoteCLI()
+    await SlurmFacility(_profile(), cli=cli).teardown("fake-eid")
+    assert ("close",) in cli.calls  # shared SSH master dropped on full teardown
+
+
+def test_rebind_preserves_control_settings():
+    cli = RemoteEndpointCLI(SshTarget("alias", "u", "k", control_dir="/cm", control_persist=30), "true")
+    cli.rebind("login03")
+    assert cli.target.host == "login03"  # %C re-derives a fresh socket for the pinned node
+    assert cli.target.control_dir == "/cm" and cli.target.control_persist == 30  # preserved
+
+
+def test_argv_defers_to_ssh_config_when_user_and_key_absent():
+    # No explicit user/key -> bare host, no -i / IdentitiesOnly, so OpenSSH resolves User +
+    # IdentityFile from ~/.ssh/config (read live — no boot-env var the running server can't see).
+    assert SshTarget("globus1").argv("CMD") == [
+        "ssh",
+        "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=20",
+        "-o", "StrictHostKeyChecking=accept-new",
+        "globus1", "CMD",
+    ]
+
+
+def test_argv_user_without_key_defers_identity():
+    argv = SshTarget("h", user="u").argv("CMD")  # explicit user, key deferred to config
+    assert "-i" not in argv and "IdentitiesOnly=yes" not in argv  # no key pinned
+    assert argv[-2:] == ["u@h", "CMD"]
+
+
+def test_control_argv_bare_host_when_user_absent():
+    assert SshTarget("globus1", control_dir="/cm").control_argv("exit") == [
+        "ssh", "-O", "exit", "-o", "ControlPath=/cm/%C", "globus1",
+    ]
