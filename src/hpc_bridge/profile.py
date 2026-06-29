@@ -12,8 +12,6 @@ class Profile:
     mode: Literal["interactive", "batch"] = "batch"
     nodes_per_block: int = 1
     max_idletime_s: int = 600  # idle grace (s) before the block + UEP auto-release
-    account: str | None = None
-    queue: str | None = None
 
     def __post_init__(self) -> None:
         # Literal is not enforced at runtime; reject unknown modes rather than silently

@@ -36,7 +36,7 @@ def test_valid_entry_parses_and_applies_defaults():
     e = CatalogEntry.model_validate(_entry())
     assert e.id == "anvil"
     assert e.compute.amqp_port == 443             # defaulted
-    assert e.compute.endpoint_name == "hpc-bridge"  # defaulted
+    assert e.compute.endpoint_name is None  # no bare default; derived as hpc-bridge-<id> at profile build
     assert e.defaults.walltime == "00:30:00"      # defaulted
     assert e.auth_method == "ssh-key"             # defaulted
     assert e.provenance == "curated"              # defaulted

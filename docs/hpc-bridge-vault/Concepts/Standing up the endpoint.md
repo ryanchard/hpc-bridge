@@ -5,7 +5,7 @@
 
 ## The flow
 
-`SlurmFacility.bootstrap()` ([[facility-remote]], `remote.py:471`) is the entry, and it is **reuse-or-SSH**:
+`SlurmFacility.bootstrap()` ([[facility-remote]], `remote.py:544`) is the entry, and it is **reuse-or-SSH**:
 
 ```mermaid
 flowchart TD
@@ -21,13 +21,13 @@ flowchart TD
   P3 --> P4[capture FQDN + pin login node]
 ```
 
-- **Reuse first** (`find_online_endpoint`, `remote.py:569`) — a still-running endpoint from a prior session is reused over AMQP with no SSH. This is the [[Two-channel architecture|SSH-once]] keystone.
+- **Reuse first** (`find_online_endpoint`, `remote.py:643`) — a still-running endpoint from a prior session is reused over AMQP with no SSH. This is the [[Two-channel architecture|SSH-once]] keystone.
 - **Credentials** — seeded only if the remote can't already authenticate (`whoami`). See [[Credential seeding]].
-- **Provision** (`remote.py:512`) — `configure` (forced `--multi-user false`) → write the engine-free manager `config.yaml` + the [[MEP & templated endpoints|UEP template]] → `start --detach`.
+- **Provision** (`remote.py:585`) — `configure` (forced `--multi-user false`) → write the engine-free manager `config.yaml` + the [[MEP & templated endpoints|UEP template]] → `start --detach`.
 - **Pin** — record the login node so the next session reconnects directly ([[state]]).
 
 > [!warning] Login-node pinning
-> The manager lives on ONE login node, but the SSH alias round-robins. `start` (`remote.py:267`) captures the FQDN *in the same SSH connection* that launches the daemon — a separate `hostname -f` could resolve a different node and orphan the manager on teardown. The FQDN is stored by [[state]]'s `LoginNodeStore`; the CLI `rebind`s there next session.
+> The manager lives on ONE login node, but the SSH alias round-robins. `start` (`remote.py:315`) captures the FQDN *in the same SSH connection* that launches the daemon — a separate `hostname -f` could resolve a different node and orphan the manager on teardown. The FQDN is stored by [[state]]'s `LoginNodeStore`; the CLI `rebind`s there next session.
 
 > [!note] Idempotent
 > Bootstrap reuses a running endpoint, seeds credentials only when absent, and re-writes config on every provision so the current profile always applies.

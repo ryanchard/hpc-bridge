@@ -22,7 +22,7 @@ This vault has two halves:
 - [[Facility catalog]] — index/seed → `MachineProfile`; `list_facilities` / `connect_facility`
 
 ## Modules — `src/hpc_bridge/`
-**Server & runtime:** [[server]] · [[runner]] · [[dispatch]] · [[lifecycle]] · [[session_shell]] · [[cost]] · [[models]] · [[profile]] · [[shapes]]
+**Server & runtime:** [[server]] · [[runner]] · [[dispatch]] · [[lifecycle]] · [[session_shell]] · [[cost]] · [[models]] · [[profile]] · [[shapes]] · [[discovery]]
 **Facility seam:** [[facility-base]] · [[facility-local]] · [[facility-remote]]
 **Bootstrap & state:** [[endpoint]] · [[credentials]] · [[state]]
 
@@ -31,10 +31,11 @@ This vault has two halves:
 - [[Plugin packaging]] — `.mcp.json` · `plugin.json` · the `driving-hpc` skill · `hpc-connect`
 - [[Configuration]] — environment variables
 
-## Planned — designed, not built
-- [[Discovery channel model]] — the target model: channels, the provide-vs-discover matrix, the principles ([#7](https://github.com/ryanchard/hpc-bridge/issues/7))
-- [[Globus index discovery channel]] — the catalog resolver + agentic selection + the raw-SSH discover-then-confirm sweep for un-indexed facilities ([#7](https://github.com/ryanchard/hpc-bridge/issues/7))
-- [[Persistent SSH session]] — one reused SSH connection (ControlMaster) → authenticate once, not ~10× ([#7](https://github.com/ryanchard/hpc-bridge/issues/7))
+## Planned — design notes (core built; deferred extras remain)
+- [[Discovery channel model]] — the target model: channels, the provide-vs-discover matrix, the principles. Remaining: per-channel ablation flags + the resolution trace ([#7](https://github.com/ryanchard/hpc-bridge/issues/7))
+- [[Globus index discovery channel]] — the catalog resolver + agentic selection + the raw-SSH discover-then-confirm sweep (all built). Remaining: seed-emission / write-back for curation ([#7](https://github.com/ryanchard/hpc-bridge/issues/7))
+
+*(Persistent SSH / ControlMaster shipped — see [[facility-remote]].)*
 
 ## Meta
 - [[Vault style guide]] — how to write & maintain these notes (for contributors and agents)

@@ -30,7 +30,7 @@ class Compute(BaseModel):
     interface: str  # address_by_interface ifname (e.g. ib0)
     env_setup: str  # bash that puts globus-compute-endpoint on PATH (module + venv)
     scratch_root: str  # session-shell root on the shared filesystem; {user} templated
-    endpoint_name: str = "hpc-bridge"  # registration / on-disk dir name
+    endpoint_name: str | None = None  # None ⇒ derive hpc-bridge-<id> (never the bare collision name)
     amqp_port: int = 443  # facilities firewall AMQPS 5671; 443 is the near-universal allowed port
     scheduler_options: str | None = None  # raw scheduler directives, verbatim (e.g. #SBATCH for Slurm, #PBS for PBS)
 
@@ -111,9 +111,9 @@ class CatalogEntry(BaseModel):
 
         `account` is intentionally absent — it is per-user, from allocation selection.
         `worker_init` is absent — in the code it is derived as `= env_setup`.
-        `ssh_host`, `auth_method`, and `compute.scheduler` are also absent — they are
-        consumed by the transport layer (SshTarget / auth broker / facility selection),
-        not MachineProfile.
+        `ssh_host` and `compute.scheduler` are also absent — consumed by the transport layer
+        (SshTarget) / facility selection, not MachineProfile. `auth_method` is reserved (only
+        ssh-key is wired; nothing reads it yet).
         """
         return {
             "name": self.id,

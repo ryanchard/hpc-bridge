@@ -8,6 +8,6 @@ def test_endpoint_status_defaults_and_roundtrip():
 
 
 def test_shell_outcome_cold_path_fields():
-    o = ShellOutcome(phase="cold_start", block_state="cold", task_handle="t1", est_wait_s=120)
+    o = ShellOutcome(phase="cold_start", block_state="cold", est_wait_s=120)
     assert o.exit_code is None
-    assert o.task_handle == "t1"
+    assert o.est_wait_s == 120

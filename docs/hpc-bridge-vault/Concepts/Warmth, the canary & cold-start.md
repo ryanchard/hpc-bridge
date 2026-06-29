@@ -9,12 +9,12 @@
 
 ## The canary
 
-`_confirm_worker` ([[server]], `server.py:201`) submits a trivial `ShellFunction` through the *same* long-lived Executor real work uses ([[runner]], `GlobusRunner.canary`). The canary command echoes a sentinel plus the worker's host, Python, and dill versions:
+`_confirm_worker` ([[server]], `server.py:364`) submits a trivial `ShellFunction` through the *same* long-lived Executor real work uses ([[runner]], `GlobusRunner.canary`). The canary command echoes a sentinel plus the worker's host, Python, and dill versions:
 
 - **returned result** ⇒ a worker is truly live ⇒ `warm`.
-- **timeout** (`CANARY_TIMEOUT_S = 8 s`, `server.py:161`) ⇒ still `provisioning` — and the submit has *kicked* the cold block.
+- **timeout** (`CANARY_TIMEOUT_S = 8 s`, `server.py:324`) ⇒ still `provisioning` — and the submit has *kicked* the cold block.
 
-A successful canary is trusted for `CANARY_TTL_S = 45 s` (`server.py:158`) so an interactive burst doesn't pay the round-trip every call. (Safe: an idle block needs ≥ `max_idletime`, default 600 s, of silence to release, so a worker seen < 45 s ago can't have vanished.)
+A successful canary is trusted for `CANARY_TTL_S = 45 s` (`server.py:321`) so an interactive burst doesn't pay the round-trip every call. (Safe: an idle block needs ≥ `max_idletime`, default 600 s, of silence to release, so a worker seen < 45 s ago can't have vanished.)
 
 > [!warning] dill skew is the real failure mode
 > The canary reports the worker's dill version; if it differs from ours, function (de)serialization breaks. `_worker_notice` surfaces that as the warm descriptor's warning — it's the genuine compatibility hazard behind "the worker is up but tasks fail."
