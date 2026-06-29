@@ -178,6 +178,10 @@ def profile_from_catalog_entry(
         return template.replace("{venv}", venv)
 
     kw = entry.profile_kwargs()
+    # Naming convention: never the bare "hpc-bridge" — endpoints are keyed by identity+name, so a
+    # shared name collides (stale-reuse → stuck "provisioning"). A seed that omits endpoint_name
+    # derives hpc-bridge-<id> here; session entries already set it explicitly.
+    kw["endpoint_name"] = kw["endpoint_name"] or f"hpc-bridge-{entry.id}"
     kw["env_setup"] = _resolve(kw["env_setup"])
     kw["scratch_root"] = _resolve(kw["scratch_root"])
     if partition:

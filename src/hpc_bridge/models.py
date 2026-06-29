@@ -14,10 +14,8 @@ class ShellOutcome(BaseModel):
     exit_code: int | None = None
     stdout: str = ""
     stderr_snippet: str = ""
-    cwd: str | None = None
     block_state: Literal["warm", "cold", "provisioning"]
     session_spend: NodeHours = 0.0
-    task_handle: str | None = None
     est_wait_s: int | None = None
     notice: str | None = None
 
@@ -29,7 +27,6 @@ class EndpointStatus(BaseModel):
     block_state: Literal["warm", "cold", "provisioning"]
     endpoint_id: str | None = None
     session_spend: NodeHours = 0.0
-    cert_expires_in: str | None = None
     # Slurm partition this shape will provision onto (from the discovery selection gate, or
     # the facility default). None for non-Slurm shapes (login/local).
     partition: str | None = None

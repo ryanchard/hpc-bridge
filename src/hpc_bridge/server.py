@@ -701,7 +701,7 @@ async def _connect_facility(
         except Exception as exc:  # noqa: BLE001 - index/scope unavailable -> fall back to details
             if details is None:
                 return await _propose_or_ask(
-                    app, facility, ssh_host,
+                    facility, ssh_host,
                     f"catalog unavailable ({type(exc).__name__}); give me this facility's SSH host "
                     "(ssh_host=… or HPC_BRIDGE_SSH_HOST) to probe it, or supply details= directly.",
                 )
@@ -709,7 +709,7 @@ async def _connect_facility(
     if entry is None:
         if details is None:
             return await _propose_or_ask(
-                app, facility, ssh_host,
+                facility, ssh_host,
                 f"{facility!r} isn't in the catalog. Give me its SSH host (ssh_host=… or "
                 "HPC_BRIDGE_SSH_HOST) and I'll probe the login node to propose a config, or supply "
                 "details= directly (or list_facilities() if you meant a catalogued one).",
@@ -794,7 +794,7 @@ async def _connect_facility(
 
 
 async def _propose_or_ask(
-    app: AppCtx, facility: str, ssh_host: str | None, ask_notice: str
+    facility: str, ssh_host: str | None, ask_notice: str
 ) -> ConnectFacilityResult:
     """Index miss + no details: if we have an SSH host, probe the login node and PROPOSE a draft
     config; otherwise ask the agent for the host (SSH access is the one irreducible input). The
