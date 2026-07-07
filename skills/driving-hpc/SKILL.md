@@ -1,4 +1,5 @@
 ---
+name: driving-hpc
 description: How to drive HPC well through hpc-bridge. SSH is a one-time bootstrap: stand up (or reuse) a Globus Compute endpoint on the login node ONCE, then do everything — discovery AND compute — THROUGH the endpoint via run_shell, never a fresh SSH (which can force a re-auth on MFA facilities). Flow to bring up a node: select the machine (list_facilities → connect_facility, which brings up the free login shape and lists your allocations) → discover partitions via run_shell(shape="login") → present an allocation+partition+budget gate → provision the billed block with account and confirm_spend=True → wait by polling squeue through the endpoint. Persistent per-session shell; 10 MB result cap; a cold first call means a worker is still warming.
 ---
 

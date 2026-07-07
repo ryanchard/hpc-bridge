@@ -37,4 +37,5 @@ def test_hooks_config_valid_and_guard_executable():
 def test_skill_has_frontmatter():
     text = (ROOT / "skills" / "driving-hpc" / "SKILL.md").read_text()
     assert text.startswith("---")
+    assert "name: driving-hpc" in text  # skill analyzers expect an explicit name
     assert "description:" in text
