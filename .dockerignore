@@ -1,0 +1,12 @@
+# Trim the agentic harness build context (Dockerfile COPY . from repo root).
+.git
+.venv
+**/__pycache__
+**/*.pyc
+**/*.pem
+**/*.key
+**/.env
+*.pub
+agentic/**/sdkcheck
+docs/hpc-bridge-vault/Demos
+.DS_Store
