@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "hpc-bridge": {
+    "endpoint": {
       "type": "stdio",
       "command": "uv",
       "args": ["run", "--directory", "${CLAUDE_PLUGIN_ROOT}", "--extra", "integration", "hpc-bridge"],

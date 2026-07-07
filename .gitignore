@@ -25,3 +25,10 @@ htmlcov/
 # Obsidian machine-local UI state (keep the vault, drop the cursor/layout)
 docs/hpc-bridge-vault/.obsidian/workspace.json
 docs/hpc-bridge-vault/.obsidian/workspace-mobile.json
+
+# Secrets — NEVER commit (plaintext OAuth token / cred paths for the agentic harness)
+agentic/.env
+*.env
+
+# Per-run agentic provenance bundles (transcripts, message streams) — artifacts, not source
+agentic/runs/

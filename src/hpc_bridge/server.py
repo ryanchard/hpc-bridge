@@ -315,7 +315,10 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppCtx]:
                 rt.runner.close()
 
 
-mcp = FastMCP("hpc-bridge", lifespan=lifespan)
+# Named "endpoint", not "hpc-bridge" (the plugin/CLI name): Claude Code namespaces a plugin's MCP
+# tools as plugin:<plugin>:<server>, so matching names would read the doubled plugin:hpc-bridge:hpc-bridge.
+# Keep in sync with the mcpServers key in .mcp.json — CC namespaces by that key, this name just mirrors it.
+mcp = FastMCP("endpoint", lifespan=lifespan)
 
 
 CANARY_TTL_S = 45.0  # trust a confirmed worker this long before re-canarying. Safe: an idle

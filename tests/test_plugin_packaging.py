@@ -13,7 +13,7 @@ def test_plugin_manifest_valid():
 
 def test_mcp_config_launches_server():
     c = json.loads((ROOT / ".mcp.json").read_text())
-    srv = c["mcpServers"]["hpc-bridge"]
+    srv = c["mcpServers"]["endpoint"]
     assert "hpc-bridge" in srv["args"] or srv["command"] == "hpc-bridge"
 
 
@@ -23,7 +23,7 @@ def test_mcp_config_installs_runtime_deps():
     # dispatch (ModuleNotFoundError: globus_compute_sdk). Accept either launch form
     # (`uv run --extra integration` or a `uvx --from <path>[integration]`).
     c = json.loads((ROOT / ".mcp.json").read_text())
-    args = c["mcpServers"]["hpc-bridge"]["args"]
+    args = c["mcpServers"]["endpoint"]["args"]
     assert "integration" in " ".join(args), f"launch must request the integration extra; got {args!r}"
 
 
