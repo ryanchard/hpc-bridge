@@ -24,7 +24,10 @@ fi
 rc=0
 python /work/hpc-bridge/agentic/harness/run.py "$@" || rc=$?
 if [ -n "${HPCB_RUNS_DIR:-}" ] && [ -n "${HPCB_RUNID:-}" ]; then
-  d=$(ls -d "$HPCB_RUNS_DIR/$HPCB_RUNID"-* 2>/dev/null | head -1)
+  # `|| true` guards set -e/pipefail: when the bundle dir doesn't exist (provenance write
+  # failed), a bare failing ls|head aborted the script HERE and replaced run.py's rc with
+  # ls's — reporting a passing run as failed (found in review).
+  d=$(ls -d "$HPCB_RUNS_DIR/$HPCB_RUNID"-* 2>/dev/null | head -1 || true)
   if [ -n "$d" ] && [ -d "$HOME/.claude/projects" ]; then
     cp -r "$HOME/.claude/projects" "$d/claude-session" 2>/dev/null || true
   fi

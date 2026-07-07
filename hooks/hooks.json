@@ -2,7 +2,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash|mcp__hpc-bridge__run_shell|mcp__hpc-bridge__login_shell",
+        "matcher": "Bash|mcp__.+__run_shell|mcp__.+__login_shell",
         "hooks": [
           { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/credential-guard.sh", "timeout": 10 }
         ]

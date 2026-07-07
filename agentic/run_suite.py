@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Staggered, capped suite runner for the agentic harness.
 
-Runs a matrix of (scenario × model × effort × repeat) across the POOL of test users, ≤N in
-parallel, STAGGERED so concurrent SSH bootstraps from one host don't trip globus1's per-source
-new-connection rate limit. Each job is one `run_smoke.sh` invocation — a fresh container, a
-DISTINCT pool user (so squeue/home/storage.db don't bleed), a unique endpoint. Aggregates
-pass/fail per **model @ effort**, so you can see how model *and reasoning level* affect the workflow.
+Runs a matrix of (scenario × model × effort × persona × ablation × repeat) across the POOL of
+test users, ≤N in parallel, STAGGERED so concurrent SSH bootstraps from one host don't trip
+globus1's per-source new-connection rate limit. Each job is one `run_smoke.sh` invocation — a
+fresh container, a DISTINCT pool user (so squeue/home/storage.db don't bleed), a unique
+endpoint. Aggregates pass rates per cell (`model @ effort [persona] ~ablation`).
 
 Run from the repo root (agentic/.env supplies the token + Globus db):
 

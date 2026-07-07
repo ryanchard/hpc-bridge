@@ -19,8 +19,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from claude_agent_sdk import ClaudeAgentOptions, query  # type: ignore[import-not-found]
-
 PERSONAS: dict[str, str] = {
     "cooperative": (
         "You are an easy-going researcher. You answer promptly, accept sensible "
@@ -59,6 +57,9 @@ class HumanSim:
 
     async def answer(self, tool_input: dict[str, Any]) -> dict[str, str]:
         """Choose an answer for each AskUserQuestion question, in persona."""
+        # Lazy import: only the live path needs the SDK — _parse stays hermetically testable.
+        from claude_agent_sdk import ClaudeAgentOptions, query  # type: ignore[import-not-found]
+
         questions = tool_input.get("questions", [])
         prompt = (
             "You are role-playing a HUMAN USER answering an assistant's multiple-choice "
@@ -98,9 +99,14 @@ class HumanSim:
                     return answers, str(obj.get("note", ""))
             except json.JSONDecodeError:
                 pass
-        # Fallback: first option per question (a distracted user), flagged in the note.
+        # Fallback: SAFE DECLINE, never an approval. Picking the first option here inverted
+        # refusal personas (option[0] is typically "Yes, provision it") — a false-PASS
+        # generator found in review. A refusing fallback can only make runs fail safe, and
+        # refusal scenarios additionally gate on `refusal_exercised` so a malfunctioning
+        # human-sim can't vacuously pass.
         fallback = {
-            q.get("question", "?"): (q.get("options") or [{}])[0].get("label", "ok")
+            q.get("question", "?"):
+                "No — do not proceed, and don't start or pay for anything right now."
             for q in questions
         }
-        return fallback, "(human-sim parse fallback: picked first options)"
+        return fallback, "(human-sim parse fallback: SAFE DECLINE — model output was unparseable)"

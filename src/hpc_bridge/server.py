@@ -582,7 +582,7 @@ async def _ensure_endpoint_up(
                 account=active_account,
                 notice=(
                     f"billed Slurm block{where} ({app.profile.nodes_per_block} node(s)): spend "
-                    "not yet confirmed. Surface the allocation balance (e.g. login_shell('mybalance')) "
+                    "not yet confirmed. Surface the allocation balance (e.g. run_shell('mybalance', shape='login')) "
                     "and re-call ensure_endpoint_up(confirm_spend=True) to proceed — or use "
                     "shape='login' for free login-node work."
                 ),
@@ -976,7 +976,7 @@ def _needs_confirmation_outcome() -> ShellOutcome:
         block_state="cold",
         notice=(
             "billed Slurm shape: spend not confirmed, so nothing ran. Surface the allocation "
-            "balance (login_shell('mybalance')) and call ensure_endpoint_up(confirm_spend=True) "
+            "balance (run_shell('mybalance', shape='login')) and call ensure_endpoint_up(confirm_spend=True) "
             "before running work — or use shape='login' for free login-node work."
         ),
     )
