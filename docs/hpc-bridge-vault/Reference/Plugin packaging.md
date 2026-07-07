@@ -5,7 +5,7 @@
 
 ## The surfaces
 
-- **`.mcp.json`** — declares the `hpc-bridge` **stdio** server, launched as `uv run --directory ${CLAUDE_PLUGIN_ROOT} --extra integration hpc-bridge`, with `HPC_BRIDGE_USER_DIR=${CLAUDE_PLUGIN_DATA}/globus_compute`. The `hpc-bridge` console script → `main()` ([[server]] `:1075`).
+- **`.mcp.json`** — declares the stdio server under the key **`endpoint`** (*not* `hpc-bridge`): Claude Code namespaces a plugin's tools `plugin:<plugin>:<mcpServers-key>`, so an `endpoint` key reads `plugin:hpc-bridge:endpoint` instead of the doubled `plugin:hpc-bridge:hpc-bridge`. `FastMCP("endpoint")` ([[server]]) mirrors the key. Launched as `uv run --directory ${CLAUDE_PLUGIN_ROOT} --extra integration hpc-bridge` — the trailing `hpc-bridge` is the **console script** → `main()`, unchanged by the rename — with `HPC_BRIDGE_USER_DIR=${CLAUDE_PLUGIN_DATA}/globus_compute`.
 - **`.claude-plugin/plugin.json`** — plugin manifest (name, description, version).
 - **`skills/driving-hpc/SKILL.md`** — the **agent recipe**: how to drive HPC well — establish the endpoint, discover via the login shape, present the partition + budget gate, provision with `confirm_spend`, wait by polling `squeue` through the login shape. This is where agent *judgment* lives ([[Discovery today]]).
 - **`commands/hpc-connect.md`** — a slash command entry point.
