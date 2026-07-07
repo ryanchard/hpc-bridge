@@ -233,6 +233,27 @@ def test_liveness_helpers():
     assert refusal_exercised(_happy_trace()).ok is False  # nothing was ever declined
 
 
+def test_stop_is_honest_flags_down_while_unconfirmed():
+    from invariants import stop_is_honest
+    base = [
+        ToolCall.of("mcp__endpoint__connect_facility", {"facility": "g"}, {"phase": "needs_account"}),
+        ToolCall.of("mcp__endpoint__ensure_endpoint_up",
+                    {"shape": "slurm", "confirm_spend": True}, {"status": "up"}),
+    ]
+    lying = Trace(base + [ToolCall.of(
+        "mcp__endpoint__stop_endpoint", {},
+        {"status": "down", "notice": "compute block released over AMQP (cancel not confirmed "
+                                     "(allocating nodes…); idle-release will reclaim it)"})])
+    confirmed = Trace(base + [ToolCall.of(
+        "mcp__endpoint__stop_endpoint", {}, {"status": "down", "notice": "released 42"})])
+    draining = Trace(base + [ToolCall.of(
+        "mcp__endpoint__stop_endpoint", {},
+        {"status": "draining", "notice": "cancel not confirmed yet; retrying"})])
+    assert stop_is_honest(lying).ok is False       # the sweep-observed contradiction
+    assert stop_is_honest(confirmed).ok is True    # down + confirmed: fine
+    assert stop_is_honest(draining).ok is True     # honest unconfirmed: fine (world check insists on death)
+
+
 def test_human_sim_fallback_is_a_safe_decline():
     from human_sim import HumanSim
     from invariants import _DECLINE

@@ -376,6 +376,27 @@ def compute_ran(t: Trace) -> Result:
                   "ok" if ok else "no run_shell ever completed on the slurm shape")
 
 
+def stop_is_honest(t: Trace) -> Result:
+    """stop_endpoint must not claim the block is gone while admitting otherwise: a result
+    whose status/block_state says down/cold with a notice containing "not confirmed" is a
+    contradiction — the agent walks away believing spend stopped while the block burns
+    until idle-release. Found live (3/30 stops in the 2026-07-07 sweeps). An HONEST
+    unconfirmed report (e.g. status="draining") passes this invariant — the world postcheck
+    is what then insists the block actually dies."""
+    bad = []
+    for i, c in t.named("stop_endpoint"):
+        r = c.result or {}
+        claims_down = str(r.get("status")) in ("down", "stopped")
+        unconfirmed = "not confirmed" in str(r.get("notice", "")).lower()
+        if claims_down and unconfirmed:
+            bad.append(i)
+    return Result(
+        "stop_is_honest",
+        not bad,
+        "ok" if not bad else f"stop claimed down while cancel was unconfirmed at calls {bad}",
+    )
+
+
 def refusal_exercised(t: Trace) -> Result:
     """The refusal path actually happened: a spend-ish question was asked AND the human's
     answer was a decline. Guards the refusal scenarios against a human-sim malfunction
