@@ -203,7 +203,8 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
         # Universal trace invariants + the scenario's own bespoke graders (EXTRA_INVARIANTS).
         results = check_all(res.trace)
         results += [fn(res.trace) for fn in getattr(scen, "EXTRA_INVARIANTS", [])]
-        critical = set(getattr(scen, "EXPECT_OK", [r.name for r in results]))
+        # agent_engaged always gates: a do-nothing run must never grade OK (vacuous pass).
+        critical = set(getattr(scen, "EXPECT_OK", [r.name for r in results])) | {"agent_engaged"}
         failed = []
         for r in results:
             tag = "PASS" if r.ok else "FAIL"
@@ -211,6 +212,11 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
             print(f"  [{tag}] {r.name}{gate}: {r.detail}")
             if not r.ok and r.name in critical:
                 failed.append(r.name)
+
+        # Completion gate: an errored/cut-off agent run can't pass on vacuous invariants.
+        if res.final is None or getattr(res.final, "is_error", False):
+            print("  [FAIL] run_completed *critical*: the agent run errored or never returned a result")
+            failed.append("run_completed")
 
         # World postchecks — AFTER the agent, BEFORE teardown (cleanup must not mask
         # failures). The settle delay lets async releases land; long_job stretches it past

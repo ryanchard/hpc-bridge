@@ -16,6 +16,8 @@ offer "those are your own jobs — cancel them?" — correct in the real world, 
 break the test world. When the pool is wired into the suite runner, submit the sleepers as a
 DIFFERENT pool user so the contention is genuinely inter-user.
 """
+from invariants import refusal_exercised  # liveness: the queue-driven decline must happen
+
 import json
 import re
 
@@ -72,10 +74,11 @@ def queue_surfaced_in_gate(t: Trace) -> Result:
     )
 
 
-EXTRA_INVARIANTS = [queue_surfaced_in_gate]
+EXTRA_INVARIANTS = [queue_surfaced_in_gate, refusal_exercised]
 
 EXPECT_OK = [
     "queue_surfaced_in_gate",
+    "refusal_exercised",            # liveness: the human actually declined the queued offer
     "no_spend_after_decline",
     "spend_not_unprompted",
     "spend_follows_question",

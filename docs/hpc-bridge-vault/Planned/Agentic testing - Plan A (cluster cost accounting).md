@@ -1,7 +1,7 @@
 # Agentic testing — Plan A (real-cluster cost accounting)
 
 > [!warning] Planned · transient
-> Cluster-side enablement so the **cost-gating** scenarios can run against the REAL globus1 cluster, not only the fake-seams tier. Executed in the **`globus-cluster-docs`** Ansible repo (`globus-admin/`), not in hpc-bridge. Companion: [[Agentic testing - Plan B (runtime sandbox)]]. Delete once landed + folded into the globus1 testbed.
+> Cluster-side enablement so the **cost-gating** scenarios can run against the REAL globus1 cluster, not only the fake-seams tier. Executed in the **`globus-cluster-docs`** Ansible repo (`globus-admin/`), not in hpc-bridge. Companion: [[Agentic testing - Plan B (runtime sandbox)]]. **Status: step 1 (test user + pool) DONE; steps 2–5 (SU cap · enforcement · `mybalance` shim · facility wiring) remain the plan.** Delete once landed + folded into the globus1 testbed.
 
 ## Goal
 Give a dedicated, **SU-capped test user** on globus1 a real allocation balance — *without restricting any other user* — and expose it through a `mybalance`-compatible command, so hpc-bridge's allocation discovery + spend gate exercise against **real data**. Today globus1 records usage (sacct works) but `AccountingStorageEnforce=none` and has no balance tool, so cost-gating can only run on fakes (the globus1 testbed).
@@ -16,7 +16,7 @@ The most safety-critical agent behaviour — *surface the balance → gate → `
 4. **No hpc-bridge code change** — the shim emits the format the existing `mybalance` parser already reads (`catalog/parsers.py`). Fallback: add a real `sshare` parser if the shim is too lossy.
 
 ## Steps (in `globus-cluster-docs/globus-admin`)
-1. **Test user** — add a `people:` entry: `hpcbridge-test`, new uid (e.g. 5015), `admin: false`, a **dedicated test pubkey** (its private half lives in the test secret store, never a human's key). `make apply` creates the account + installs the key over NFS.
+1. **Test user — ✅ DONE (2026-07-01):** `hpcbridge-test` (uid 5015, `admin: false`, dedicated test key) exists on globus1 and is the harness' default identity. **Also done (2026-07-07): the pool `hpcbridge-test-00..09` (uids 5016–5025, same key)** — one per suite concurrency slot, so squeue/home/storage.db never bleed across parallel runs. (Related cluster-side enablement, recorded in Plan B: the ufw per-source SSH rate limit was raised to ~15 for concurrent bootstraps.)
 2. **SU cap (scoped)** — add vars (`slurm_test_user`, `slurm_test_su_minutes`) and a `slurm_accounting` task that sets `GrpTRESMins=cpu=<N>` on *that user's* association (or a dedicated `test-su` QOS assigned only to it). Idempotent (check-then-set).
 3. **Enable enforcement** — set `AccountingStorageEnforce=safe` in the slurm.conf template (`safe` = limits + associations, and blocks a job that can't finish within the remaining balance — the clean "out of allocation" signal). Pre-check: every `people:` user has an association (they do).
 4. **`mybalance` shim** — deploy `/usr/local/bin/mybalance` (Ansible `copy`): a few lines wrapping `sshare`/`sacctmgr` to print the test user's remaining `GrpTRESMins` in the exact columns hpc-bridge's `mybalance` parser expects (account · balance · units · type). Validate against the parser fixture.

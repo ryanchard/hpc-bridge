@@ -165,15 +165,21 @@ async def run_scenario(
         opts["thinking"] = {"type": "adaptive"}
 
     human: HumanSim | None = None
+    injected_answers: dict[str, dict[str, str]] = {}  # tool_use_id -> answers (structural record)
     if interactive:
         human = HumanSim(persona=persona, goal=user_goal)
 
-        async def _gatekeeper(tool_name: str, tool_input: dict, _ctx: Any):
+        async def _gatekeeper(tool_name: str, tool_input: dict, ctx: Any):
             if tool_name == "AskUserQuestion":
                 print(f"  ? gate: {[q.get('question') for q in tool_input.get('questions', [])]}",
                       file=sys.stderr, flush=True)
                 answers = await human.answer(tool_input)
                 print(f"  ! human({persona}): {answers}", file=sys.stderr, flush=True)
+                # Stamp the answers structurally by tool_use_id so grading never depends on
+                # how the CLI renders them into result text (format drift => vacuous passes).
+                tid = getattr(ctx, "tool_use_id", None)
+                if tid:
+                    injected_answers[tid] = answers
                 return PermissionResultAllow(updated_input={**tool_input, "answers": answers})
             # Anything else that falls through (not in allowed_tools) is fine in the jail.
             return PermissionResultAllow()
@@ -201,6 +207,7 @@ async def run_scenario(
             if type(msg).__name__ == "ResultMessage":
                 final = msg
     return RunResult(
-        trace=build_trace(messages), final=final, messages=messages,
+        trace=build_trace(messages, injected_answers=injected_answers),
+        final=final, messages=messages,
         dialogue=(human.dialogue if human else []),
     )

@@ -19,8 +19,17 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Persisted secrets: agentic/.env (gitignored + dockerignored, chmod 600; plain KEY=value).
 # Set CLAUDE_CODE_OAUTH_TOKEN / HPCB_TEST_GLOBUS_DB there ONCE instead of exporting per shell.
+# PRECEDENCE: the caller's environment WINS — .env only fills in unset vars. (Sourcing it
+# blindly let a persisted HPCB_TEST_SSH_USER/HPCB_MODEL silently clobber run_suite.py's
+# per-job values — same cluster user across parallel runs, mislabelled matrix cells.)
 ENV_FILE="$REPO_ROOT/agentic/.env"
-if [ -f "$ENV_FILE" ]; then set -a; . "$ENV_FILE"; set +a; fi
+if [ -f "$ENV_FILE" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|\#*) continue ;; esac
+    k="${line%%=*}"
+    if [ -z "${!k+x}" ]; then export "$line"; fi
+  done < "$ENV_FILE"
+fi
 
 # Prefer the Claude subscription token; fall back to an API key. PRECEDENCE TRAP:
 # ANTHROPIC_API_KEY silently wins over CLAUDE_CODE_OAUTH_TOKEN — so when using the

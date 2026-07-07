@@ -34,7 +34,22 @@ def test_hooks_config_valid_and_guard_executable():
     assert mode & stat.S_IXUSR
 
 
+def test_credential_guard_matcher_covers_the_actual_tool_names():
+    # The guard is keyed by a tool-name REGEX; a server rename silently orphans it (caught
+    # in review after the hpc-bridge -> endpoint rename). Pin matcher <-> .mcp.json key.
+    import re
+
+    h = json.loads((ROOT / "hooks" / "hooks.json").read_text())
+    matcher = h["hooks"]["PreToolUse"][0]["matcher"]
+    (key,) = json.loads((ROOT / ".mcp.json").read_text())["mcpServers"].keys()
+    for tool in ("run_shell", "login_shell"):
+        assert re.search(matcher, f"mcp__{key}__{tool}"), (matcher, key, tool)
+        # the plugin-namespaced form Claude Code uses when loaded via --plugin-dir
+        assert re.search(matcher, f"mcp__plugin_hpc-bridge_{key}__{tool}"), (matcher, key, tool)
+
+
 def test_skill_has_frontmatter():
     text = (ROOT / "skills" / "driving-hpc" / "SKILL.md").read_text()
     assert text.startswith("---")
+    assert "name: driving-hpc" in text  # skill analyzers expect an explicit name
     assert "description:" in text
