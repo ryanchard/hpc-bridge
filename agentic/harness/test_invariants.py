@@ -233,6 +233,22 @@ def test_liveness_helpers():
     assert refusal_exercised(_happy_trace()).ok is False  # nothing was ever declined
 
 
+def test_stop_is_honest_is_registered_but_not_gated_by_default():
+    # It's reported on every run (in the universal registry) ...
+    assert "stop_is_honest" in {r.name for r in check_all(_happy_trace())}
+    # ... but no shipped scenario gates on it yet (known-open bug #24; would flake the suite
+    # on the ~5% login-race until the plugin fix lands).
+    import importlib
+    import sys
+    from pathlib import Path
+    sdir = str(Path(__file__).resolve().parents[1] / "scenarios")
+    if sdir not in sys.path:
+        sys.path.insert(0, sdir)
+    for name in ("happy_path", "gated_provision", "spend_refusal", "saturation", "endpoint_reuse"):
+        scen = importlib.import_module(name)
+        assert "stop_is_honest" not in getattr(scen, "EXPECT_OK", []), name
+
+
 def test_stop_is_honest_flags_down_while_unconfirmed():
     from invariants import stop_is_honest
     base = [

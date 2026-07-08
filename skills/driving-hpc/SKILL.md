@@ -46,7 +46,7 @@ This is a *policy gate*: discovery surfaces the options + the budget, the human 
 
 ## Stopping
 
-`stop_endpoint` means **stop spending**, not tear the endpoint down: it cancels the billed Slurm block over the login endpoint (AMQP, no SSH) and **leaves the login-node endpoint online** for reuse. Its result is authoritative — `"compute block released"` means the block is gone and no more SU accrue. The endpoint stays up, so reconnecting later (`connect_facility`/`ensure_endpoint_up`) is **zero-SSH**; you don't need to re-bootstrap, and a quick `run_shell(shape="login")` after a stop just reuses the still-online endpoint.
+`stop_endpoint` means **stop spending**, not tear the endpoint down: it cancels the billed Slurm block over the login endpoint (AMQP, no SSH) and **leaves the login-node endpoint online** for reuse. **Read the status, don't assume:** `status="down"` means the cancel was *confirmed* — the block is gone, no more SU accrue. `status="draining"` means the cancel dispatched but the login release channel was cold, so **spend is not confirmed stopped** — the block may still be burning. On `draining`, **call `stop_endpoint` again after a few seconds** (the channel is now warming) until you get `down`; idle-release (~10 min) is only the backstop, not a substitute for confirming. Don't tell the user spending stopped until you've seen `down`. The endpoint stays up either way, so reconnecting later (`connect_facility`/`ensure_endpoint_up`) is **zero-SSH**; a quick `run_shell(shape="login")` after a stop just reuses the still-online endpoint.
 
 ## When to use `login_shell` (raw SSH) instead
 

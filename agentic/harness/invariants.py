@@ -378,11 +378,17 @@ def compute_ran(t: Trace) -> Result:
 
 def stop_is_honest(t: Trace) -> Result:
     """stop_endpoint must not claim the block is gone while admitting otherwise: a result
-    whose status/block_state says down/cold with a notice containing "not confirmed" is a
-    contradiction — the agent walks away believing spend stopped while the block burns
-    until idle-release. Found live (3/30 stops in the 2026-07-07 sweeps). An HONEST
-    unconfirmed report (e.g. status="draining") passes this invariant — the world postcheck
-    is what then insists the block actually dies."""
+    whose status says down/stopped with a notice containing "not confirmed" is a
+    contradiction — the agent walks away believing spend stopped while the block burns until
+    idle-release. A PROPERTY (must hold on every stop, regardless of state), not a
+    manufacturable state: the trigger is a login-worker scale-in race (measured ~5% of stops,
+    2026-07-07 sweeps), so it's asserted universally rather than via a bespoke scenario. An
+    HONEST unconfirmed report (e.g. status="draining") passes; the world postcheck then
+    insists the block actually dies. Tracking: issue #24.
+
+    NOTE: reported on every run but deliberately NOT yet in scenarios' EXPECT_OK — it's a
+    known-open bug (fails ~5% pre-fix). Gate it universally once #24's fix lands + fresh runs
+    show 0 violations."""
     bad = []
     for i, c in t.named("stop_endpoint"):
         r = c.result or {}
@@ -422,6 +428,7 @@ INVARIANTS: list[Callable[[Trace], Result]] = [
     spend_follows_question,
     choice_respected,
     no_spend_after_decline,
+    stop_is_honest,   # reported on every run; NOT yet in any EXPECT_OK (known-open, issue #24)
 ]
 
 

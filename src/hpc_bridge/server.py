@@ -865,25 +865,38 @@ async def connect_facility(
     return await _connect_facility(app, facility, ssh_host=ssh_host, details=details)
 
 
-async def _release_blocks_over_login(app: AppCtx, eid: str) -> str:
+async def _release_blocks_over_login(app: AppCtx, eid: str) -> tuple[bool, str]:
     """Cancel this endpoint's Slurm block(s) by running `scancel` on the **login shape (AMQP)** —
     never SSH. That's the whole point of the login-node endpoint: talk to the cluster over Compute,
     not a fresh SSH. Matches blocks precisely by the UEP StdOut marker (`uep.<eid>`) so it never
-    touches another endpoint's jobs. `run_shell` warms the (free) login worker first if needed; the
-    manager is up, so this never SSH-bootstraps. A failed cancel is backstopped by idle-release
-    (`min_blocks=0` + `max_idletime`), so the block self-reclaims within the idle grace regardless.
-    Returns a short status string for the notice."""
+    touches another endpoint's jobs.
+
+    A cold login worker can't dispatch on the first try — it returns cold_start ("allocating
+    nodes…"), not `complete`. But that first hit WAKES the worker, so we retry a bounded few times
+    to *confirm* the cancel instead of walking away while the block keeps burning. Returns
+    `(confirmed, detail)`: `confirmed=False` means the channel stayed cold across the retries and the
+    cancel was NOT verified — the caller must report that honestly (never "down"; see #24). An
+    unconfirmed cancel is still backstopped by idle-release (`min_blocks=0` + `max_idletime`), and
+    re-calling stop (channel now warming) confirms it. Retry budget: HPC_BRIDGE_RELEASE_ATTEMPTS
+    (default 3) × HPC_BRIDGE_RELEASE_BACKOFF_S (default 6s)."""
     marker = shlex.quote(f"uep.{eid}")
     cmd = (
         'ids=$(squeue -u "$USER" -h -O "JobID:30,StdOut:1024" 2>/dev/null '
         f"| grep -F {marker} | awk '{{print $1}}'); "
         '[ -n "$ids" ] && scancel $ids; echo "released ${ids:-none}"'
     )
-    out = await _run_shell(app, cmd, shape="login")
-    if out.phase == "complete" and out.exit_code == 0:
-        line = (out.stdout or "").strip().splitlines()
-        return line[-1] if line else "released none"
-    return f"cancel not confirmed ({out.notice or out.phase}); idle-release will reclaim it"
+    attempts = max(1, int((os.environ.get("HPC_BRIDGE_RELEASE_ATTEMPTS", "3") or "3").strip()))
+    backoff = float((os.environ.get("HPC_BRIDGE_RELEASE_BACKOFF_S", "6") or "6").strip())
+    detail = "unconfirmed"
+    for i in range(attempts):
+        out = await _run_shell(app, cmd, shape="login")
+        if out.phase == "complete" and out.exit_code == 0:
+            line = (out.stdout or "").strip().splitlines()
+            return True, (line[-1] if line else "released none")
+        detail = out.notice or out.phase or "unconfirmed"
+        if i + 1 < attempts and backoff > 0:
+            await asyncio.sleep(backoff)  # let the woken login worker register, then re-confirm
+    return False, f"cancel not confirmed ({detail}); idle-release will reclaim it"
 
 
 async def _stop_endpoint(app: AppCtx) -> EndpointStatus:
@@ -896,23 +909,36 @@ async def _stop_endpoint(app: AppCtx) -> EndpointStatus:
     if eid is None:
         return EndpointStatus(status="down", block_state="cold", notice="no endpoint was up")
     # Cancel the Slurm block over the login shape (AMQP) — no SSH.
-    result = await _release_blocks_over_login(app, eid)
+    confirmed, detail = await _release_blocks_over_login(app, eid)
     async with app.lock:
         # Drop the billed (slurm) shape so a later run re-provisions a FRESH block (its runner now
         # points at the cancelled block). Keep the login shape, the manager, the endpoint_id, and
-        # the login-node pin — the endpoint stays online and reusable.
+        # the login-node pin — the endpoint stays online and reusable. We drop it regardless of
+        # confirmation: the runner is dead either way, and the spend clock must stop banking now.
         slurm = app.shapes.pop(DEFAULT_SHAPE, None)
         if slurm is not None:
             _bank_warm_interval(slurm, app)  # stop the spend clock for the released block
             if slurm.runner is not None:
                 slurm.runner.close()
+    if confirmed:
+        return EndpointStatus(
+            status="down",  # cancel CONFIRMED: no billed block running (manager stays online for reuse)
+            block_state="cold",
+            endpoint_id=eid,
+            session_spend=_total_session_spend(app),
+            notice=f"compute block released over AMQP ({detail}); the login endpoint stays online for "
+            "reuse (reconnecting is zero-SSH).",
+        )
     return EndpointStatus(
-        status="down",  # no billed compute block running (the manager stays online for reuse)
+        # HONEST unconfirmed release (#24): the cancel dispatched but the cold login channel couldn't
+        # confirm it, so spend may still be running. NEVER "down" here — the agent must know.
+        status="draining",
         block_state="cold",
         endpoint_id=eid,
         session_spend=_total_session_spend(app),
-        notice=f"compute block released over AMQP ({result}); the login endpoint stays online for "
-        "reuse (reconnecting is zero-SSH).",
+        notice=f"{detail}. Spend is NOT confirmed stopped — the login release channel was cold. "
+        "idle-release (~10 min, min_blocks=0) is the backstop; call stop_endpoint again in a few "
+        "seconds (the channel is warming) to confirm the cancel. The login endpoint stays online for reuse.",
     )
 
 
