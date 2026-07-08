@@ -13,6 +13,7 @@
 | `HPC_BRIDGE_ACCOUNT` | Slurm charge account — **required only on the `HPC_BRIDGE_MACHINE` startup-pin path**; the agentic flow takes it from `connect_facility`'s allocations or you pass it to `ensure_endpoint_up`. |
 | `HPC_BRIDGE_SSH_HOST` | Override the SSH alias/host (else the catalog entry's `ssh_host`). |
 | `HPC_BRIDGE_SSH_CONTROL_PERSIST` | Seconds to keep the per-facility SSH **ControlMaster** alive (default `60`; `0` disables multiplexing) — one auth serves the whole bootstrap + discovery. |
+| `HPC_BRIDGE_RELEASE_ATTEMPTS` · `HPC_BRIDGE_RELEASE_BACKOFF_S` | `stop_endpoint`'s bounded retry to **confirm** the block cancel when the login release channel is cold (default `3` × `6`s). Exhausted → honest `status="draining"` (never a false `"down"`); see [[Cost control]] / #24. |
 | `HPC_BRIDGE_REMOTE_VENV` | Override the remote `globus-compute-endpoint` venv path (else the `/home/{user}/hpc-bridge/gce-venv` convention). |
 | `HPC_BRIDGE_PARTITION` | Default partition — the [[Resource shapes & the spend floor|gate]] overrides it per run. |
 

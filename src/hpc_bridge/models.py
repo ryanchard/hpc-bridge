@@ -23,7 +23,11 @@ class ShellOutcome(BaseModel):
 class EndpointStatus(BaseModel):
     # needs_confirmation: a billed (Slurm) block was requested without an explicit spend
     # acknowledgement — nothing was provisioned; re-call with confirm_spend=True to proceed.
-    status: Literal["up", "provisioning", "down", "needs_confirmation"]
+    # draining: stop_endpoint dispatched the block cancel but could NOT confirm it (the login
+    # release channel was cold) — spend is NOT verifiably stopped; idle-release is the backstop
+    # and re-calling stop_endpoint (channel now warming) confirms. Never claim "down" here — an
+    # agent that reads "down" walks away while the block may still burn (issue #24).
+    status: Literal["up", "provisioning", "down", "needs_confirmation", "draining"]
     block_state: Literal["warm", "cold", "provisioning"]
     endpoint_id: str | None = None
     session_spend: NodeHours = 0.0

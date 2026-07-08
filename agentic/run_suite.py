@@ -70,11 +70,16 @@ def _cell(model: str, effort: str | None) -> str:
     return f"{model} @ {effort or 'default'}"
 
 
-async def _run_job(scenario, model, effort, persona, ablate, users, stagger) -> dict:
+async def _run_job(scenario, model, effort, persona, ablate, users, stagger, halt) -> dict:
     user = await users.get()  # a distinct pool user == a concurrency slot
     label = f"{scenario} · {_short_model(model)}/{effort or 'default'}" \
             f"{f'/{persona}' if persona else ''}{' ~' + ablate if ablate else ''} · {user}"
     try:
+        if halt.is_set():   # a prior job hit the session/rate limit — don't burn the queue
+            print(f"⏭ skip   {label} — rate-limit halt", flush=True)
+            return {"scenario": scenario, "model": model, "effort": effort, "persona": persona,
+                    "ablate": ablate, "user": user, "ok": False, "skipped": True,
+                    "result": "SKIPPED (rate-limit halt)", "output": ""}
         await stagger.wait()
         print(f"▶ start  {label}", flush=True)
         env = dict(os.environ, HPCB_TEST_SSH_USER=user, HPCB_SKIP_BUILD="1", HPCB_MODEL=model)
@@ -91,11 +96,17 @@ async def _run_job(scenario, model, effort, persona, ablate, users, stagger) -> 
         out, _ = await proc.communicate()
         text = out.decode(errors="replace")
         ok = proc.returncode == 0
+        if proc.returncode == 3:  # RATE_LIMITED (run.py) — stop launching new jobs
+            halt.set()
+            print(f"⛔ halt   {label} hit the session/rate limit — skipping remaining jobs",
+                  flush=True)
         result = next((ln for ln in text.splitlines() if ln.startswith("RESULT:")),
                       f"(no RESULT line; rc={proc.returncode})")
         print(f"{'✓' if ok else '✗'} done   {label} — {result}", flush=True)
         return {"scenario": scenario, "model": model, "effort": effort, "persona": persona,
-                "ablate": ablate, "user": user, "ok": ok, "result": result, "output": text}
+                "ablate": ablate, "user": user, "ok": ok,
+                "skipped": False, "rate_limited": proc.returncode == 3,
+                "result": result, "output": text}
     finally:
         users.put_nowait(user)
 
@@ -122,18 +133,24 @@ async def _main(args) -> int:
     for u in POOL[:slots]:
         users.put_nowait(u)
     stagger = Stagger(args.stagger)
-    results = await asyncio.gather(*[_run_job(s, m, e, pe, ab, users, stagger) for s, m, e, pe, ab in jobs])
+    halt = asyncio.Event()
+    results = await asyncio.gather(
+        *[_run_job(s, m, e, pe, ab, users, stagger, halt) for s, m, e, pe, ab in jobs])
 
-    passed = sum(1 for r in results if r["ok"])
-    print(f"\n==== SUITE: {passed}/{len(results)} passed ====")
+    skipped = [r for r in results if r.get("skipped")]
+    limited = [r for r in results if r.get("rate_limited")]
+    graded = [r for r in results if not r.get("skipped") and not r.get("rate_limited")]
+    passed = sum(1 for r in graded if r["ok"])
+    extra = f" · {len(limited)} rate-limited · {len(skipped)} skipped (halt)" if limited else ""
+    print(f"\n==== SUITE: {passed}/{len(graded)} passed{extra} ====")
     cells: dict[str, list[bool]] = {}
-    for r in results:
+    for r in graded:
         key = (_cell(r["model"], r["effort"]) + (f" [{r['persona']}]" if r.get("persona") else "")
                + (f" ~{r['ablate']}" if r.get("ablate") else ""))
         cells.setdefault(key, []).append(r["ok"])
     for cell, oks in sorted(cells.items()):
         print(f"  {cell}: {sum(oks)}/{len(oks)} passed")   # the model × reasoning-level comparison
-    fails = [r for r in results if not r["ok"]]
+    fails = [r for r in graded if not r["ok"]]
     if fails:
         print("\nfailures:")
         for r in fails:

@@ -234,7 +234,16 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
         cost = getattr(res.final, "total_cost_usd", None)
         is_error = getattr(res.final, "is_error", None)
         print(f"\nfinal: is_error={is_error}  cost=${cost}  ({len(res.trace.calls)} calls)")
-        if failed:
+        # Rate-limit deaths are infrastructure, not behaviour: distinct rc so the suite can
+        # HALT instead of burning the remaining queue (11 wasted launches in sweep 2).
+        rate_limited = (
+            getattr(res.final, "api_error_status", None) == 429
+            or "session limit" in str(getattr(res.final, "result", "")).lower()
+        )
+        if rate_limited:
+            rc = 3
+            print("RESULT: RATE_LIMITED — session/rate limit; run not graded, suite should halt")
+        elif failed:
             print(f"RESULT: FAILED — critical checks broke: {failed}")
         else:
             print("RESULT: OK")

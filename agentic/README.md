@@ -29,7 +29,7 @@ agentic/
     regrade.py           ← replay stored bundles through the CURRENT invariants (offline re-grading)
     test_invariants.py   ← hermetic unit tests (15) for the grading core
     judge.py             ← optional LLM-judge rubric pass                                   [later]
-  scenarios/             ← happy_path · gated_provision · spend_refusal · long_job_30m · saturation
+  scenarios/             ← happy_path · gated_provision · spend_refusal · long_job_30m · saturation · endpoint_reuse (RED, #20)
   runs/                  ← per-run provenance bundles (gitignored): record.json ·
                            messages.jsonl (full stream incl. thinking) · transcript.md ·
                            claude-session/ (the CLI's native transcripts, both actors)

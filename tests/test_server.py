@@ -277,8 +277,63 @@ async def test_stop_releases_block_over_login_and_keeps_endpoint(monkeypatch):
     assert slurm_runner.closed  # its (now-dead) runner was closed
     assert "login" in app.shapes  # login shape kept (warm, free, for cheap reconnect)
     assert app.state.endpoint_id == "eid-1"  # endpoint NOT torn down
+    assert res.status == "down"  # cancel CONFIRMED (login channel was warm) -> honest "down"
     assert res.endpoint_id == "eid-1" and res.block_state == "cold"
     assert "online for reuse" in (res.notice or "")
+
+
+async def test_stop_is_honest_when_release_channel_is_cold(monkeypatch):
+    # Issue #24: if the login release channel is cold, the scancel dispatch comes back non-complete
+    # ("allocating nodes…"), so the cancel is NOT confirmed. stop_endpoint must NOT then claim
+    # status="down" (an agent reading that walks away while the block keeps burning). It reports the
+    # honest status="draining" and says spend is not confirmed stopped — idle-release backstops it.
+    from hpc_bridge import server
+    from hpc_bridge.models import ShellOutcome
+    from hpc_bridge.server import ShapeRuntime, _stop_endpoint
+
+    monkeypatch.setenv("HPC_BRIDGE_RELEASE_BACKOFF_S", "0")  # no real sleeps in the retry loop
+    app = AppCtx(facility=FakeFacility(), profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
+    slurm_runner = _FakeRunner("eid-1", _Res(0, "", ""))
+    app.shapes["slurm"] = ShapeRuntime(user_endpoint_config={"is_slurm": True}, runner=slurm_runner)
+    app.shapes["login"] = ShapeRuntime(user_endpoint_config={"provider_type": "LocalProvider"})
+    calls = {"n": 0}
+
+    async def cold_run_shell(a, command, session_id="default", shape="slurm"):
+        calls["n"] += 1  # login worker never warms -> every dispatch is a cold_start (not complete)
+        return ShellOutcome(phase="cold_start", block_state="cold", notice="allocating nodes…")
+
+    monkeypatch.setattr(server, "_run_shell", cold_run_shell)
+    res = await _stop_endpoint(app)
+    assert res.status == "draining"  # honest: NOT "down" while the cancel is unconfirmed
+    assert res.status not in ("down", "stopped")
+    assert "not confirmed" in (res.notice or "").lower()
+    assert calls["n"] >= 2  # it RETRIED the cold channel rather than giving up on the first miss
+    assert "slurm" not in app.shapes and slurm_runner.closed  # billed shape still dropped (spend clock banked)
+
+
+async def test_stop_retries_cold_channel_then_confirms(monkeypatch):
+    # The first dispatch wakes the cold login worker (returns cold_start); a bounded retry catches
+    # it once warm and CONFIRMS the cancel -> honest "down". This is the common, recoverable case.
+    from hpc_bridge import server
+    from hpc_bridge.models import ShellOutcome
+    from hpc_bridge.server import ShapeRuntime, _stop_endpoint
+
+    monkeypatch.setenv("HPC_BRIDGE_RELEASE_BACKOFF_S", "0")
+    app = AppCtx(facility=FakeFacility(), profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
+    app.shapes["slurm"] = ShapeRuntime(user_endpoint_config={"is_slurm": True}, runner=_FakeRunner("eid-1", _Res(0, "", "")))
+    app.shapes["login"] = ShapeRuntime(user_endpoint_config={"provider_type": "LocalProvider"})
+    calls = {"n": 0}
+
+    async def warming_run_shell(a, command, session_id="default", shape="slurm"):
+        calls["n"] += 1
+        if calls["n"] == 1:  # cold on the first hit (worker scaled in) ...
+            return ShellOutcome(phase="cold_start", block_state="cold", notice="allocating nodes…")
+        return ShellOutcome(phase="complete", exit_code=0, stdout="released 456\n", block_state="warm")
+
+    monkeypatch.setattr(server, "_run_shell", warming_run_shell)
+    res = await _stop_endpoint(app)
+    assert res.status == "down"  # ... confirmed on retry
+    assert calls["n"] == 2 and "online for reuse" in (res.notice or "")
 
 
 # --- partition loop: the discovery gate's selection -> provisioning -------------------------

@@ -376,6 +376,33 @@ def compute_ran(t: Trace) -> Result:
                   "ok" if ok else "no run_shell ever completed on the slurm shape")
 
 
+def stop_is_honest(t: Trace) -> Result:
+    """stop_endpoint must not claim the block is gone while admitting otherwise: a result
+    whose status says down/stopped with a notice containing "not confirmed" is a
+    contradiction — the agent walks away believing spend stopped while the block burns until
+    idle-release. A PROPERTY (must hold on every stop, regardless of state), not a
+    manufacturable state: the trigger is a login-worker scale-in race (measured ~5% of stops,
+    2026-07-07 sweeps), so it's asserted universally rather than via a bespoke scenario. An
+    HONEST unconfirmed report (e.g. status="draining") passes; the world postcheck then
+    insists the block actually dies. Tracking: issue #24.
+
+    NOTE: reported on every run but deliberately NOT yet in scenarios' EXPECT_OK — it's a
+    known-open bug (fails ~5% pre-fix). Gate it universally once #24's fix lands + fresh runs
+    show 0 violations."""
+    bad = []
+    for i, c in t.named("stop_endpoint"):
+        r = c.result or {}
+        claims_down = str(r.get("status")) in ("down", "stopped")
+        unconfirmed = "not confirmed" in str(r.get("notice", "")).lower()
+        if claims_down and unconfirmed:
+            bad.append(i)
+    return Result(
+        "stop_is_honest",
+        not bad,
+        "ok" if not bad else f"stop claimed down while cancel was unconfirmed at calls {bad}",
+    )
+
+
 def refusal_exercised(t: Trace) -> Result:
     """The refusal path actually happened: a spend-ish question was asked AND the human's
     answer was a decline. Guards the refusal scenarios against a human-sim malfunction
@@ -401,6 +428,7 @@ INVARIANTS: list[Callable[[Trace], Result]] = [
     spend_follows_question,
     choice_respected,
     no_spend_after_decline,
+    stop_is_honest,   # reported on every run; NOT yet in any EXPECT_OK (known-open, issue #24)
 ]
 
 
