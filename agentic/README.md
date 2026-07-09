@@ -57,6 +57,31 @@ python3 agentic/run_suite.py --scenarios happy_path,gated_provision \
 Every run writes a provenance bundle to `agentic/runs/<runid>-<scenario>/` — start with its
 `transcript.md`. Env knobs per run: `HPCB_MODEL`, `HPCB_EFFORT`, `HPCB_PERSONA`, `HPCB_NO_SKILL`.
 
+## Regression set (before merging a PR)
+
+Run these against globus1 before pushing a branch that touches connect/discovery, endpoint naming,
+the local-discovery cache, or stop — **ordered by risk**. Grade each from its provenance bundle
+(or hand the run ids to a re-grade).
+
+```bash
+# 1. Core flow + CONCURRENT isolation. Endpoint names are keyed on ssh_host, so concurrent runs
+#    share the NAME and are separated only by pool-user identity — this proves they don't collide.
+python3 agentic/run_suite.py --scenarios happy_path --repeat 3 --concurrency 3   # want 3/3, no stuck 'provisioning'
+
+# 2. The reuse / local-discovery features this kind of change touches
+./agentic/run_smoke.sh facility_cache         # local-discovery cache: reconnect with NO re-probe
+./agentic/run_smoke.sh endpoint_reuse_chain   # inter-agent reuse across an MCP-server restart
+./agentic/run_smoke.sh endpoint_reuse         # intra-agent reuse + the `reused` signal
+
+# 3. Cost-safety insurance (unchanged paths, cheap)
+./agentic/run_smoke.sh spend_refusal          # refusal stays refused
+python3 agentic/run_suite.py --scenarios gated_provision --repeat 2   # the spend gate (interactive)
+```
+
+Keep `--concurrency 3` (globus1 SSH headroom + the subscription 5h/7d cap; big sweeps → API creds).
+~30–40 min end to end. #1 is the gate: if concurrent runs collide, the ssh-host-keyed naming needs a
+per-run disambiguator for the harness before merge.
+
 ## How grading works
 
 An **invariant** is a pure function `Trace -> Result`: a deterministic, structural fact about

@@ -102,6 +102,55 @@ def test_reuse_across_restart_fails_without_a_fresh_bringup():
     assert not r.ok and "built_fresh=False" in r.detail
 
 
+# --- local-discovery cache: facility_cache.cache_served_reconnect ------------------------------
+
+
+def _cache_served_reconnect():
+    import sys
+    from pathlib import Path
+    sdir = str(Path(__file__).resolve().parents[1] / "scenarios")
+    if sdir not in sys.path:
+        sys.path.insert(0, sdir)
+    import facility_cache
+    return facility_cache.cache_served_reconnect
+
+
+def _cache_trace(*, phase2_reused: bool = True, phase2_reprobe: bool = False,
+                 phase1_discovers: bool = True) -> Trace:
+    """Combined two-phase trace: phase 1 discovers (proposed -> provisioning -> reused=true), phase 2
+    reconnects (reused, and by default WITHOUT a re-probe = served from the cache)."""
+    def conn(reused, rp):
+        return ToolCall.of("mcp__endpoint__connect_facility", {"facility": "g"}, {"phase": rp, "reused": reused})
+    calls = []
+    if phase1_discovers:
+        calls.append(conn(False, "proposed_facility_details"))  # phase-1 probe (real BYO discovery)
+    calls.append(conn(False, "provisioning"))                   # phase-1 bring-up
+    calls.append(conn(True, "needs_account"))                   # phase-1 endpoint online (first reuse=true)
+    if phase2_reprobe:
+        calls.append(conn(False, "proposed_facility_details"))  # phase-2 RE-PROBED = cache MISS
+    calls.append(conn(phase2_reused, "needs_account"))          # phase-2 reconnect
+    return Trace(calls)
+
+
+def test_cache_served_reconnect_passes_when_no_reprobe():
+    assert _cache_served_reconnect()(_cache_trace()).ok
+
+
+def test_cache_served_reconnect_fails_on_reprobe():
+    r = _cache_served_reconnect()(_cache_trace(phase2_reprobe=True))
+    assert not r.ok and "reprobed_after_reuse=True" in r.detail
+
+
+def test_cache_served_reconnect_fails_if_reconnect_not_reused():
+    r = _cache_served_reconnect()(_cache_trace(phase2_reused=False))
+    assert not r.ok and "last_reused=False" in r.detail
+
+
+def test_cache_served_reconnect_needs_a_discovery():
+    r = _cache_served_reconnect()(_cache_trace(phase1_discovers=False))
+    assert not r.ok and "discovered=False" in r.detail
+
+
 def _interactive_trace(picked: str = "cheap", provisioned: str = "cheap") -> Trace:
     answered = (
         'Your questions have been answered: "Which partition should I provision on? '
@@ -304,7 +353,7 @@ def test_stop_is_honest_is_registered_but_not_gated_by_default():
     if sdir not in sys.path:
         sys.path.insert(0, sdir)
     for name in ("happy_path", "gated_provision", "spend_refusal", "saturation", "endpoint_reuse",
-                 "endpoint_reuse_chain"):
+                 "endpoint_reuse_chain", "facility_cache"):
         scen = importlib.import_module(name)
         assert "stop_is_honest" not in getattr(scen, "EXPECT_OK", []), name
 

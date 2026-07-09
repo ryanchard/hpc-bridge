@@ -89,6 +89,19 @@ class SshTarget:
             f"{self.user}@{self.host}" if self.user else self.host,
         ]
 
+    def preauth_command(self) -> str:
+        """The command the USER runs in THEIR OWN terminal to open a ControlMaster interactively —
+        entering any password + approving MFA/Duo **once**. hpc-bridge's BatchMode calls then
+        multiplex over it, so the secret never reaches hpc-bridge or the agent. Deliberately **no
+        BatchMode** (so ssh prompts) and the **same `%C` ControlPath** `argv()` uses (so
+        `ControlMaster=auto` joins this master). Requires `control_dir` (multiplexing on)."""
+        opts = ["ssh", "-fN", "-o", "ControlMaster=yes",
+                "-o", f"ControlPath={self._control_path()}", "-o", "ControlPersist=1h"]
+        if self.key_path:
+            opts += ["-i", self.key_path]
+        opts.append(f"{self.user}@{self.host}" if self.user else self.host)
+        return " ".join(opts)
+
 
 # Teardown SSH ops (gce stop, squeue, scancel) hit a possibly-loaded login node with *fresh*
 # connections; bound them tighter than the 120s default so stop_endpoint releases the allocation
@@ -120,6 +133,46 @@ async def ssh_exec(
                 pass
         raise
     return proc.returncode or 0, out.decode(errors="replace"), err.decode(errors="replace")
+
+
+_INTERACTIVE_AUTH_METHODS = ("password", "keyboard-interactive")
+
+
+def is_interactive_auth_failure(rc: int, stderr: str) -> bool:
+    """True when a BatchMode SSH was DENIED but the server offers an interactive method
+    (password / keyboard-interactive) — i.e. a one-time interactive pre-auth in the user's own
+    terminal would succeed. Distinguishes "needs a password/MFA" from "host down" or "bad key with
+    no interactive fallback" (`Permission denied (publickey)` alone → False)."""
+    s = (stderr or "").lower()
+    denied = "permission denied" in s or "authentication failed" in s
+    offers_interactive = any(m in s for m in _INTERACTIVE_AUTH_METHODS)
+    return rc != 0 and denied and offers_interactive
+
+
+class NeedsPreauth(Exception):
+    """An SSH op needs a one-time interactive pre-auth (password/MFA) the agent must NOT handle.
+    Carries the target so a caller can surface the user's pre-open command (`preauth_command`)."""
+
+    def __init__(self, target: SshTarget) -> None:
+        self.target = target
+        super().__init__(f"{target.host} needs interactive pre-authentication (password/MFA)")
+
+
+_INTERNAL_HOST_SUFFIXES = (".local", ".internal", ".localdomain")
+
+
+def _routable_pin(host: str | None) -> str | None:
+    """A login-node FQDN is only useful as a reconnect pin if it's reachable from the client via the
+    SAME external path as the alias. Some facilities' `hostname -f` reports an INTERNAL name (Midway:
+    `beagle3-tbd1.rcc.local`) that isn't routable from the client — pinning it breaks login_shell and
+    teardown (seen live). Drop internal (`.local`/`.internal`/`.localdomain`) or single-label names and
+    keep the alias; a DNS-resolvability check is the follow-up if non-suffix internal names appear."""
+    if not host:
+        return None
+    h = host.strip().rstrip(".")
+    if "." not in h or h.lower().endswith(_INTERNAL_HOST_SUFFIXES):
+        return None
+    return h
 
 
 # ------------------------------------------------------------- machine profiles
@@ -606,6 +659,7 @@ engine:
         uep, _defaults = self.config_template(hpc)
         await self.cli.write_config(name, manager, uep)
         eid, host = await self.cli.start(name)
+        host = _routable_pin(host)  # drop an internal-only FQDN (e.g. beagle3-tbd1.rcc.local) -> keep alias
         if host:
             # Pin the live session to the node the manager daemon actually landed on, so
             # later control-plane ops — above all teardown — reach THIS node instead of

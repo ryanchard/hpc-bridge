@@ -121,12 +121,15 @@ class ConnectFacilityResult(BaseModel):
     # provisioning: login node still warming (call again). needs_facility_details: not in the catalog
     # and no SSH host to probe -> supply `details` (or an ssh_host to discover them).
     # proposed_facility_details: probed the login node -> `proposed_details` is a draft to confirm
-    # with the user, then call again with details=. unsupported/failed: see notice.
+    # with the user, then call again with details=. needs_preauth: the host needs a one-time
+    # interactive login (password/MFA) -> relay `preauth_command` for the USER to run in their own
+    # terminal, then call again. unsupported/failed: see notice.
     phase: Literal[
         "needs_account",
         "provisioning",
         "needs_facility_details",
         "proposed_facility_details",
+        "needs_preauth",
         "unsupported",
         "failed",
     ]
@@ -135,6 +138,10 @@ class ConnectFacilityResult(BaseModel):
     # instead of SSH-bootstrapping a fresh one — a zero-SSH reconnect (#20).
     reused: bool = False
     allocations: list[AllocationOption] = []
+    # phase="needs_preauth": the exact `ssh -fN …` command the USER runs in their OWN terminal to
+    # open a reusable master (entering the password/MFA there). The agent relays it — never runs or
+    # fills it, and never handles the secret.
+    preauth_command: str | None = None
     # A draft discovered by probing the login node (phase="proposed_facility_details"): review/correct
     # it with the user, then connect_facility(details=…). None for every other phase.
     proposed_details: FacilityDetails | None = None

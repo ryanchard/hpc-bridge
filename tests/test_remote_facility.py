@@ -7,7 +7,13 @@ import yaml as _yaml
 
 from hpc_bridge.facility import remote
 from hpc_bridge.facility.base import EndpointHandle, Facility
-from hpc_bridge.facility.remote import RemoteEndpointCLI, SlurmFacility, SshTarget
+from hpc_bridge.facility.remote import (
+    NeedsPreauth,
+    RemoteEndpointCLI,
+    SlurmFacility,
+    SshTarget,
+    is_interactive_auth_failure,
+)
 from hpc_bridge.profile import Profile
 from hpc_bridge.shapes import shape_config
 
@@ -380,6 +386,57 @@ async def test_provision_reuses_running_endpoint():
     assert handle.endpoint_id == "running-eid"
     assert "configure" not in _kinds(cli) and "start" not in _kinds(cli)  # reuse, don't restart
     assert "rebind" not in _kinds(cli)  # nothing was (re)started -> stay on the current host
+
+
+# --- interactive auth (password / MFA): detect, hand off, never handle the secret --------------
+
+
+def test_is_interactive_auth_failure_detects_interactive_offer():
+    assert is_interactive_auth_failure(255, "Permission denied (publickey,password,keyboard-interactive).")
+    assert is_interactive_auth_failure(255, "Permission denied (keyboard-interactive).")
+    assert not is_interactive_auth_failure(255, "Permission denied (publickey).")  # no interactive fallback
+    assert not is_interactive_auth_failure(255, "ssh: connect to host h port 22: Connection refused")
+    assert not is_interactive_auth_failure(0, "")  # success
+
+
+def test_preauth_command_opens_a_shareable_master_without_batchmode():
+    cmd = SshTarget(host="midway", user="gus", control_dir="/tmp/cm").preauth_command()
+    assert cmd.startswith("ssh -fN ")
+    assert "ControlMaster=yes" in cmd
+    assert "ControlPath=/tmp/cm/%C" in cmd  # the SAME %C path argv() uses -> ControlMaster=auto joins it
+    assert "BatchMode" not in cmd            # must prompt interactively (the USER types the secret)
+    assert cmd.endswith("gus@midway")
+
+
+async def test_discover_raises_needs_preauth_on_interactive_auth_failure(monkeypatch):
+    from hpc_bridge import discovery
+
+    async def fake_ssh_exec(target, cmd, **kw):
+        return 255, "", "Permission denied (publickey,password,keyboard-interactive)."
+
+    monkeypatch.setattr(discovery, "ssh_exec", fake_ssh_exec)
+    with pytest.raises(NeedsPreauth):
+        await discovery.discover_facility_details(SshTarget(host="midway", user="g", control_dir="/tmp/cm"))
+
+
+async def test_discover_raises_runtimeerror_on_unreachable_host(monkeypatch):
+    from hpc_bridge import discovery
+
+    async def fake_ssh_exec(target, cmd, **kw):
+        return 255, "", "ssh: connect to host midway port 22: Connection refused"
+
+    monkeypatch.setattr(discovery, "ssh_exec", fake_ssh_exec)
+    with pytest.raises(RuntimeError):
+        await discovery.discover_facility_details(SshTarget(host="midway", control_dir="/tmp/cm"))
+
+
+def test_routable_pin_drops_internal_hostnames():
+    from hpc_bridge.facility.remote import _routable_pin
+    assert _routable_pin("login03.anvil.rcac.purdue.edu") == "login03.anvil.rcac.purdue.edu"  # external FQDN kept
+    assert _routable_pin("beagle3-tbd1.rcc.local") is None  # internal .local dropped (Midway, seen live)
+    assert _routable_pin("login01") is None                 # single-label dropped
+    assert _routable_pin("node.internal") is None
+    assert _routable_pin(None) is None and _routable_pin("") is None
 
 
 async def test_provision_rebinds_cli_to_the_node_the_daemon_landed_on():

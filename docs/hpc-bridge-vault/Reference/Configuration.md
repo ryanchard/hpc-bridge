@@ -23,6 +23,7 @@
 |---|---|
 | `HPC_BRIDGE_PROFILE` | `interactive` \| `batch` (default `batch`) — see [[profile]]. |
 | `HPC_BRIDGE_SCRATCH` | Override the [[Session continuity\|session-shell root]] (else the facility's `$SCRATCH`, else a local default). |
+| `HPC_BRIDGE_STATE_DIR` | Base dir for hpc-bridge's **local state** — login-node pins (`endpoints.json`), the local-discovery facility cache (`facilities.json`), and the SSH ControlMaster sockets. Default `~/.hpc-bridge`; relocating it isolates all state (the test suite points it at a tmp dir so tests never touch the real one). |
 | `HPC_BRIDGE_CHARGE_FACTOR` | The QOS SU multiplier for the [[Cost control\|spend clock]] (default `0.0` = free). |
 | `HPC_BRIDGE_USER_DIR` | Local `globus_compute` dir (set by `.mcp.json`). |
 

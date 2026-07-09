@@ -336,6 +336,35 @@ async def test_stop_retries_cold_channel_then_confirms(monkeypatch):
     assert calls["n"] == 2 and "online for reuse" in (res.notice or "")
 
 
+async def test_teardown_endpoint_stops_manager_and_clears_state(monkeypatch):
+    # teardown_endpoint (the explicit "destroy it") releases the block, calls the facility teardown
+    # (gce stop + delete), and clears ALL shape/state so a stray run_shell can't revive a stale endpoint.
+    from hpc_bridge import server
+    from hpc_bridge.models import ShellOutcome
+    from hpc_bridge.server import ShapeRuntime, _teardown_endpoint
+
+    torn = []
+
+    class _F(FakeFacility):
+        async def teardown(self, eid):
+            torn.append(eid)
+
+    app = AppCtx(facility=_F(), profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
+    slurm_runner = _FakeRunner("eid-1", _Res(0, "", ""))
+    app.shapes["slurm"] = ShapeRuntime(user_endpoint_config={"is_slurm": True}, runner=slurm_runner)
+    app.shapes["login"] = ShapeRuntime(user_endpoint_config={"provider_type": "LocalProvider"})
+
+    async def fake_run_shell(a, command, session_id="default", shape="slurm"):
+        return ShellOutcome(phase="complete", exit_code=0, stdout="released 1\n", block_state="warm")
+
+    monkeypatch.setattr(server, "_run_shell", fake_run_shell)
+    res = await _teardown_endpoint(app)
+    assert torn == ["eid-1"]  # the facility teardown (gce stop + delete) was invoked
+    assert res.status == "down" and "torn down" in (res.notice or "")
+    assert app.shapes == {} and app.state.endpoint_id is None  # ALL state cleared (no stale revive)
+    assert slurm_runner.closed
+
+
 # --- partition loop: the discovery gate's selection -> provisioning -------------------------
 
 
@@ -718,7 +747,7 @@ async def test_login_shell_unavailable_on_local_facility():
     from hpc_bridge.server import _login_shell
 
     res = await _login_shell(AppCtx(facility=FakeFacility(), profile=Profile()), "sinfo")
-    assert res.exit_code == 1 and "SSH facility" in (res.notice or "")  # local has no login node
+    assert res.exit_code == 1 and "connect_facility" in (res.notice or "")  # nudges the entry point, not login_shell
 
 
 async def test_server_registers_login_shell_tool():
