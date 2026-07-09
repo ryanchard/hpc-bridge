@@ -928,3 +928,18 @@ async def test_run_shell_runs_after_spend_confirmed():
     await _ensure_endpoint_up(app, confirm_spend=True)
     out = await _run_shell(app, "echo hi")
     assert out.phase == "complete" and out.stdout == "hi\n"
+
+
+def test_pbs_entry_is_supported():
+    from hpc_bridge.server import _unsupported_entry_reason
+    from hpc_bridge.catalog.entry import CatalogEntry, Compute, Defaults
+    import datetime
+    entry = CatalogEntry(
+        id="polaris", facility_key="alcf", facility="ALCF", description="d",
+        display_name="Polaris", ssh_host="polaris",
+        compute=Compute(scheduler="pbs", interface="hsn0",
+                        env_setup="x", scratch_root="/home/{user}/.hpc-bridge"),
+        defaults=Defaults(partition="debug"),
+        last_validated=datetime.date(2026, 7, 10),
+    )
+    assert _unsupported_entry_reason(entry) is None

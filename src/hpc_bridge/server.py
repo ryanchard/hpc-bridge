@@ -51,7 +51,7 @@ class ShapeRuntime:
     # Set when user_endpoint_config changed under a live runner (e.g. a new partition): the
     # cached Executor captured the old config at build time, so _runner_for must rebuild it.
     runner_stale: bool = False
-    # Deterministic spend floor: a billed (Slurm) shape may not start a block until spend is
+    # Deterministic spend floor: a scheduler compute shape may not start a block until spend is
     # explicitly acknowledged via ensure_endpoint_up(confirm_spend=True). Persists for the
     # session once given (no re-nagging); cleared on stop/reset when the shape state is dropped.
     spend_confirmed: bool = False
@@ -148,21 +148,21 @@ def _slurm_facility(profile, *, alias: str, user: str) -> Facility:
 
 
 def _unsupported_entry_reason(entry) -> str | None:
-    """Why this catalog entry can't drive a stand-up yet (v1: SSH-bootstrap Slurm only), or None."""
+    """Why this catalog entry can't drive a stand-up yet (v1: SSH-bootstrap Slurm/PBS only), or None."""
     if entry.compute_mep_uuid:
         return (
             "entry has a compute_mep_uuid (BYO multi-user endpoint); catalog-driven MEP dispatch "
             "is not wired yet — use HPC_BRIDGE_ENDPOINT_ID"
         )
-    if entry.compute.scheduler != "slurm":
-        return f"scheduler {entry.compute.scheduler!r} not supported yet (slurm only)"
+    if entry.compute.scheduler not in ("slurm", "pbs"):
+        return f"scheduler {entry.compute.scheduler!r} not supported yet (slurm/pbs only)"
     return None
 
 
 def _facility_from_entry(entry, *, account: str) -> Facility:
     """Build a SlurmFacility from a catalog entry + per-user runtime values — shared by the startup
     path (make_facility) and the runtime path (connect_facility). `account` may be empty for the
-    agentic flow; ensure_endpoint_up(account=…) overrides it per Slurm block."""
+    agentic flow; ensure_endpoint_up(account=…) overrides it per scheduler block."""
     from .facility.remote import profile_from_catalog_entry
 
     alias = os.environ.get("HPC_BRIDGE_SSH_HOST", "").strip() or entry.ssh_host
@@ -470,7 +470,7 @@ async def _provision(
     block state. 'warm' means a WORKER answered a canary — not merely that the manager is
     online; that distinction is the cold-start gap this closes.
 
-    Deterministic spend floor: a billed (Slurm) shape returns 'needs_confirmation' and starts
+    Deterministic spend floor: a scheduler compute shape returns 'needs_confirmation' and starts
     NOTHING until spend is acknowledged (confirm_spend=True, or already confirmed this session).
     The carve-out only applies to billable shapes — a login (LocalProvider) shape is free and
     provisions straight through."""
@@ -493,8 +493,8 @@ async def _provision(
 
 # Partition names come from the discovery gate (agent/user-supplied), then flow into a Jinja
 # template rendered on the login node — so validate the token at the boundary (no shell/YAML
-# metacharacters). Slurm partition names are short identifiers; this allowlist covers real ones
-# (letters, digits, '_', '-', '.', ':') without admitting an injection vector.
+# metacharacters). Scheduler partition/queue names are short identifiers; this allowlist covers
+# real ones (letters, digits, '_', '-', '.', ':') without admitting an injection vector.
 _VALID_PARTITION = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 _VALID_ACCOUNT = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 
@@ -502,8 +502,8 @@ _VALID_ACCOUNT = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 def _apply_partition(rt: ShapeRuntime, partition: str | None) -> None:
     """Point this shape's next provision at `partition`, invalidating a stale runner.
 
-    No-op when `partition` is None (keep the facility/profile default) or unchanged, or for a
-    non-Slurm (login) shape, which has no partition. A real change means a different Slurm block,
+    No-op when `partition` is None (keep the facility/profile default) or unchanged, or for the
+    login shape, which has no partition. A real change means a different scheduler block,
     so we mark the cached runner stale (its Executor captured the old partition at build time —
     _runner_for rebuilds it and banks the prior warm interval) and drop the warm confirmation;
     the old block idle-releases on its own (min_blocks=0). The selection persists in
@@ -584,7 +584,7 @@ async def _ensure_endpoint_up(
                 partition=active_partition,
                 account=active_account,
                 notice=(
-                    f"billed Slurm block{where} ({app.profile.nodes_per_block} node(s)): spend "
+                    f"scheduler compute block{where} ({app.profile.nodes_per_block} node(s)): spend "
                     "not yet confirmed. Surface the allocation balance (e.g. run_shell('mybalance', shape='login')) "
                     "and re-call ensure_endpoint_up(confirm_spend=True) to proceed — or use "
                     "shape='login' for free login-node work."
@@ -618,14 +618,14 @@ async def ensure_endpoint_up(
 ) -> EndpointStatus:
     """Ensure the personal HPC endpoint is up; report whether its pilot block is warm.
 
-    Pass `partition` (from the discovery selection gate) to provision the Slurm block onto that
+    Pass `partition` (from the discovery selection gate) to provision the scheduler block onto that
     partition; the choice persists for the session until changed. Omit it to keep the facility
     default. Ignored for shape="login" (a login-node LocalProvider has no partition).
 
-    Pass `account` (the allocation chosen from connect_facility's options) to charge the Slurm
+    Pass `account` (the allocation chosen from connect_facility's options) to charge the scheduler
     block to it; like `partition`, it persists for the session and is ignored for shape="login".
 
-    `confirm_spend` is the deterministic budget floor: a billed Slurm block will not start until
+    `confirm_spend` is the deterministic budget floor: a scheduler compute block will not start until
     you pass confirm_spend=True (after surfacing the allocation balance to the user — see the
     driving-hpc skill). Without it the call returns status="needs_confirmation" and provisions
     nothing. The acknowledgement persists for the session. Not needed for shape="login" (free)."""
@@ -1000,7 +1000,7 @@ async def _stop_endpoint(app: AppCtx) -> EndpointStatus:
     eid = app.state.endpoint_id
     if eid is None:
         return EndpointStatus(status="down", block_state="cold", notice="no endpoint was up")
-    # Cancel the Slurm block over the login shape (AMQP) — no SSH.
+    # Cancel the scheduler block over the login shape (AMQP) — no SSH.
     confirmed, detail = await _release_blocks_over_login(app, eid)
     async with app.lock:
         # Drop the billed (compute) shape so a later run re-provisions a FRESH block (its runner now
@@ -1037,7 +1037,7 @@ async def _stop_endpoint(app: AppCtx) -> EndpointStatus:
 @mcp.tool()
 async def stop_endpoint(ctx: Context) -> EndpointStatus:
     """Release the HPC compute block so the allocation stops being charged. Cancels the billed
-    Slurm block over the login endpoint (no SSH) and **leaves the login-node endpoint online** so a
+    scheduler block over the login endpoint (no SSH) and **leaves the login-node endpoint online** so a
     later reconnect reuses it with zero SSH — "stop" means stop spending, not tear the endpoint
     down. Call when you're done with a compute block."""
     return await _stop_endpoint(ctx.request_context.lifespan_context)
@@ -1137,7 +1137,7 @@ def _needs_confirmation_outcome() -> ShellOutcome:
         phase="needs_confirmation",
         block_state="cold",
         notice=(
-            "billed Slurm shape: spend not confirmed, so nothing ran. Surface the allocation "
+            "scheduler compute shape: spend not confirmed, so nothing ran. Surface the allocation "
             "balance (run_shell('mybalance', shape='login')) and call ensure_endpoint_up(confirm_spend=True) "
             "before running work — or use shape='login' for free login-node work."
         ),
