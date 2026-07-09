@@ -336,6 +336,72 @@ async def test_stop_retries_cold_channel_then_confirms(monkeypatch):
     assert calls["n"] == 2 and "online for reuse" in (res.notice or "")
 
 
+# --- cancel: qdel/qstat on the cost-critical stop path (PBS) --------------------------------
+
+
+def test_release_cmd_pbs_uses_qstat_and_qdel():
+    from hpc_bridge.server import _release_cmd
+
+    cmd = _release_cmd("pbs", "abc-123")
+    assert "qstat -f" in cmd and "qdel" in cmd
+    assert "uep.abc-123" in cmd
+    assert "scancel" not in cmd and "squeue" not in cmd
+
+
+def test_release_cmd_slurm_uses_squeue_and_scancel():
+    from hpc_bridge.server import _release_cmd
+
+    cmd = _release_cmd("slurm", "abc-123")
+    assert "squeue" in cmd and "scancel" in cmd and "uep.abc-123" in cmd
+
+
+def test_release_cmd_slurm_matches_prior_inline_command():
+    # Byte-for-byte: the extracted helper must build the EXACT string the old inline
+    # marker=...+cmd=(...) block in _release_blocks_over_login used to build.
+    import shlex
+
+    from hpc_bridge.server import _release_cmd
+
+    eid = "eid-1"
+    marker = shlex.quote(f"uep.{eid}")
+    expected = (
+        'ids=$(squeue -u "$USER" -h -O "JobID:30,StdOut:1024" 2>/dev/null '
+        f"| grep -F {marker} | awk '{{print $1}}'); "
+        '[ -n "$ids" ] && scancel $ids; echo "released ${ids:-none}"'
+    )
+    assert _release_cmd("slurm", eid) == expected
+
+
+async def test_stop_dispatches_pbs_release_cmd_when_facility_scheduler_is_pbs(monkeypatch):
+    # _release_blocks_over_login must branch on the facility's scheduler (PBS uses
+    # qstat/qdel, never squeue/scancel) so a PBS block is actually cancelled, not silently
+    # missed by a Slurm-only command.
+    from hpc_bridge import server
+    from hpc_bridge.models import ShellOutcome
+    from hpc_bridge.server import ShapeRuntime, _stop_endpoint
+    from types import SimpleNamespace
+
+    class _PbsFacility(FakeFacility):
+        def __init__(self):
+            super().__init__()
+            self.profile = SimpleNamespace(scheduler="pbs")
+
+    app = AppCtx(facility=_PbsFacility(), profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
+    app.shapes["compute"] = ShapeRuntime(user_endpoint_config={"compute": True}, runner=_FakeRunner("eid-1", _Res(0, "", "")))
+    app.shapes["login"] = ShapeRuntime(user_endpoint_config={"provider_type": "LocalProvider"}, warm_confirmed_at=1.0)
+    seen = {}
+
+    async def fake_run_shell(a, command, session_id="default", shape="compute"):
+        seen["cmd"] = command
+        return ShellOutcome(phase="complete", exit_code=0, stdout="released 123\n", block_state="warm")
+
+    monkeypatch.setattr(server, "_run_shell", fake_run_shell)
+    await _stop_endpoint(app)
+    assert "qstat -f" in seen["cmd"] and "qdel" in seen["cmd"]
+    assert "scancel" not in seen["cmd"] and "squeue" not in seen["cmd"]
+    assert "uep.eid-1" in seen["cmd"]
+
+
 async def test_teardown_endpoint_stops_manager_and_clears_state(monkeypatch):
     # teardown_endpoint (the explicit "destroy it") releases the block, calls the facility teardown
     # (gce stop + delete), and clears ALL shape/state so a stray run_shell can't revive a stale endpoint.

@@ -937,11 +937,31 @@ async def connect_facility(
     return await _connect_facility(app, facility, ssh_host=ssh_host, details=details)
 
 
+def _release_cmd(scheduler: str, eid: str) -> str:
+    """Login-shape shell one-liner that cancels THIS endpoint's scheduler block(s), matched
+    precisely by the `uep.<eid>` StdOut marker Parsl writes under the UEP dir. Scheduler-specific:
+    Slurm reads squeue/scancel; PBS reads qstat -f (unwrapping its 80-col line continuations so a
+    wrapped Output_Path can't split the marker) and qdel."""
+    marker = f"uep.{eid}"
+    if scheduler == "pbs":
+        return (
+            'ids=$(qstat -f -u "$USER" 2>/dev/null '
+            "| sed ':a;N;$!ba;s/\\n\\t//g' "
+            f"| awk -v m={shlex.quote(marker)} 'BEGIN{{RS=\"Job Id: \"}} index($0,m){{print $1}}'); "
+            '[ -n "$ids" ] && qdel $ids; echo "released ${ids:-none}"'
+        )
+    return (
+        'ids=$(squeue -u "$USER" -h -O "JobID:30,StdOut:1024" 2>/dev/null '
+        f"| grep -F {shlex.quote(marker)} | awk '{{print $1}}'); "
+        '[ -n "$ids" ] && scancel $ids; echo "released ${ids:-none}"'
+    )
+
+
 async def _release_blocks_over_login(app: AppCtx, eid: str) -> tuple[bool, str]:
-    """Cancel this endpoint's Slurm block(s) by running `scancel` on the **login shape (AMQP)** —
-    never SSH. That's the whole point of the login-node endpoint: talk to the cluster over Compute,
-    not a fresh SSH. Matches blocks precisely by the UEP StdOut marker (`uep.<eid>`) so it never
-    touches another endpoint's jobs.
+    """Cancel this endpoint's scheduler block(s) by running the scheduler's cancel (scancel/qdel)
+    on the **login shape (AMQP)** — never SSH. That's the whole point of the login-node endpoint:
+    talk to the cluster over Compute, not a fresh SSH. Matches blocks precisely by the UEP StdOut
+    marker (`uep.<eid>`) so it never touches another endpoint's jobs.
 
     A cold login worker can't dispatch on the first try — it returns cold_start ("allocating
     nodes…"), not `complete`. But that first hit WAKES the worker, so we retry a bounded few times
@@ -951,12 +971,12 @@ async def _release_blocks_over_login(app: AppCtx, eid: str) -> tuple[bool, str]:
     unconfirmed cancel is still backstopped by idle-release (`min_blocks=0` + `max_idletime`), and
     re-calling stop (channel now warming) confirms it. Retry budget: HPC_BRIDGE_RELEASE_ATTEMPTS
     (default 3) × HPC_BRIDGE_RELEASE_BACKOFF_S (default 6s)."""
-    marker = shlex.quote(f"uep.{eid}")
-    cmd = (
-        'ids=$(squeue -u "$USER" -h -O "JobID:30,StdOut:1024" 2>/dev/null '
-        f"| grep -F {marker} | awk '{{print $1}}'); "
-        '[ -n "$ids" ] && scancel $ids; echo "released ${ids:-none}"'
-    )
+    # The scheduler lives on the facility's MachineProfile (SlurmFacility.profile.scheduler); a
+    # facility without one (LocalFacility/dev, or test doubles) has never spoken anything but
+    # Slurm's squeue/scancel, so default there instead of assuming an attribute that isn't part
+    # of the Facility protocol.
+    scheduler = getattr(getattr(app.facility, "profile", None), "scheduler", "slurm")
+    cmd = _release_cmd(scheduler, eid)
     attempts = max(1, int((os.environ.get("HPC_BRIDGE_RELEASE_ATTEMPTS", "3") or "3").strip()))
     backoff = float((os.environ.get("HPC_BRIDGE_RELEASE_BACKOFF_S", "6") or "6").strip())
     detail = "unconfirmed"

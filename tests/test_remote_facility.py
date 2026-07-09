@@ -271,8 +271,8 @@ class _FakeRemoteCLI:
     async def wipe_storage_db(self):
         self.calls.append(("wipe", "hpc-bridge"))
 
-    async def cancel_blocks(self, endpoint_id):
-        self.calls.append(("cancel_blocks", endpoint_id))
+    async def cancel_blocks(self, endpoint_id, scheduler="slurm"):
+        self.calls.append(("cancel_blocks", endpoint_id, scheduler))
         return []
 
     def rebind(self, host):
@@ -510,8 +510,16 @@ async def test_teardown_cancels_blocks_as_backstop():
     cli = _FakeRemoteCLI()
     await SlurmFacility(_profile(), cli=cli).teardown("eid-123")
     assert ("stop", "hpc-bridge") in cli.calls
-    assert ("cancel_blocks", "eid-123") in cli.calls  # cancel this endpoint's blocks
+    assert ("cancel_blocks", "eid-123", "slurm") in cli.calls  # cancel this endpoint's blocks
     assert _kinds(cli).index("cancel_blocks") > _kinds(cli).index("stop")  # after stop
+
+
+async def test_teardown_cancels_blocks_with_pbs_scheduler():
+    # the facility's scheduler must ride along to cancel_blocks so a PBS profile's teardown
+    # qdels instead of scancels.
+    cli = _FakeRemoteCLI()
+    await SlurmFacility(_pbs_profile(), cli=cli).teardown("eid-123")
+    assert ("cancel_blocks", "eid-123", "pbs") in cli.calls
 
 
 async def test_cancel_blocks_targets_only_this_endpoints_jobs(monkeypatch):
@@ -549,6 +557,56 @@ async def test_cancel_blocks_no_jobs_is_noop(monkeypatch):
     monkeypatch.setattr(remote, "ssh_exec", fake_ssh)
     cli = remote.RemoteEndpointCLI(SshTarget("h", "u", "k"), "env")
     assert await cli.cancel_blocks("any-eid") == []  # nothing matched -> no scancel
+
+
+def test_pbs_jobid_regex_matches_dotted_ids():
+    from hpc_bridge.facility.remote import _JOBID_PBS
+
+    assert _JOBID_PBS.match("1234567.polaris-pbs-01")
+    assert _JOBID_PBS.match("1234567")
+    assert not _JOBID_PBS.match("garbage")
+
+
+async def test_cancel_blocks_pbs_targets_only_this_endpoints_jobs(monkeypatch):
+    # PBS variant: qstat -f (continuation-unwrapped) -> match the uep.<eid> marker -> qdel.
+    eid = "8791269d-47f4-47f7-91a6-3485b4289269"
+    other = "c5fd7ad7-0b92-4b50-83e1-56f7b9c1f91d"
+    seen = []
+
+    async def fake_ssh(target, cmd, **kw):
+        seen.append(cmd)
+        if "qstat -f" in cmd:
+            return (
+                0,
+                "Job Id: 111.polaris-pbs-01\n"
+                "    Job_Name = uep\n"
+                f"    Output_Path = polaris-pbs-01:/home/u/.globus_compute/uep.{eid}.aaa/submit_scripts/x.stdout\n"
+                "Job Id: 222.polaris-pbs-01\n"
+                f"    Output_Path = polaris-pbs-01:/home/u/.globus_compute/uep.{other}.bbb/submit_scripts/y.stdout\n"
+                "Job Id: 333.polaris-pbs-01\n"
+                f"    Output_Path = polaris-pbs-01:/home/u/.globus_compute/uep.{eid}.ccc/submit_scripts/z.stdout\n",
+                "",
+            )
+        return (0, "", "")
+
+    monkeypatch.setattr(remote, "ssh_exec", fake_ssh)
+    cli = remote.RemoteEndpointCLI(SshTarget("h", "u", "k"), "env")
+    cancelled = await cli.cancel_blocks(eid, "pbs")
+    assert cancelled == ["111.polaris-pbs-01", "333.polaris-pbs-01"]  # ours only
+    qdel = [c for c in seen if "qdel" in c]
+    assert len(qdel) == 1
+    assert "111.polaris-pbs-01" in qdel[0] and "333.polaris-pbs-01" in qdel[0]
+    assert "222.polaris-pbs-01" not in qdel[0]
+    assert "squeue" not in seen[0] and "scancel" not in " ".join(seen)
+
+
+async def test_cancel_blocks_pbs_no_jobs_is_noop(monkeypatch):
+    async def fake_ssh(target, cmd, **kw):
+        return (0, "", "")
+
+    monkeypatch.setattr(remote, "ssh_exec", fake_ssh)
+    cli = remote.RemoteEndpointCLI(SshTarget("h", "u", "k"), "env")
+    assert await cli.cancel_blocks("any-eid", "pbs") == []
 
 
 async def test_manager_online_uses_injected_client():

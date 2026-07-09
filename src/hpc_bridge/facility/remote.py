@@ -249,6 +249,7 @@ def profile_from_catalog_entry(
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _JOBID = re.compile(r"^\d+(_\d+)?$")  # plain or array slurm job id (guards what we scancel)
+_JOBID_PBS = re.compile(r"^\d+(\.\S+)?$")  # PBS: bare or host-qualified (1234567.polaris-pbs-01)
 
 
 class RemoteEndpointCLI:
@@ -394,8 +395,8 @@ class RemoteEndpointCLI:
         """Remove the seeded credential from the remote host (best-effort)."""
         await ssh_exec(self.target, f'rm -f "{self.remote_dir}/storage.db"')
 
-    async def cancel_blocks(self, endpoint_id: str) -> list[str]:
-        """Best-effort `scancel` of THIS endpoint's Slurm blocks; returns the cancelled IDs.
+    async def cancel_blocks(self, endpoint_id: str, scheduler: str = "slurm") -> list[str]:
+        """Best-effort cancel of THIS endpoint's scheduler blocks; returns the cancelled IDs.
 
         An ungraceful `stop` (it can die on a psutil traceback) won't scale Parsl's block in,
         so the compute keeps its allocation until walltime. We find our blocks precisely by
@@ -403,6 +404,8 @@ class RemoteEndpointCLI:
         (`uep.<endpoint_id>.*`) — so we never touch another GlobusComputeEngine endpoint's
         jobs. Never raises: teardown must not crash on a flaky scheduler query."""
         marker = f"uep.{endpoint_id}"
+        if scheduler == "pbs":
+            return await self._cancel_blocks_pbs(marker)
         try:
             squeue = 'squeue -u "$USER" -h -O "JobID:30,StdOut:1024" 2>/dev/null'
             rc, out, _err = await ssh_exec(
@@ -422,6 +425,33 @@ class RemoteEndpointCLI:
                 await ssh_exec(
                     self.target,
                     f"bash -lc {shlex.quote('scancel ' + ' '.join(ids))}",
+                    timeout=_TEARDOWN_SSH_S,
+                )
+            except Exception:  # noqa: BLE001 - best-effort
+                pass
+        return ids
+
+    async def _cancel_blocks_pbs(self, marker: str) -> list[str]:
+        """PBS variant of cancel_blocks: qstat -f -> unwrap continuations -> match marker -> qdel."""
+        try:
+            q = "qstat -f -u \"$USER\" 2>/dev/null | sed ':a;N;$!ba;s/\\n\\t//g'"
+            rc, out, _err = await ssh_exec(
+                self.target, f"bash -lc {shlex.quote(q)}", timeout=_TEARDOWN_SSH_S
+            )
+        except Exception:  # noqa: BLE001 - scheduler unreachable -> nothing to cancel
+            return []
+        if rc != 0:
+            return []
+        ids: list[str] = []
+        for record in out.split("Job Id: ")[1:]:
+            jid = record.split(None, 1)[0] if record.split() else ""
+            if marker in record and _JOBID_PBS.match(jid):
+                ids.append(jid)
+        if ids:
+            try:
+                await ssh_exec(
+                    self.target,
+                    f"bash -lc {shlex.quote('qdel ' + ' '.join(ids))}",
                     timeout=_TEARDOWN_SSH_S,
                 )
             except Exception:  # noqa: BLE001 - best-effort
@@ -729,7 +759,7 @@ class SlurmFacility:
         # `stop` kills the manager, but an ungraceful stop leaves Parsl's block holding the
         # allocation until walltime (no manager left to scale it in). Explicitly cancel this
         # endpoint's blocks so "teardown released the compute" actually holds.
-        await self.cli.cancel_blocks(endpoint_id)
+        await self.cli.cancel_blocks(endpoint_id, self.profile.scheduler)
         if wipe_credentials:
             await self.cli.wipe_storage_db()
         await self.cli.close()  # drop the shared SSH master; the endpoint is gone
