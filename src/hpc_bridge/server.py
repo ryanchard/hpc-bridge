@@ -35,7 +35,7 @@ from .runner import CanaryResult, GlobusRunner
 from .session_shell import Session
 from .shapes import SHAPES, shape_config
 
-DEFAULT_SHAPE = "slurm"
+DEFAULT_SHAPE = "compute"
 
 
 @dataclass
@@ -508,7 +508,7 @@ def _apply_partition(rt: ShapeRuntime, partition: str | None) -> None:
     _runner_for rebuilds it and banks the prior warm interval) and drop the warm confirmation;
     the old block idle-releases on its own (min_blocks=0). The selection persists in
     user_endpoint_config for the rest of the session."""
-    if partition is None or not rt.user_endpoint_config.get("is_slurm"):
+    if partition is None or not rt.user_endpoint_config.get("compute"):
         return
     if rt.user_endpoint_config.get("partition") == partition:
         return
@@ -519,11 +519,11 @@ def _apply_partition(rt: ShapeRuntime, partition: str | None) -> None:
 
 def _apply_account(rt: ShapeRuntime, account: str | None) -> None:
     """Point this shape's next provision at `account` (the chosen allocation) — the account
-    analogue of _apply_partition. Slurm-only; the config_template renders `account` from
+    analogue of _apply_partition. compute-shape only; the config_template renders `account` from
     user_endpoint_config with the profile default, so a selection here overrides it. A change
     invalidates the cached runner (banking the prior warm interval) and drops the warm
     confirmation; the selection persists for the session."""
-    if account is None or not rt.user_endpoint_config.get("is_slurm"):
+    if account is None or not rt.user_endpoint_config.get("compute"):
         return
     if rt.user_endpoint_config.get("account") == account:
         return
@@ -557,7 +557,7 @@ async def _ensure_endpoint_up(
         rt = _shape_runtime(app, shape)
         # A login shape has no partition; surface that we ignored a supplied one rather than
         # silently dropping the user's selection.
-        ignored = partition is not None and not rt.user_endpoint_config.get("is_slurm")
+        ignored = partition is not None and not rt.user_endpoint_config.get("compute")
         _apply_partition(rt, partition)
         _apply_account(rt, account)
         active_partition = rt.user_endpoint_config.get("partition")
@@ -611,7 +611,7 @@ async def _ensure_endpoint_up(
 @mcp.tool()
 async def ensure_endpoint_up(
     ctx: Context,
-    shape: str = "slurm",
+    shape: str = DEFAULT_SHAPE,
     partition: str | None = None,
     confirm_spend: bool = False,
     account: str | None = None,
@@ -983,15 +983,15 @@ async def _stop_endpoint(app: AppCtx) -> EndpointStatus:
     # Cancel the Slurm block over the login shape (AMQP) — no SSH.
     confirmed, detail = await _release_blocks_over_login(app, eid)
     async with app.lock:
-        # Drop the billed (slurm) shape so a later run re-provisions a FRESH block (its runner now
+        # Drop the billed (compute) shape so a later run re-provisions a FRESH block (its runner now
         # points at the cancelled block). Keep the login shape, the manager, the endpoint_id, and
         # the login-node pin — the endpoint stays online and reusable. We drop it regardless of
         # confirmation: the runner is dead either way, and the spend clock must stop banking now.
-        slurm = app.shapes.pop(DEFAULT_SHAPE, None)
-        if slurm is not None:
-            _bank_warm_interval(slurm, app)  # stop the spend clock for the released block
-            if slurm.runner is not None:
-                slurm.runner.close()
+        compute = app.shapes.pop(DEFAULT_SHAPE, None)
+        if compute is not None:
+            _bank_warm_interval(compute, app)  # stop the spend clock for the released block
+            if compute.runner is not None:
+                compute.runner.close()
     if confirmed:
         return EndpointStatus(
             status="down",  # cancel CONFIRMED: no billed block running (manager stays online for reuse)
@@ -1188,11 +1188,11 @@ def _error_outcome(exc: Exception) -> ShellOutcome:
 
 @mcp.tool()
 async def run_shell(
-    command: str, ctx: Context, session_id: str = "default", shape: str = "slurm"
+    command: str, ctx: Context, session_id: str = "default", shape: str = DEFAULT_SHAPE
 ) -> ShellOutcome:
     """Run a shell command on the warm HPC compute block.
 
-    `shape` picks the execution target on the same endpoint: "slurm" runs on a
+    `shape` picks the execution target on the same endpoint: "compute" runs on a
     scheduler block (heavy compute, billed, idle-released); "login" runs on the login
     node via a LocalProvider (lightweight, no allocation). Sessions (cwd/env) persist
     per session_id within a shape."""
@@ -1206,7 +1206,7 @@ async def run_shell(
 
 @mcp.tool()
 async def reset_session(
-    ctx: Context, session_id: str = "default", shape: str = "slurm"
+    ctx: Context, session_id: str = "default", shape: str = DEFAULT_SHAPE
 ) -> ShellOutcome:
     """Clear a session's persisted working directory and environment (fresh slate)."""
     try:

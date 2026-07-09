@@ -100,7 +100,7 @@ def test_template_renders_localprovider_for_login_shape():
 def test_template_renders_slurmprovider_for_slurm_shape():
     f = SlurmFacility(_profile(), cli=None)
     tmpl, _defaults = f.config_template(Profile(mode="interactive"))
-    cfg = _render(tmpl, shape_config("slurm", partition="debug", account="ACC"))
+    cfg = _render(tmpl, shape_config("compute", partition="debug", account="ACC"))
     prov = cfg["engine"]["provider"]
     assert prov["type"] == "SlurmProvider"
     assert prov["partition"] == "debug" and prov["account"] == "ACC"
@@ -110,7 +110,7 @@ def test_template_renders_slurmprovider_for_slurm_shape():
 def test_template_defaults_to_slurm_account_from_profile():
     f = SlurmFacility(_profile(), cli=None)
     tmpl, defaults = f.config_template(Profile(mode="interactive"))
-    cfg = _render(tmpl, {**defaults, **shape_config("slurm")})
+    cfg = _render(tmpl, {**defaults, **shape_config("compute")})
     assert cfg["engine"]["provider"]["account"] == "ACC"
 
 
@@ -118,10 +118,10 @@ def test_slurm_provider_params_survive_the_manager_sanitizer():
     # Regression: the manager json.dumps's string user_opts, so a template `{% if
     # provider_type == 'SlurmProvider' %}` saw '"SlurmProvider"' and fell through to the
     # else branch, dropping partition/account/walltime entirely (the job then ran on the
-    # facility default partition with no account). The bool `is_slurm` guard fixes it.
+    # facility default partition with no account). The bool `compute` guard fixes it.
     f = SlurmFacility(_profile(), cli=None)
     tmpl, defaults = f.config_template(Profile(mode="interactive"))
-    prov = _render(tmpl, {**defaults, **shape_config("slurm")})["engine"]["provider"]
+    prov = _render(tmpl, {**defaults, **shape_config("compute")})["engine"]["provider"]
     assert prov["partition"] == "debug" and prov["account"] == "ACC"
     assert prov["walltime"] and "launcher" in prov  # full slurm block, not the else branch
 
@@ -132,7 +132,7 @@ def test_worker_init_not_double_encoded_through_sanitizer():
     # the whole quoted string as one command. worker_init must be the bare command.
     f = SlurmFacility(_profile(), cli=None)
     tmpl, defaults = f.config_template(Profile(mode="interactive"))
-    wi = _render(tmpl, {**defaults, **shape_config("slurm")})["engine"]["provider"]["worker_init"]
+    wi = _render(tmpl, {**defaults, **shape_config("compute")})["engine"]["provider"]["worker_init"]
     assert wi == _profile().worker_init  # exact command, no wrapping quotes
     assert not wi.startswith('"')
 
@@ -144,12 +144,12 @@ def test_template_max_blocks_and_nodes_per_block_default_and_override():
     prof = _dc_replace(_profile(), max_blocks=4, nodes_per_block=3)
     f = SlurmFacility(prof, cli=None)
     tmpl, defaults = f.config_template(Profile(mode="interactive"))
-    prov = _render(tmpl, {**defaults, **shape_config("slurm")})["engine"]["provider"]
+    prov = _render(tmpl, {**defaults, **shape_config("compute")})["engine"]["provider"]
     assert prov["max_blocks"] == 4 and prov["nodes_per_block"] == 3
     assert prov["min_blocks"] == 0  # idle-release cost net unchanged
 
     # a per-task user_endpoint_config overrides the profile default
-    over = _render(tmpl, shape_config("slurm", max_blocks=9, nodes_per_block=2))
+    over = _render(tmpl, shape_config("compute", max_blocks=9, nodes_per_block=2))
     assert over["engine"]["provider"]["max_blocks"] == 9
     assert over["engine"]["provider"]["nodes_per_block"] == 2
 
@@ -169,19 +169,19 @@ def test_template_emits_available_accelerators_only_when_set():
     # unset -> the key is omitted entirely
     f0 = SlurmFacility(_profile(), cli=None)
     t0, d0 = f0.config_template(Profile(mode="interactive"))
-    assert "available_accelerators" not in _render(t0, {**d0, **shape_config("slurm")})["engine"]
+    assert "available_accelerators" not in _render(t0, {**d0, **shape_config("compute")})["engine"]
 
     # int count
     f1 = SlurmFacility(_dc_replace(_profile(), available_accelerators=4), cli=None)
     t1, d1 = f1.config_template(Profile(mode="interactive"))
-    assert _render(t1, {**d1, **shape_config("slurm")})["engine"]["available_accelerators"] == 4
+    assert _render(t1, {**d1, **shape_config("compute")})["engine"]["available_accelerators"] == 4
 
     # explicit device list
     f2 = SlurmFacility(
         _dc_replace(_profile(), available_accelerators=["gpu0", "gpu1"]), cli=None
     )
     t2, d2 = f2.config_template(Profile(mode="interactive"))
-    eng = _render(t2, {**d2, **shape_config("slurm")})["engine"]
+    eng = _render(t2, {**d2, **shape_config("compute")})["engine"]
     assert eng["available_accelerators"] == ["gpu0", "gpu1"]
 
 
@@ -726,7 +726,7 @@ def test_rebind_points_cli_at_a_specific_host():
 def test_template_max_idletime_is_float_with_strategy_period():
     f = SlurmFacility(_profile(), cli=None)
     tmpl, defaults = f.config_template(Profile(mode="interactive"))
-    cfg = _render(tmpl, {**defaults, **shape_config("slurm")})
+    cfg = _render(tmpl, {**defaults, **shape_config("compute")})
     jsk = cfg["engine"]["job_status_kwargs"]
     assert isinstance(jsk["max_idletime"], float) and jsk["max_idletime"] == 600.0
     assert jsk["strategy_period"] == 30
@@ -735,17 +735,17 @@ def test_template_max_idletime_is_float_with_strategy_period():
 def test_template_idle_timeout_follows_profile():
     f = SlurmFacility(_profile(), cli=None)
     tmpl, defaults = f.config_template(Profile(mode="interactive", max_idletime_s=300))
-    cfg = _render(tmpl, {**defaults, **shape_config("slurm")})
+    cfg = _render(tmpl, {**defaults, **shape_config("compute")})
     assert cfg["engine"]["job_status_kwargs"]["max_idletime"] == 300.0
 
 
 def test_template_batch_mode_init_blocks_zero_interactive_one():
     f = SlurmFacility(_profile(), cli=None)
     tmpl, defaults = f.config_template(Profile(mode="batch"))
-    cfg = _render(tmpl, {**defaults, **shape_config("slurm")})
+    cfg = _render(tmpl, {**defaults, **shape_config("compute")})
     assert cfg["engine"]["provider"]["init_blocks"] == 0
     tmpl2, defaults2 = f.config_template(Profile(mode="interactive"))
-    cfg2 = _render(tmpl2, {**defaults2, **shape_config("slurm")})
+    cfg2 = _render(tmpl2, {**defaults2, **shape_config("compute")})
     assert cfg2["engine"]["provider"]["init_blocks"] == 1
 
 
@@ -755,7 +755,7 @@ def test_template_emits_scheduler_options_when_profile_sets_it():
     prof = _dc_replace(base, scheduler_options="#SBATCH --constraint=A100")
     f = SlurmFacility(prof, cli=None)
     tmpl, defaults = f.config_template(Profile(mode="interactive"))
-    cfg = _render(tmpl, {**defaults, **shape_config("slurm")})
+    cfg = _render(tmpl, {**defaults, **shape_config("compute")})
     assert cfg["engine"]["provider"]["scheduler_options"] == "#SBATCH --constraint=A100"
 
 
@@ -766,7 +766,7 @@ def test_template_survives_special_chars_in_profile():
     prof = _dc_replace(base, worker_init="source it's/venv && export P=50% {ok}")
     f = SlurmFacility(prof, cli=None)
     tmpl, defaults = f.config_template(Profile(mode="interactive"))
-    cfg = _render(tmpl, {**defaults, **shape_config("slurm")})
+    cfg = _render(tmpl, {**defaults, **shape_config("compute")})
     expected = "source it's/venv && export P=50% {ok}"
     assert cfg["engine"]["provider"]["worker_init"] == expected
 

@@ -518,7 +518,7 @@ class SlurmFacility:
         Two render-time invariants imposed by the endpoint manager (`render_config_user_template`
         → `_sanitize_user_json`), both learned by live debugging:
         - It json.dumps's every *string* user_opt, so `"SlurmProvider"` arrives as
-          `'"SlurmProvider"'`. Branch on the BOOLEAN `is_slurm` (bools pass through the
+          `'"SlurmProvider"'`. Branch on the BOOLEAN `compute` (bools pass through the
           sanitizer unchanged), never a string equality — a string compare silently fails
           and drops the whole provider block.
         - Because the sanitizer already quotes strings, the template must NOT also `| tojson`
@@ -546,7 +546,7 @@ engine:
     strategy_period: 30
   provider:
     type: {{ provider_type | default('SlurmProvider') }}
-{% if is_slurm | default(true) %}
+{% if compute | default(true) %}
     partition: {{ partition | default(@@PARTITION@@) }}
     account: {{ account | default(@@ACCOUNT@@) }}
     walltime: {{ walltime | default(@@WALLTIME@@) }}
