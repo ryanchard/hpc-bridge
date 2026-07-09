@@ -911,20 +911,28 @@ async def connect_facility(
     """Select an HPC facility and bring up its (free) login node, then list the allocations a Slurm
     block can be charged to.
 
-    `facility` is an id/subject/alias from list_facilities() (e.g. "anvil" or "purdue:anvil"). This
-    binds the facility, stands up the login shape (SSH cold-bootstrap once, or reuse an online
-    endpoint — no Slurm account needed), runs the allocation command over Compute, and returns
-    phase="needs_account" with the parsed allocations. Pick one, then
-    ensure_endpoint_up(account=…, partition=…, confirm_spend=True). phase="provisioning" means the
-    login node is still warming — call again shortly.
+    **This is the ENTRY POINT for reaching any facility — ALWAYS call it first** (before login_shell,
+    and before reasoning about SSH/Duo yourself): it decides whether SSH is even needed. Don't
+    pre-check for an SSH master or assume a password/Duo is required — call this and let it tell you.
 
-    NOT in the catalog → discover, don't interrogate. Pass `ssh_host` (the login host/alias; SSH
-    user + key come from the environment) and the tool PROBES the login node, returning
-    phase="proposed_facility_details" with a `proposed_details` draft — review/correct it with the
-    user (above all `interface`), then call again with details=… to register a session-local
-    facility and proceed (the login-shape canary validates the values). With neither ssh_host nor
-    details you get phase="needs_facility_details" asking for the host. Credentials never go in
-    details."""
+    **Reconnecting to a facility you've used before? Pass its `ssh_host`.** connect_facility resolves
+    the config from the LOCAL cache (a previously-confirmed BYO facility) with **no SSH probe**, then
+    reuses the still-online endpoint over the web (`reused: true`) — a **fully zero-SSH reconnect, no
+    re-auth**. So a known MFA facility reconnects with NO Duo prompt while its endpoint is up.
+
+    `facility` is an id/subject/alias from list_facilities() (e.g. "anvil"). This binds the facility,
+    stands up the login shape (SSH cold-bootstrap once, or reuse an online endpoint — no Slurm
+    account needed), runs the allocation command over Compute, and returns phase="needs_account".
+    Pick one, then ensure_endpoint_up(account=…, partition=…, confirm_spend=True). phase=
+    "provisioning" ⇒ login node still warming — call again shortly.
+
+    NOT in the catalog and not cached → discover, don't interrogate. Pass `ssh_host` (login
+    host/alias; SSH user+key come from the environment) and the tool PROBES the login node →
+    phase="proposed_facility_details" with a draft — review/correct it with the user (above all
+    `interface`), then call again with details=… to register the session facility (then CACHED for
+    zero-SSH reconnects; the canary validates). phase="needs_preauth" ⇒ the host needs a one-time
+    interactive login (password/MFA) — relay its `preauth_command` for the user to run in THEIR OWN
+    terminal; never handle the secret. neither ssh_host nor details ⇒ needs_facility_details."""
     app = ctx.request_context.lifespan_context
     return await _connect_facility(app, facility, ssh_host=ssh_host, details=details)
 
@@ -1063,8 +1071,10 @@ async def _login_shell(app: AppCtx, command: str) -> LoginShellResult:
     if login_exec is None:
         return LoginShellResult(
             exit_code=1,
-            notice="login_shell needs an SSH facility (set HPC_BRIDGE_MACHINE=<id>, or "
-            "connect_facility(facility=…)); the local dev facility has no login node.",
+            notice="No facility connected. Call connect_facility(facility, ssh_host=…) FIRST — it's "
+            "the entry point: for a facility you've used before it reuses the endpoint over the web "
+            "with ZERO SSH (no re-auth), and it decides whether SSH is even needed. Don't reach for "
+            "login_shell or a manual SSH before that. (Or pin one via HPC_BRIDGE_MACHINE=<id>.)",
         )
     try:
         rc, out, err = await login_exec(command)

@@ -747,7 +747,7 @@ async def test_login_shell_unavailable_on_local_facility():
     from hpc_bridge.server import _login_shell
 
     res = await _login_shell(AppCtx(facility=FakeFacility(), profile=Profile()), "sinfo")
-    assert res.exit_code == 1 and "SSH facility" in (res.notice or "")  # local has no login node
+    assert res.exit_code == 1 and "connect_facility" in (res.notice or "")  # nudges the entry point, not login_shell
 
 
 async def test_server_registers_login_shell_tool():
