@@ -650,13 +650,23 @@ async def list_facilities(query: str = "") -> list[CatalogSummary]:
     return await _list_facilities(query)
 
 
-def _session_endpoint_name(facility: str) -> str:
-    """A facility-specific endpoint name for a session-local facility, so it never SHARES a Globus
-    Compute registration with another facility. Endpoints are keyed by (identity, name): a bare
-    'hpc-bridge' collides with the curated Anvil endpoint and any stale 'online' registration, which
-    find_online_endpoint would then wrongly reuse — leaving a canary that can never warm."""
-    slug = re.sub(r"[^a-z0-9]+", "-", facility.lower()).strip("-") or "session"
+def _session_endpoint_name(ssh_host: str) -> str:
+    """A stable endpoint name for a session (BYO) facility, keyed on the **SSH host** — the canonical
+    per-cluster identity — so it never SHARES a registration with another facility AND doesn't sprawl
+    when the agent picks different facility ids for the same host (`midway` vs `midway3` both →
+    `hpc-bridge-midway3`). Endpoints are keyed by (identity, name); a bare 'hpc-bridge' would collide
+    with the curated Anvil endpoint and any stale 'online' registration, which find_online_endpoint
+    would then wrongly reuse — leaving a canary that can never warm."""
+    slug = re.sub(r"[^a-z0-9]+", "-", (ssh_host or "session").lower()).strip("-") or "session"
     return f"hpc-bridge-{slug}"
+
+
+def _facility_store():
+    """The persistent local-discovery cache of confirmed BYO facility configs (keyed by ssh_host).
+    A thin indirection so tests can point it at a tmp path."""
+    from .state import FacilityStore
+
+    return FacilityStore()
 
 
 def _entry_from_details(facility: str, details: FacilityDetails) -> CatalogEntry:
@@ -667,14 +677,14 @@ def _entry_from_details(facility: str, details: FacilityDetails) -> CatalogEntry
     alloc = None
     if details.allocation_command and details.allocation_parser:
         alloc = Allocation(command=details.allocation_command, parser=details.allocation_parser)
-    ep_name = details.endpoint_name or _session_endpoint_name(facility)
+    ep_name = details.endpoint_name or _session_endpoint_name(details.ssh_host or facility)
     return CatalogEntry(
         id=facility,
         facility_key="session",
         facility=details.display_name or facility,
         description="session-local facility (user-supplied, not catalogued)",
         # The endpoint's UI title (manager config display_name) follows the same convention as its
-        # registration name — `hpc-bridge-<facility>`, not the bare id — so the two never diverge.
+        # registration name — `hpc-bridge-<ssh_host>` (ssh-host-keyed) — so the two never diverge.
         display_name=details.display_name or ep_name,
         transfer_endpoint_uuid=None,
         ssh_host=details.ssh_host,
@@ -712,8 +722,21 @@ async def _connect_facility(
                 notice=f"invalid facility details: {type(exc).__name__}: {exc}"[:300],
             )
         app.session_facilities[facility] = entry  # (re)remember the confirmed config for the loop
+        if details.ssh_host:  # persist for LOCAL DISCOVERY — a later session reconnects with no SSH probe
+            _facility_store().put(details.ssh_host, details.model_dump(mode="json"))
     else:
         entry = app.session_facilities.get(facility)
+        if entry is None:
+            # LOCAL DISCOVERY: a previously-confirmed BYO config for this host, cached to disk (keyed on
+            # ssh_host, canonical; facility id as fallback) — use it with NO SSH probe, then bootstrap
+            # reuses the online endpoint over the web. A stale/invalid cache falls through to catalog/probe.
+            cached = _facility_store().get(ssh_host or facility)
+            if cached is not None:
+                try:
+                    entry = _entry_from_details(facility, FacilityDetails(**cached))
+                    app.session_facilities[facility] = entry
+                except Exception:  # noqa: BLE001 - stale/invalid cached config
+                    entry = None
         if entry is None:
             try:
                 entry = await make_catalog().get(facility)

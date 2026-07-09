@@ -1,10 +1,22 @@
 from __future__ import annotations
 
+import pytest
+
 from hpc_bridge.models import FacilityDetails
 from hpc_bridge.profile import Profile
 from hpc_bridge.runner import CanaryResult
 from hpc_bridge.server import AppCtx, _ensure_endpoint_up, _list_facilities, mcp
 from tests.fakes import FakeCatalog, FakeFacility, fake_entry
+
+
+@pytest.fixture(autouse=True)
+def _isolate_facility_cache(monkeypatch, tmp_path):
+    # Every connect-flow test gets a FRESH local-discovery cache — never the real ~/.hpc-bridge one
+    # (so tests don't read stale entries or WRITE test facilities into the user's real cache).
+    from hpc_bridge import server
+    from hpc_bridge.state import FacilityStore
+
+    monkeypatch.setattr(server, "_facility_store", lambda: FacilityStore(tmp_path / "facilities.json"))
 
 
 class _Res:
@@ -450,6 +462,53 @@ async def test_explicit_details_rebuild_overrides_cached_entry(monkeypatch):
     assert app.session_facilities["midway"] is not e1  # the corrected entry replaced the cached one
 
 
+def test_session_endpoint_name_keyed_on_ssh_host():
+    from hpc_bridge.server import _session_endpoint_name
+    assert _session_endpoint_name("midway3") == "hpc-bridge-midway3"
+    assert _session_endpoint_name("midway3.rcc.uchicago.edu") == "hpc-bridge-midway3-rcc-uchicago-edu"
+    assert _session_endpoint_name("") == "hpc-bridge-session"  # never a bare 'hpc-bridge' (would collide)
+
+
+def test_facility_store_roundtrip(tmp_path):
+    from hpc_bridge.state import FacilityStore
+    s = FacilityStore(tmp_path / "facilities.json")
+    assert s.get("midway3") is None
+    s.put("midway3", {"ssh_host": "midway3", "interface": "bond0"})
+    s.put("anvil", {"ssh_host": "anvil"})
+    assert s.get("midway3") == {"ssh_host": "midway3", "interface": "bond0"}
+    s.remove("midway3")
+    assert s.get("midway3") is None and s.get("anvil") is not None  # surgical
+    assert oct((tmp_path / "facilities.json").stat().st_mode)[-3:] == "600"  # config, 0600
+
+
+async def test_local_discovery_reuses_cached_config_without_probing(monkeypatch):
+    # After a facility is confirmed once, a FRESH session resolves the config from the persistent
+    # cache with NO SSH probe (local discovery). (The autouse fixture isolates the cache to tmp.)
+    from hpc_bridge import server
+
+    f = FakeFacility()
+    f.workers = 1
+    monkeypatch.setattr(server, "_facility_from_entry", lambda entry, *, account: f)
+    monkeypatch.setattr(server, "make_catalog", lambda: FakeCatalog([]))  # not catalogued
+
+    # 1) confirm details -> persists to the cache keyed by ssh_host
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, MYBALANCE, ""))
+    await server._connect_facility(app, "midway3", details=_details(ssh_host="midway3"))
+    assert server._facility_store().get("midway3") is not None  # cached by ssh_host
+
+    # 2) FRESH session (new AppCtx, empty session cache); reconnect by ssh_host, NO details -> MUST NOT probe
+    async def no_probe(target):
+        raise AssertionError("must not probe — the config is cached (local discovery)")
+
+    monkeypatch.setattr(server, "discover_facility_details", no_probe)
+    app2 = AppCtx(facility=FakeFacility(), profile=Profile())
+    app2.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, MYBALANCE, ""))
+    res = await server._connect_facility(app2, "midway3", ssh_host="midway3")
+    assert res.phase in ("needs_account", "provisioning")  # resolved straight from cache, brought up
+    assert "midway3" in app2.session_facilities  # config loaded from the local cache, no probe
+
+
 async def test_connect_unknown_uses_ssh_host_from_env(monkeypatch):
     from hpc_bridge import server
     from hpc_bridge.models import FacilityDetails
@@ -527,13 +586,13 @@ def test_entry_from_details_builds_session_local_entry():
     assert e.transfer_endpoint_uuid is None and e.subject == "session:frontier"
     assert e.compute.interface == "hsn0" and e.compute.scheduler == "slurm"
     assert e.allocation is not None and e.allocation.parser == "mybalance"
-    assert e.compute.endpoint_name == "hpc-bridge-frontier"  # isolated per-facility, not bare hpc-bridge
+    assert e.compute.endpoint_name == "hpc-bridge-frontier-olcf-ornl-gov"  # keyed on ssh_host, not facility id
     assert e.display_name == "Frontier (BYO)"  # explicit display_name preserved
     # no allocation tool -> allocation omitted
-    bare = _entry_from_details("x", _details(allocation_command=None, allocation_parser=None))
+    bare = _entry_from_details("x", _details(ssh_host="zeta", allocation_command=None, allocation_parser=None))
     assert bare.allocation is None
-    assert bare.display_name == "hpc-bridge-x"  # UI title defaults to the endpoint name, not the bare id
+    assert bare.display_name == "hpc-bridge-zeta"  # UI title = the ssh-host-keyed endpoint name (not the id "x")
     # facility id is slugified into the endpoint name; an explicit name is preserved (override)
-    assert _entry_from_details("uchicago:globus", _details()).compute.endpoint_name == "hpc-bridge-uchicago-globus"
+    assert _entry_from_details("x", _details(ssh_host="uchicago:globus")).compute.endpoint_name == "hpc-bridge-uchicago-globus"
     assert _entry_from_details("frontier", _details(endpoint_name="my-ep")).compute.endpoint_name == "my-ep"
 
