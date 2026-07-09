@@ -801,6 +801,34 @@ async def _connect_facility(
     )
 
 
+def _needs_preauth_result(facility: str, target) -> ConnectFacilityResult:
+    """Surface a one-time interactive-auth handoff (password / MFA / Duo). The user opens a
+    ControlMaster in THEIR OWN terminal (entering the secret there); hpc-bridge then multiplexes
+    over it. The agent relays the command and NEVER handles the secret — see the credential-handling
+    policy in the vault (`Planned/MFA and interactive SSH auth`)."""
+    if not getattr(target, "control_dir", None):  # multiplexing off -> a pre-opened master can't be shared
+        return ConnectFacilityResult(
+            phase="needs_preauth",
+            facility=facility,
+            notice=f"{target.host} needs an interactive login (password/MFA), but SSH multiplexing is "
+            "off. Set HPC_BRIDGE_SSH_CONTROL_PERSIST (e.g. 3600) so a pre-opened master is reusable, "
+            "then call connect_facility again.",
+        )
+    cmd = target.preauth_command()
+    return ConnectFacilityResult(
+        phase="needs_preauth",
+        facility=facility,
+        preauth_command=cmd,
+        notice=(
+            f"{target.host} needs a one-time interactive login (a password and/or MFA/Duo). Ask the "
+            "USER to run this in THEIR OWN terminal — they enter the secret directly; never ask for, "
+            f"type, or run it with their password yourself:\n    {cmd}\n"
+            "It authenticates once and opens a reusable connection. When they confirm it's connected, "
+            "call connect_facility again — the session then rides that connection with no further auth."
+        ),
+    )
+
+
 async def _propose_or_ask(
     facility: str, ssh_host: str | None, ask_notice: str
 ) -> ConnectFacilityResult:
@@ -813,7 +841,7 @@ async def _propose_or_ask(
         return ConnectFacilityResult(
             phase="needs_facility_details", facility=facility, notice=ask_notice
         )
-    from .facility.remote import SshTarget
+    from .facility.remote import NeedsPreauth, SshTarget
 
     try:
         control_dir, persist = _control_settings()
@@ -826,6 +854,8 @@ async def _propose_or_ask(
             control_persist=persist,
         )
         draft, notes = await discover_facility_details(target)
+    except NeedsPreauth as pre:  # host wants an interactive login (password/MFA) — hand off to the user
+        return _needs_preauth_result(facility, pre.target)
     except Exception as exc:  # noqa: BLE001 - probe/connect/creds failure -> structured result
         return ConnectFacilityResult(
             phase="failed",

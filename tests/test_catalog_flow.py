@@ -379,6 +379,51 @@ async def test_connect_unknown_with_ssh_host_proposes_discovered_details(monkeyp
     assert "newfac" not in app.session_facilities  # propose only; register on confirmation (details=)
 
 
+async def test_connect_unknown_needs_preauth_when_host_wants_a_password(monkeypatch):
+    # An un-indexed host needing a password/MFA: discovery raises NeedsPreauth -> phase=needs_preauth
+    # carrying the user's pre-open command. The agent relays it; neither hpc-bridge nor the agent
+    # handle the secret (MFA, issue #3).
+    from hpc_bridge import server
+    from hpc_bridge.facility.remote import NeedsPreauth
+
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    monkeypatch.setattr(
+        server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
+    )
+    monkeypatch.setattr(server, "_control_settings", lambda: ("/tmp/cm", 3600))  # multiplexing on
+
+    async def fake_discover(target):
+        raise NeedsPreauth(target)
+
+    monkeypatch.setattr(server, "discover_facility_details", fake_discover)
+    res = await server._connect_facility(app, "midway", ssh_host="midway.rcc.uchicago.edu")
+    assert res.phase == "needs_preauth"
+    assert res.preauth_command and res.preauth_command.startswith("ssh -fN ")
+    assert "ControlMaster=yes" in res.preauth_command and "BatchMode" not in res.preauth_command
+    assert res.notice and "own terminal" in res.notice.lower()
+    assert "midway" not in app.session_facilities  # nothing registered until they authenticate + confirm
+
+
+async def test_connect_needs_preauth_flags_multiplexing_off(monkeypatch):
+    # No shareable master when multiplexing is off -> tell the user to enable it (no command to run).
+    from hpc_bridge import server
+    from hpc_bridge.facility.remote import NeedsPreauth
+
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    monkeypatch.setattr(
+        server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
+    )
+    monkeypatch.setattr(server, "_control_settings", lambda: (None, 0))  # multiplexing OFF
+
+    async def fake_discover(target):
+        raise NeedsPreauth(target)
+
+    monkeypatch.setattr(server, "discover_facility_details", fake_discover)
+    res = await server._connect_facility(app, "midway", ssh_host="midway.rcc.uchicago.edu")
+    assert res.phase == "needs_preauth" and res.preauth_command is None
+    assert "multiplexing is off" in (res.notice or "").lower()
+
+
 async def test_connect_unknown_uses_ssh_host_from_env(monkeypatch):
     from hpc_bridge import server
     from hpc_bridge.models import FacilityDetails

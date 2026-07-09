@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import shlex
 
-from .facility.remote import SshTarget, ssh_exec
+from .facility.remote import NeedsPreauth, SshTarget, is_interactive_auth_failure, ssh_exec
 from .models import FacilityDetails
 
 # uv-bootstrap env_setup (validated live on globus1): idempotent create-venv + install, so the FIRST
@@ -52,6 +52,8 @@ async def discover_facility_details(target: SshTarget) -> tuple[FacilityDetails,
     (`interface` above all). Raises RuntimeError if the probe SSH itself can't reach the host."""
     rc, out, err = await ssh_exec(target, f"bash -lc {shlex.quote(_PROBE)}")
     if "HPCB_PROBE_BEGIN" not in out:  # never even ran the script (auth/connect failure)
+        if is_interactive_auth_failure(rc, err):  # needs a one-time interactive pre-auth, not broken
+            raise NeedsPreauth(target)
         raise RuntimeError(f"discovery probe failed (rc={rc}): {(err or out).strip()[:300]}")
     return parse_probe(out, ssh_host=target.host)
 
