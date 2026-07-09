@@ -70,6 +70,18 @@ def test_parse_probe_anvil_scratch_ib0_venv_mybalance():
     assert draft.allocation_command == "mybalance" and draft.allocation_parser == "mybalance"
 
 
+def test_parse_probe_shared_scratch_base_gets_per_user_subdir_and_note():
+    # Midway-shaped: $SCRATCH is a SHARED base (no login name in it) -> append a per-user subdir AND
+    # flag it (a shared base ⇒ Permission denied on every session cd; this stranded a live run).
+    stdout = "\n".join([
+        "HPCB_PROBE_BEGIN", "USER=gusellerm", "HOME=/home/gusellerm", "SCRATCH=/scratch/midway3",
+        "SCHED=slurm", "UV=/usr/bin/uv", "NIC=bond0|10.0.0.5/24", "HPCB_PROBE_END",
+    ])
+    draft, notes = parse_probe(stdout, ssh_host="midway")
+    assert draft.scratch_root == "/scratch/midway3/{user}/.hpc-bridge"  # per-user subdir appended
+    assert any("per-user" in n and "scratch_root" in n for n in notes)  # and flagged to confirm
+
+
 def test_parse_probe_flags_missing_toolchain_and_scheduler():
     out = "HPCB_PROBE_BEGIN\nUSER=u\nHOME=/home/u\nSCHED=none\nGCE=\nUV=\nHPCB_PROBE_END\n"
     draft, notes = parse_probe(out, ssh_host="h")

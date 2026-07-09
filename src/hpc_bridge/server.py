@@ -121,7 +121,7 @@ def _control_settings() -> tuple[str | None, int]:
 def _slurm_facility(profile, *, alias: str, user: str) -> Facility:
     """Wire a Slurm `MachineProfile` into a `SlurmFacility` over SSH — shared by the catalog
     and the hardcoded-Anvil paths."""
-    from .facility.remote import RemoteEndpointCLI, SlurmFacility, SshTarget
+    from .facility.remote import RemoteEndpointCLI, SlurmFacility, SshTarget, _routable_pin
     from .state import LoginNodeStore
 
     control_dir, persist = _control_settings()  # multiplex all SSH over one ControlMaster (MFA-once)
@@ -136,11 +136,12 @@ def _slurm_facility(profile, *, alias: str, user: str) -> Facility:
     cli = RemoteEndpointCLI(target, profile.env_setup)
     store = LoginNodeStore()
     rec = store.get(alias=alias, name=profile.endpoint_name)
-    if rec is not None:  # reconnect direct-to-node instead of the round-robin alias
-        # Dead-pin limitation: if the pinned node is down or the endpoint is gone, the next SSH
-        # fails fast (BatchMode) and surfaces as a structured error; clearing or reconciling a
-        # stale pin is deferred (delete ~/.hpc-bridge/endpoints.json to reset).
-        cli.rebind(rec.login_host)
+    pin = _routable_pin(rec.login_host) if rec is not None else None
+    if pin is not None:  # reconnect direct-to-node (routable pins only) instead of the round-robin alias
+        # An internal-only pin (e.g. Midway's beagle3-tbd1.rcc.local) is dropped -> stay on the alias.
+        # Dead-pin limitation: a routable-but-dead pin still fails fast (BatchMode) -> structured error;
+        # delete ~/.hpc-bridge/endpoints.json to reset.
+        cli.rebind(pin)
     return SlurmFacility(profile, cli, store=store, alias=alias)
 
 
@@ -697,26 +698,11 @@ async def _connect_facility(
 ) -> ConnectFacilityResult:
     # Resolve the entry: a session-local one the agent already supplied wins; else the catalog. An
     # index error is treated as "unresolved" (the agent can still supply details), not a hard fail.
-    entry = app.session_facilities.get(facility)
-    if entry is None:
-        try:
-            entry = await make_catalog().get(facility)
-        except Exception as exc:  # noqa: BLE001 - index/scope unavailable -> fall back to details
-            if details is None:
-                return await _propose_or_ask(
-                    facility, ssh_host,
-                    f"catalog unavailable ({type(exc).__name__}); give me this facility's SSH host "
-                    "(ssh_host=… or HPC_BRIDGE_SSH_HOST) to probe it, or supply details= directly.",
-                )
-            entry = None  # fall through and build from the supplied details
-    if entry is None:
-        if details is None:
-            return await _propose_or_ask(
-                facility, ssh_host,
-                f"{facility!r} isn't in the catalog. Give me its SSH host (ssh_host=… or "
-                "HPC_BRIDGE_SSH_HOST) and I'll probe the login node to propose a config, or supply "
-                "details= directly (or list_facilities() if you meant a catalogued one).",
-            )
+    if details is not None:
+        # An explicit details= is a (re)definition — it OVERRIDES any cached session entry or catalog
+        # match, so a correction after discovery actually takes effect. Previously the cached entry
+        # (frozen on the FIRST call — even one that later failed) silently won, so a wrong field could
+        # never be fixed and stranded the whole session (seen live on Midway).
         try:
             entry = _entry_from_details(facility, details)
         except Exception as exc:  # noqa: BLE001 - bad details -> structured failure, not a crash
@@ -725,7 +711,25 @@ async def _connect_facility(
                 facility=facility,
                 notice=f"invalid facility details: {type(exc).__name__}: {exc}"[:300],
             )
-        app.session_facilities[facility] = entry  # remember it for the provisioning loop
+        app.session_facilities[facility] = entry  # (re)remember the confirmed config for the loop
+    else:
+        entry = app.session_facilities.get(facility)
+        if entry is None:
+            try:
+                entry = await make_catalog().get(facility)
+            except Exception as exc:  # noqa: BLE001 - index/scope unavailable -> ask/probe
+                return await _propose_or_ask(
+                    facility, ssh_host,
+                    f"catalog unavailable ({type(exc).__name__}); give me this facility's SSH host "
+                    "(ssh_host=… or HPC_BRIDGE_SSH_HOST) to probe it, or supply details= directly.",
+                )
+        if entry is None:
+            return await _propose_or_ask(
+                facility, ssh_host,
+                f"{facility!r} isn't in the catalog. Give me its SSH host (ssh_host=… or "
+                "HPC_BRIDGE_SSH_HOST) and I'll probe the login node to propose a config, or supply "
+                "details= directly (or list_facilities() if you meant a catalogued one).",
+            )
     reason = _unsupported_entry_reason(entry)
     if reason is None and entry.allocation is not None and entry.allocation.parser not in PARSERS:
         reason = (
@@ -984,6 +988,48 @@ async def stop_endpoint(ctx: Context) -> EndpointStatus:
     later reconnect reuses it with zero SSH — "stop" means stop spending, not tear the endpoint
     down. Call when you're done with a compute block."""
     return await _stop_endpoint(ctx.request_context.lifespan_context)
+
+
+async def _teardown_endpoint(app: AppCtx) -> EndpointStatus:
+    """FULLY tear the endpoint down: release the billed block, then `gce stop` + delete the login
+    manager over SSH (the facility's `teardown()`), and clear ALL shape/state so nothing lingers.
+    The rare, explicit 'destroy it' op — normally the login endpoint STAYS ONLINE for zero-SSH reuse
+    and costs nothing; a later run_shell would re-bootstrap a fresh endpoint from scratch."""
+    eid = app.state.endpoint_id
+    if eid is None:
+        return EndpointStatus(status="down", block_state="cold", notice="no endpoint was up")
+    await _release_blocks_over_login(app, eid)  # halt spend first (a confirmed stop is stop_endpoint's job)
+    notice = "endpoint fully torn down (block released; manager gce-stopped + deleted)"
+    teardown = getattr(app.facility, "teardown", None)
+    if teardown is not None:
+        try:
+            await teardown(eid)
+        except Exception as exc:  # noqa: BLE001 - report, don't crash the tool
+            notice = f"block released; manager teardown reported {type(exc).__name__}: {exc}"[:280]
+    async with app.lock:  # clear everything so a stray run_shell can't silently revive a stale endpoint
+        for rt in app.shapes.values():
+            if rt.runner is not None:
+                rt.runner.close()
+        app.shapes.clear()
+        app.state = EndpointState()
+    return EndpointStatus(
+        status="down",
+        block_state="cold",
+        endpoint_id=eid,
+        session_spend=_total_session_spend(app),
+        notice=notice + ". It will NOT be reused — a fresh connect_facility re-bootstraps over SSH. "
+        "Do NOT call run_shell now (it would provision a new endpoint).",
+    )
+
+
+@mcp.tool()
+async def teardown_endpoint(ctx: Context) -> EndpointStatus:
+    """FULLY tear down the login-node endpoint (gce stop + delete over SSH) — the rare 'destroy it'
+    operation. **Normally do NOT call this.** The login endpoint is DESIGNED to stay online for
+    zero-SSH reuse and costs nothing (a free login-node process, no allocation); `stop_endpoint`
+    already halts ALL spend by releasing the billed block. Only call this when the user EXPLICITLY
+    insists on removing the endpoint entirely. Afterwards, do not call run_shell (it re-provisions)."""
+    return await _teardown_endpoint(ctx.request_context.lifespan_context)
 
 
 async def _login_shell(app: AppCtx, command: str) -> LoginShellResult:

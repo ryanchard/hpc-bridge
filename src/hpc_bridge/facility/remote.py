@@ -158,6 +158,23 @@ class NeedsPreauth(Exception):
         super().__init__(f"{target.host} needs interactive pre-authentication (password/MFA)")
 
 
+_INTERNAL_HOST_SUFFIXES = (".local", ".internal", ".localdomain")
+
+
+def _routable_pin(host: str | None) -> str | None:
+    """A login-node FQDN is only useful as a reconnect pin if it's reachable from the client via the
+    SAME external path as the alias. Some facilities' `hostname -f` reports an INTERNAL name (Midway:
+    `beagle3-tbd1.rcc.local`) that isn't routable from the client — pinning it breaks login_shell and
+    teardown (seen live). Drop internal (`.local`/`.internal`/`.localdomain`) or single-label names and
+    keep the alias; a DNS-resolvability check is the follow-up if non-suffix internal names appear."""
+    if not host:
+        return None
+    h = host.strip().rstrip(".")
+    if "." not in h or h.lower().endswith(_INTERNAL_HOST_SUFFIXES):
+        return None
+    return h
+
+
 # ------------------------------------------------------------- machine profiles
 
 
@@ -642,6 +659,7 @@ engine:
         uep, _defaults = self.config_template(hpc)
         await self.cli.write_config(name, manager, uep)
         eid, host = await self.cli.start(name)
+        host = _routable_pin(host)  # drop an internal-only FQDN (e.g. beagle3-tbd1.rcc.local) -> keep alias
         if host:
             # Pin the live session to the node the manager daemon actually landed on, so
             # later control-plane ops — above all teardown — reach THIS node instead of

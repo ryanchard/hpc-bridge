@@ -49,6 +49,8 @@ This is a *policy gate*: discovery surfaces the options + the budget, the human 
 
 `stop_endpoint` means **stop spending**, not tear the endpoint down: it cancels the billed Slurm block over the login endpoint (AMQP, no SSH) and **leaves the login-node endpoint online** for reuse. **Read the status, don't assume:** `status="down"` means the cancel was *confirmed* — the block is gone, no more SU accrue. `status="draining"` means the cancel dispatched but the login release channel was cold, so **spend is not confirmed stopped** — the block may still be burning. On `draining`, **call `stop_endpoint` again after a few seconds** (the channel is now warming) until you get `down`; idle-release (~10 min) is only the backstop, not a substitute for confirming. Don't tell the user spending stopped until you've seen `down`. The endpoint stays up either way, so reconnecting later (`connect_facility`/`ensure_endpoint_up`) is **zero-SSH**; a quick `run_shell(shape="login")` after a stop just reuses the still-online endpoint.
 
+**Don't tear the login endpoint down.** It's *designed* to stay online after `stop_endpoint` — a free login-node process (no allocation, no SU), and staying up is exactly what makes the next reconnect zero-SSH. There's nothing to clean up, and `run_shell` will just re-provision one if you kill it (so don't try to `setsid`/`nohup` a stop — that races the auto-revive). If the user **explicitly insists** on removing it entirely, that one case is `teardown_endpoint` (gce stop + delete over SSH); after it, don't `run_shell` (that re-provisions a fresh endpoint).
+
 ## When to use `login_shell` (raw SSH) instead
 
 `login_shell` runs on the login node over a **fresh SSH connection** — reserve it for:

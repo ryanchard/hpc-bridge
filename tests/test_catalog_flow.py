@@ -424,6 +424,32 @@ async def test_connect_needs_preauth_flags_multiplexing_off(monkeypatch):
     assert "multiplexing is off" in (res.notice or "").lower()
 
 
+async def test_explicit_details_rebuild_overrides_cached_entry(monkeypatch):
+    # An explicit details= must REBUILD + overwrite the cached session entry, so a discovery mistake
+    # (e.g. a wrong scratch_root) is fixable in-session — previously the first (even failed) call's
+    # entry silently won and stranded the run (seen live on Midway).
+    from hpc_bridge import server
+
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, MYBALANCE, ""))
+    monkeypatch.setattr(server, "_facility_from_entry", lambda entry, *, account: f)
+    real = server._entry_from_details
+    built = []
+    monkeypatch.setattr(
+        server, "_entry_from_details",
+        lambda facility, details: (built.append(details.scratch_root), real(facility, details))[1],
+    )
+
+    await server._connect_facility(app, "midway", details=_details(scratch_root="/scratch/midway3/.hpc-bridge"))
+    e1 = app.session_facilities["midway"]
+    await server._connect_facility(
+        app, "midway", details=_details(scratch_root="/scratch/midway3/{user}/.hpc-bridge"))
+    assert built == ["/scratch/midway3/.hpc-bridge", "/scratch/midway3/{user}/.hpc-bridge"]  # both rebuilt
+    assert app.session_facilities["midway"] is not e1  # the corrected entry replaced the cached one
+
+
 async def test_connect_unknown_uses_ssh_host_from_env(monkeypatch):
     from hpc_bridge import server
     from hpc_bridge.models import FacilityDetails

@@ -68,11 +68,10 @@ def parse_probe(stdout: str, *, ssh_host: str) -> tuple[FacilityDetails, list[st
         notes.append("scheduler: `sbatch` not found — only Slurm is supported; confirm this is a "
                      "Slurm facility before proceeding.")
 
-    scratch_src = f.get("SCRATCH") or f.get("WORK") or f.get("PSCRATCH")
-    scratch_root = _templatize((scratch_src or f.get("HOME") or "/tmp").rstrip("/"), user) + "/.hpc-bridge"
-    if not scratch_src:
-        notes.append(f"scratch_root: no $SCRATCH/$WORK set; defaulted under $HOME → {scratch_root}. "
-                     "Confirm a shared, non-purged path.")
+    scratch_root, scratch_note = _scratch(
+        f.get("SCRATCH") or f.get("WORK") or f.get("PSCRATCH"), f.get("HOME"), user)
+    if scratch_note:
+        notes.append(scratch_note)
 
     partition = _default_partition(f.get("PART", []))
     if not f.get("PART"):
@@ -126,6 +125,24 @@ def _collect(stdout: str) -> dict:
 def _templatize(path: str, user: str) -> str:
     """Replace the discovered login name with the `{user}` template so the path is per-user."""
     return path.replace(user, "{user}") if user and user in path else path
+
+
+def _scratch(scratch_src: str | None, home: str | None, user: str) -> tuple[str, str | None]:
+    """Propose `scratch_root` + a low-confidence note. `$SCRATCH` is per-user on many facilities
+    (NERSC/Anvil — it contains the login name, so we templatize it) but a SHARED base on others
+    (Midway: `/scratch/midway3`). When the login name ISN'T in the path we can't tell which, so we
+    append a per-user subdir and flag it — a shared base ⇒ `Permission denied` on every session cd
+    (seen live on Midway, where the un-flagged shared path stranded the run)."""
+    if scratch_src:
+        base = scratch_src.rstrip("/")
+        if user and user in base:
+            return _templatize(base, user) + "/.hpc-bridge", None
+        return base + "/{user}/.hpc-bridge", (
+            f"scratch_root: $SCRATCH={base} has no per-user component; proposed {base}/{{user}}/"
+            ".hpc-bridge — CONFIRM it's a writable per-user path (a shared base ⇒ Permission denied "
+            "on every session cd).")
+    return _templatize((home or "/tmp").rstrip("/"), user) + "/.hpc-bridge", (
+        "scratch_root: no $SCRATCH/$WORK set; defaulted under $HOME — confirm a shared, non-purged path.")
 
 
 def _default_partition(part_lines: list[str]) -> str:
