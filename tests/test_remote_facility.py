@@ -32,6 +32,19 @@ def _profile():
     )
 
 
+def _pbs_profile():
+    return remote.MachineProfile(
+        name="polaris", endpoint_name="hpc-bridge-polaris",
+        display_name="Polaris",
+        env_setup="module load conda && source /home/u/gce/bin/activate",
+        interface="hsn0", partition="debug", account="ACC",
+        worker_init="module load conda && source /home/u/gce/bin/activate",
+        scratch_root="/home/u/.hpc-bridge",
+        scheduler="pbs", cpus_per_node=32,
+        scheduler_options="#PBS -l filesystems=home:eagle",
+    )
+
+
 async def test_ssh_exec_kills_child_on_timeout(monkeypatch):
     # A connected ssh session that wedges mid-command must not leak: on timeout the child is
     # killed and reaped (else process + 3 pipe FDs leak per stuck control-plane call).
@@ -124,6 +137,42 @@ def test_slurm_provider_params_survive_the_manager_sanitizer():
     prov = _render(tmpl, {**defaults, **shape_config("compute")})["engine"]["provider"]
     assert prov["partition"] == "debug" and prov["account"] == "ACC"
     assert prov["walltime"] and "launcher" in prov  # full slurm block, not the else branch
+
+
+def test_pbs_template_renders_pbsproprovider_compute_shape():
+    f = SlurmFacility(_pbs_profile(), cli=None)
+    tmpl, defaults = f.config_template(Profile(mode="interactive"))
+    prov = _render(tmpl, {**defaults, **shape_config("compute")})["engine"]["provider"]
+    assert prov["type"] == "PBSProProvider"
+    assert prov["queue"] == "debug"           # partition slot renders under the queue key
+    assert prov["account"] == "ACC"
+    assert prov["cpus_per_node"] == 32
+    assert prov["min_blocks"] == 0
+    assert prov["launcher"]["type"] == "MpiExecLauncher"
+    assert prov["launcher"]["bind_threads"] is True
+    assert "partition" not in prov            # PBS uses queue, not partition
+    assert prov["scheduler_options"] == "#PBS -l filesystems=home:eagle"
+
+
+def test_pbs_template_login_shape_is_localprovider():
+    f = SlurmFacility(_pbs_profile(), cli=None)
+    tmpl, _defaults = f.config_template(Profile(mode="interactive"))
+    cfg = _render(tmpl, shape_config("login"))
+    assert cfg["engine"]["provider"]["type"] == "LocalProvider"
+
+
+def test_pbs_provider_params_survive_the_manager_sanitizer():
+    f = SlurmFacility(_pbs_profile(), cli=None)
+    tmpl, defaults = f.config_template(Profile(mode="interactive"))
+    prov = _render(tmpl, {**defaults, **shape_config("compute")})["engine"]["provider"]
+    assert prov["queue"] == "debug" and prov["account"] == "ACC"  # full block, not else branch
+
+
+def test_slurm_template_still_selected_for_slurm_profile():
+    f = SlurmFacility(_profile(), cli=None)  # _profile() defaults scheduler="slurm"
+    tmpl, defaults = f.config_template(Profile(mode="interactive"))
+    prov = _render(tmpl, {**defaults, **shape_config("compute")})["engine"]["provider"]
+    assert prov["type"] == "SlurmProvider" and prov["partition"] == "debug"
 
 
 def test_worker_init_not_double_encoded_through_sanitizer():

@@ -476,6 +476,93 @@ class RemoteEndpointCLI:
             pass
 
 
+_SLURM_TEMPLATE = """\
+engine:
+  type: GlobusComputeEngine
+  run_in_sandbox: true
+  max_workers_per_node: {{ max_workers_per_node | default(@@MAXW@@) }}
+  address:
+    type: address_by_interface
+    ifname: {{ interface | default(@@IFACE@@) }}
+{% if available_accelerators is defined and available_accelerators %}
+{% if available_accelerators is iterable and available_accelerators is not string %}
+  available_accelerators: [{{ available_accelerators | join(', ') }}]
+{% else %}
+  available_accelerators: {{ available_accelerators }}
+{% endif %}
+{% endif %}
+  job_status_kwargs:
+    max_idletime: @@IDLE@@
+    strategy_period: 30
+  provider:
+    type: {{ provider_type | default('SlurmProvider') }}
+{% if compute | default(true) %}
+    partition: {{ partition | default(@@PARTITION@@) }}
+    account: {{ account | default(@@ACCOUNT@@) }}
+    walltime: {{ walltime | default(@@WALLTIME@@) }}
+    nodes_per_block: {{ nodes_per_block | default(@@NODES@@) }}
+    worker_init: {{ worker_init | default(@@WORKER_INIT@@) }}
+    launcher:
+      type: SrunLauncher
+    init_blocks: {{ init_blocks | default(@@EAGER@@) }}
+    min_blocks: 0
+    max_blocks: {{ max_blocks | default(@@MAXBLK@@) }}
+{% if scheduler_options is defined and scheduler_options %}
+    scheduler_options: {{ scheduler_options }}
+{% endif %}
+{% else %}
+    init_blocks: 1
+    min_blocks: 0
+    max_blocks: {{ max_blocks | default(@@MAXBLK@@) }}
+{% endif %}
+"""
+
+_PBS_TEMPLATE = """\
+engine:
+  type: GlobusComputeEngine
+  run_in_sandbox: true
+  max_workers_per_node: {{ max_workers_per_node | default(@@MAXW@@) }}
+  address:
+    type: address_by_interface
+    ifname: {{ interface | default(@@IFACE@@) }}
+{% if available_accelerators is defined and available_accelerators %}
+{% if available_accelerators is iterable and available_accelerators is not string %}
+  available_accelerators: [{{ available_accelerators | join(', ') }}]
+{% else %}
+  available_accelerators: {{ available_accelerators }}
+{% endif %}
+{% endif %}
+  job_status_kwargs:
+    max_idletime: @@IDLE@@
+    strategy_period: 30
+  provider:
+    type: {{ provider_type | default('PBSProProvider') }}
+{% if compute | default(true) %}
+    account: {{ account | default(@@ACCOUNT@@) }}
+    queue: {{ partition | default(@@PARTITION@@) }}
+    walltime: {{ walltime | default(@@WALLTIME@@) }}
+    nodes_per_block: {{ nodes_per_block | default(@@NODES@@) }}
+{% if cpus_per_node is defined and cpus_per_node %}
+    cpus_per_node: {{ cpus_per_node }}
+{% endif %}
+    worker_init: {{ worker_init | default(@@WORKER_INIT@@) }}
+    launcher:
+      type: MpiExecLauncher
+      bind_threads: true
+    init_blocks: {{ init_blocks | default(@@EAGER@@) }}
+    min_blocks: 0
+    max_blocks: {{ max_blocks | default(@@MAXBLK@@) }}
+{% if scheduler_options is defined and scheduler_options %}
+    scheduler_options: {{ scheduler_options }}
+{% endif %}
+{% else %}
+    init_blocks: 1
+    min_blocks: 0
+    max_blocks: {{ max_blocks | default(@@MAXBLK@@) }}
+{% endif %}
+"""
+
+
 # ---------------------------------------------------------------- the facility
 
 
@@ -526,46 +613,7 @@ class SlurmFacility:
           quotes) and breaks the worker. The json.dumps'd defaults are pre-quoted to match."""
         p = self.profile
         eager = 1 if hpc.mode == "interactive" else 0
-        template = """\
-engine:
-  type: GlobusComputeEngine
-  run_in_sandbox: true
-  max_workers_per_node: {{ max_workers_per_node | default(@@MAXW@@) }}
-  address:
-    type: address_by_interface
-    ifname: {{ interface | default(@@IFACE@@) }}
-{% if available_accelerators is defined and available_accelerators %}
-{% if available_accelerators is iterable and available_accelerators is not string %}
-  available_accelerators: [{{ available_accelerators | join(', ') }}]
-{% else %}
-  available_accelerators: {{ available_accelerators }}
-{% endif %}
-{% endif %}
-  job_status_kwargs:
-    max_idletime: @@IDLE@@
-    strategy_period: 30
-  provider:
-    type: {{ provider_type | default('SlurmProvider') }}
-{% if compute | default(true) %}
-    partition: {{ partition | default(@@PARTITION@@) }}
-    account: {{ account | default(@@ACCOUNT@@) }}
-    walltime: {{ walltime | default(@@WALLTIME@@) }}
-    nodes_per_block: {{ nodes_per_block | default(@@NODES@@) }}
-    worker_init: {{ worker_init | default(@@WORKER_INIT@@) }}
-    launcher:
-      type: SrunLauncher
-    init_blocks: {{ init_blocks | default(@@EAGER@@) }}
-    min_blocks: 0
-    max_blocks: {{ max_blocks | default(@@MAXBLK@@) }}
-{% if scheduler_options is defined and scheduler_options %}
-    scheduler_options: {{ scheduler_options }}
-{% endif %}
-{% else %}
-    init_blocks: 1
-    min_blocks: 0
-    max_blocks: {{ max_blocks | default(@@MAXBLK@@) }}
-{% endif %}
-"""
+        template = _PBS_TEMPLATE if p.scheduler == "pbs" else _SLURM_TEMPLATE
         subs = {
             "@@MAXW@@": str(p.max_workers_per_node),
             "@@IFACE@@": json.dumps(p.interface),
@@ -594,6 +642,8 @@ engine:
             defaults["scheduler_options"] = p.scheduler_options
         if p.available_accelerators is not None:
             defaults["available_accelerators"] = p.available_accelerators
+        if p.cpus_per_node is not None:
+            defaults["cpus_per_node"] = p.cpus_per_node
         return template, defaults
 
     async def bootstrap(self, hpc: Profile) -> EndpointHandle:
