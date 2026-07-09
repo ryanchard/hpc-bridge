@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Line length 88 (ruff + black + isort + flake8 + mypy). Run `make lint` before each commit.
+- Lint bar is **`ruff check .`** only (this repo has no Makefile/black/mypy — README says "ruff clean"). Run `ruff check .` before each commit; it must be clean on touched files. (Note: ruff here does not enforce E501/88-col, and many pre-existing lines exceed it — match surrounding style, don't reflow unrelated lines.)
 - The in-template discriminator MUST be a **bool** named `compute` (never a string compare): the endpoint manager's `_sanitize_user_json` json.dumps's every *string* user-opt, so a `{% if x == 'PBSProProvider' %}` compare sees `'"PBSProProvider"'` and silently drops the block. Bools pass through unchanged.
 - Do NOT `| tojson` a string value in the template (worker_init, scheduler_options): the sanitizer already quotes strings; a second encode embeds literal quotes and breaks the worker.
 - Never rename the scheduler *value* `scheduler="slurm"` (e.g. `test_discovery.py`, `test_catalog_profile_bridge.py`, `catalog/seed/anvil.yaml`) — only the *shape* name `"slurm"`→`"compute"`.
@@ -135,7 +135,7 @@ Expected: PASS
 - [ ] **Step 7: Lint + commit**
 
 ```bash
-make lint
+ruff check .
 git add src/hpc_bridge/facility/remote.py src/hpc_bridge/catalog/entry.py src/hpc_bridge/models.py tests/test_profile.py tests/test_models.py
 git commit -m "feat(pbs): thread scheduler + cpus_per_node through profile; allow scheduler=pbs in FacilityDetails"
 ```
@@ -255,7 +255,7 @@ Expected: PASS. If `test_cost.py`/`test_dispatch.py` reference the `"slurm"` sha
 - [ ] **Step 8: Lint + commit**
 
 ```bash
-make lint
+ruff check .
 git add -u   # tracked modifications only — Task 2 creates no new files, and this never stages untracked dirs (e.g. .claude/)
 git commit -m "refactor(pbs): rename compute shape slurm->compute and flag is_slurm->compute (scheduler-neutral)"
 ```
@@ -401,7 +401,7 @@ Expected: PASS (PBS tests green; all Slurm template tests still green — the Sl
 - [ ] **Step 5: Lint + commit**
 
 ```bash
-make lint
+ruff check .
 git add src/hpc_bridge/facility/remote.py tests/test_remote_facility.py
 git commit -m "feat(pbs): PBSProProvider template selected by profile.scheduler"
 ```
@@ -531,7 +531,7 @@ Expected: PASS (new PBS tests green; the existing `_GLOBUS`/`_ANVIL` Slurm tests
 - [ ] **Step 8: Lint + commit**
 
 ```bash
-make lint
+ruff check .
 git add src/hpc_bridge/discovery.py tests/test_discovery.py
 git commit -m "feat(pbs): discover PBS facilities (qsub/qstat -Q) and rank the compute fabric"
 ```
@@ -666,7 +666,7 @@ Expected: PASS (new cancel tests green; existing stop/teardown tests still green
 - [ ] **Step 6: Lint + commit**
 
 ```bash
-make lint
+ruff check .
 git add src/hpc_bridge/server.py src/hpc_bridge/facility/remote.py tests/test_server.py tests/test_remote_facility.py
 git commit -m "feat(pbs): qdel/qstat cancel on the primary stop path and SSH teardown fallback"
 ```
@@ -724,7 +724,7 @@ Expected: PASS (whole unit suite green).
 - [ ] **Step 6: Lint + commit**
 
 ```bash
-make lint
+ruff check .
 git add src/hpc_bridge/server.py src/hpc_bridge/models.py tests/test_server.py
 git commit -m "feat(pbs): accept pbs entries for stand-up; scheduler-neutral status wording"
 ```
