@@ -43,6 +43,65 @@ def test_happy_path_passes_every_autonomous_invariant():
     assert res["spend_follows_question"].ok is False  # autonomous: billed start, never asked
 
 
+# --- inter-agent (cross-restart) reuse chain: endpoint_reuse_chain.reuse_across_restart ---------
+
+
+def _reuse_across_restart():
+    import sys
+    from pathlib import Path
+    sdir = str(Path(__file__).resolve().parents[1] / "scenarios")
+    if sdir not in sys.path:
+        sys.path.insert(0, sdir)
+    import endpoint_reuse_chain
+    return endpoint_reuse_chain.reuse_across_restart
+
+
+def _chain_trace(*, p1_up_reused: bool, p2_reused: bool, p2_connects: bool = True,
+                 p1_fresh: bool = True) -> Trace:
+    """Synthesize the COMBINED two-phase trace run.py `_combine` produces, mirroring the real live
+    shape: phase-1 does a fresh discovery connect (`proposed_facility_details`, reused=False) then
+    an up-phase connect that — via the find-online refind — may ALREADY read reused=True; phase-2
+    (appended last) reattaches."""
+    def conn(reused, rp):
+        return ToolCall.of("mcp__endpoint__connect_facility", {"facility": "g"},
+                           {"phase": rp, "reused": reused})
+    calls = []
+    if p1_fresh:
+        calls.append(conn(False, "proposed_facility_details"))  # genuine fresh bring-up (phase 1)
+    calls.append(conn(p1_up_reused, "needs_account"))           # phase-1 up-phase connect
+    calls.append(ToolCall.of("mcp__endpoint__run_shell", {"command": "hostname", "shape": "login"},
+                             {"phase": "complete"}))
+    if p2_connects:
+        calls.append(conn(p2_reused, "needs_account"))          # phase-2 reattach (last)
+    return Trace(calls)
+
+
+def test_reuse_across_restart_passes_despite_messy_phase1_bootstrap():
+    # THE regression for run 1783608805: phase-1's first UP-phase connect already read reused=True
+    # (list-lag refind), yet a fresh connect exists and phase 2 reattached -> must PASS.
+    assert _reuse_across_restart()(_chain_trace(p1_up_reused=True, p2_reused=True)).ok
+
+
+def test_reuse_across_restart_passes_clean_fresh_then_reused():
+    assert _reuse_across_restart()(_chain_trace(p1_up_reused=False, p2_reused=True)).ok
+
+
+def test_reuse_across_restart_fails_when_phase2_not_reused():
+    r = _reuse_across_restart()(_chain_trace(p1_up_reused=False, p2_reused=False))
+    assert not r.ok and "reattached=False" in r.detail
+
+
+def test_reuse_across_restart_fails_when_phase2_absent():
+    r = _reuse_across_restart()(_chain_trace(p1_up_reused=True, p2_reused=True, p2_connects=False))
+    assert not r.ok and "saw 1" in r.detail
+
+
+def test_reuse_across_restart_fails_without_a_fresh_bringup():
+    # no reused=False connect anywhere => looks like a leftover endpoint, not a chain bring-up.
+    r = _reuse_across_restart()(_chain_trace(p1_fresh=False, p1_up_reused=True, p2_reused=True))
+    assert not r.ok and "built_fresh=False" in r.detail
+
+
 def _interactive_trace(picked: str = "cheap", provisioned: str = "cheap") -> Trace:
     answered = (
         'Your questions have been answered: "Which partition should I provision on? '
@@ -244,7 +303,8 @@ def test_stop_is_honest_is_registered_but_not_gated_by_default():
     sdir = str(Path(__file__).resolve().parents[1] / "scenarios")
     if sdir not in sys.path:
         sys.path.insert(0, sdir)
-    for name in ("happy_path", "gated_provision", "spend_refusal", "saturation", "endpoint_reuse"):
+    for name in ("happy_path", "gated_provision", "spend_refusal", "saturation", "endpoint_reuse",
+                 "endpoint_reuse_chain"):
         scen = importlib.import_module(name)
         assert "stop_is_honest" not in getattr(scen, "EXPECT_OK", []), name
 

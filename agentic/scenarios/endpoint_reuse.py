@@ -7,15 +7,17 @@ reused over the web, so neither an agent (on an MFA facility: "will this re-auth
 this harness can observe it. The spec: `connect_facility`'s result must carry a
 `reused: true` signal (field or notice) when an online endpoint was reused.
 
-In-process version (this scenario): connect twice to the SAME facility id in one session —
-the second connect hits the session-facility cache and reuses the online endpoint
-server-side; the result must SAY so. The cross-restart version (a keep-chain across two
-containers, where even the session-facility cache is gone — the full #20 cache problem) is
-deferred until suite chain support; `TEARDOWN="keep"` + a stable `FACILITY_ID` are the
-waiting hooks.
+In-process version (this scenario): connect twice to the SAME facility id in one session.
+Each connect resets state and re-runs bootstrap, so the second one calls
+`find_online_endpoint` (Globus web service, by identity+name) and reattaches to the manager
+the first connect started — zero SSH — and now returns `reused=True`. The config cache
+(`session_facilities`) only skips catalog re-resolution; the endpoint reuse itself is the
+find-online path. The cross-restart version (a keep-chain across two containers, where even
+the in-process state is gone — the full #20 cache problem) is deferred until suite chain
+support; `TEARDOWN="keep"` + a stable `FACILITY_ID` are the waiting hooks.
 
-STATUS: RED by design — the `reused` signal does not exist in ConnectFacilityResult yet.
-Login-shape only (no billed block): cheap (~3 min) and fast.
+STATUS: signal now IMPLEMENTED (#20 — `ConnectFacilityResult.reused` + notice); expected
+GREEN, pending a live confirm. Login-shape only (no billed block): cheap (~3 min) and fast.
 """
 from invariants import Result, Trace, _UP_PHASES
 
@@ -31,7 +33,9 @@ PROMPT = (
 
 USER_GOAL = ""      # autonomous
 PERSONA = None
-KIND = "regression"  # RED until connect_facility surfaces `reused`
+KIND = "regression"
+SUMMARY = "intra-agent reuse: within ONE session, a second connect_facility reattaches to the endpoint the first stood up"
+TAGS = ["reuse", "zero-ssh", "intra-agent"]
 
 
 def reuse_signalled(t: Trace) -> Result:
