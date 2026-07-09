@@ -1,22 +1,10 @@
 from __future__ import annotations
 
-import pytest
-
 from hpc_bridge.models import FacilityDetails
 from hpc_bridge.profile import Profile
 from hpc_bridge.runner import CanaryResult
 from hpc_bridge.server import AppCtx, _ensure_endpoint_up, _list_facilities, mcp
 from tests.fakes import FakeCatalog, FakeFacility, fake_entry
-
-
-@pytest.fixture(autouse=True)
-def _isolate_facility_cache(monkeypatch, tmp_path):
-    # Every connect-flow test gets a FRESH local-discovery cache — never the real ~/.hpc-bridge one
-    # (so tests don't read stale entries or WRITE test facilities into the user's real cache).
-    from hpc_bridge import server
-    from hpc_bridge.state import FacilityStore
-
-    monkeypatch.setattr(server, "_facility_store", lambda: FacilityStore(tmp_path / "facilities.json"))
 
 
 class _Res:

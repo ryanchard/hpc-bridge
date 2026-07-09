@@ -15,6 +15,13 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
+def _state_dir() -> Path:
+    """Base dir for hpc-bridge's local state (login-node pins, the facility cache, SSH control
+    sockets). Defaults to ~/.hpc-bridge; `HPC_BRIDGE_STATE_DIR` relocates it — tests point it at a
+    tmp dir so they never read stale entries or WRITE into the developer's real state."""
+    return Path(os.environ.get("HPC_BRIDGE_STATE_DIR") or (Path.home() / ".hpc-bridge"))
+
+
 @dataclass(frozen=True)
 class EndpointRecord:
     endpoint_id: str
@@ -32,7 +39,7 @@ def _key(alias: str, name: str) -> str:
 
 class LoginNodeStore:
     def __init__(self, path: Path | str | None = None) -> None:
-        default = Path.home() / ".hpc-bridge" / "endpoints.json"
+        default = _state_dir() / "endpoints.json"
         self.path = Path(path) if path else default
 
     def _load(self) -> dict[str, dict]:
@@ -78,7 +85,7 @@ class FacilityStore:
     ssh-host-based endpoint name and doesn't sprawl across facility-id choices."""
 
     def __init__(self, path: Path | str | None = None) -> None:
-        default = Path.home() / ".hpc-bridge" / "facilities.json"
+        default = _state_dir() / "facilities.json"
         self.path = Path(path) if path else default
 
     def _load(self) -> dict[str, dict]:

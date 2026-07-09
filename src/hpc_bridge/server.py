@@ -112,7 +112,9 @@ def _control_settings() -> tuple[str | None, int]:
         persist = 60
     if persist <= 0:
         return None, 60
-    cd = os.path.expanduser("~/.hpc-bridge/cm")
+    from .state import _state_dir
+
+    cd = str(_state_dir() / "cm")
     os.makedirs(cd, mode=0o700, exist_ok=True)
     os.chmod(cd, 0o700)  # the socket lets commands run on the master without re-auth
     return cd, persist
