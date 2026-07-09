@@ -200,6 +200,8 @@ class MachineProfile:
     amqp_port: int = 443    # facilities firewall the default AMQPS 5671; 443 is allowed
     scheduler_options: str | None = None
     scratch_root: str | None = None  # session-shell root on the shared filesystem
+    scheduler: str = "slurm"          # "slurm" | "pbs" — selects the config_template branch
+    cpus_per_node: int | None = None  # PBS: emitted as PBSProProvider.cpus_per_node; Slurm: unused
 
 
 def profile_from_catalog_entry(

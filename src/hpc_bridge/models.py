@@ -89,8 +89,10 @@ class FacilityDetails(BaseModel):
         description="Default Slurm partition/queue for compute blocks.",
         examples=["shared", "batch", "debug"],
     )
-    scheduler: Literal["slurm"] = Field(
-        default="slurm", description="Scheduler. Only 'slurm' is supported in this version."
+    scheduler: Literal["slurm", "pbs"] = Field(
+        default="slurm",
+        description="Batch scheduler: 'slurm' or 'pbs' (PBS Pro). Picks the provider/launcher "
+        "and the queue vs partition wording; LSF is not supported yet.",
     )
     allocation_command: str | None = Field(
         default=None,
