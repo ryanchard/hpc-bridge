@@ -19,9 +19,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from invariants import Result, check_all
+from invariants import Result, Trace, check_all
 from provenance import write_run_record
-from runner import run_scenario
+from runner import RunResult, run_scenario
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCENARIOS_DIR = REPO_ROOT / "agentic" / "scenarios"
@@ -35,6 +35,41 @@ def _short(d: dict, n: int = 72) -> str:
 def _endpoint_name(facility: str) -> str:
     # Session facilities register as hpc-bridge-<facility> (server._session_endpoint_name).
     return f"hpc-bridge-{facility}"
+
+
+def _combine(results: list[RunResult]) -> RunResult:
+    """Merge a chain's per-phase RunResults into one for grading: concatenated calls / messages /
+    dialogue, and a `final` that surfaces the FIRST errored phase — so an early-phase failure
+    can't hide behind a healthy last phase's result."""
+    calls = [c for r in results for c in r.trace.calls]
+    messages = [m for r in results for m in r.messages]
+    dialogue = [d for r in results for d in (r.dialogue or [])]
+    errored = [r for r in results if r.final is None or getattr(r.final, "is_error", False)]
+    final = (errored[0] if errored else results[-1]).final
+    return RunResult(trace=Trace(calls), final=final, messages=messages, dialogue=dialogue)
+
+
+async def _run_chain(phase_prompts, scen, *, model, effort, persona, user_goal, no_skill):
+    """A cross-restart reuse CHAIN: each phase is a SEPARATE agent session (a fresh MCP server —
+    the "restart"), sharing this run's facility id + pool user with NO teardown between. So a
+    later phase's cold server must reattach (find_online_endpoint) to the endpoint an earlier
+    phase stood up — the inter-agent reuse the intra-agent scenario can't reach. Between phases we
+    settle so the just-started endpoint registers 'online' in the web service (else the next phase
+    re-bootstraps over SSH instead of reattaching over the web)."""
+    delay = max(0, int(getattr(scen, "INTERPHASE_DELAY_S", 25)))
+    results: list[RunResult] = []
+    for i, pp in enumerate(phase_prompts):
+        print(f"\n=== CHAIN PHASE {i + 1}/{len(phase_prompts)} (fresh MCP server) ===")
+        r = await run_scenario(pp, repo_root=REPO_ROOT, model=model, effort=effort,
+                               persona=persona, user_goal=user_goal, ablate_skill=no_skill)
+        results.append(r)
+        print(f"  phase {i + 1}: {len(r.trace.calls)} calls · is_error={getattr(r.final, 'is_error', None)}")
+        if i + 1 < len(phase_prompts) and delay:
+            print(f"  … settling {delay}s so the endpoint registers online for the next phase")
+            await asyncio.sleep(delay)
+    total = sum((getattr(r.final, "total_cost_usd", 0) or 0) for r in results)
+    print(f"chain total cost ≈ ${total:.4f} across {len(results)} phases")
+    return _combine(results)
 
 
 def _ssh_run(remote: str, *, timeout: int = 60) -> tuple[int, str]:
@@ -147,7 +182,11 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
     runid = os.environ.get("HPCB_RUNID", "local")
     # A scenario may pin a STABLE facility id (reuse chains); else it's per-run unique.
     facility = getattr(scen, "FACILITY_ID", None) or f"globus1-{runid}"
-    prompt = scen.PROMPT.format(facility=facility)
+    # PHASES => a cross-restart CHAIN: each phase is a separate agent session (fresh MCP server),
+    # sharing this run's facility id so a later phase reattaches to an earlier phase's endpoint. A
+    # single PROMPT is just the one-phase case.
+    phases = [p.format(facility=facility) for p in (getattr(scen, "PHASES", []) or [])]
+    prompt = phases[0] if phases else scen.PROMPT.format(facility=facility)
     # Interactive mode: persona from the CLI override, else the scenario's default.
     persona = persona or getattr(scen, "PERSONA", None)
     user_goal = getattr(scen, "USER_GOAL", "").format(facility=facility)
@@ -157,9 +196,12 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
         "runid": runid,
         "scenario": scenario,
         "kind": getattr(scen, "KIND", "regression"),
+        "tags": list(getattr(scen, "TAGS", [])),
+        "summary": getattr(scen, "SUMMARY", ""),
         "facility": facility,
         "endpoint_name": _endpoint_name(facility),
         "prompt": prompt,
+        "phases": phases or None,
         "persona": persona,
         "user_goal": user_goal,
         "model": model,
@@ -182,8 +224,12 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
             print("RESULT: SETUP FAILED — scenario not run (world precondition unmet)")
             rc = 2
             return rc
-        res = await run_scenario(prompt, repo_root=REPO_ROOT, model=model, effort=effort,
-                                 persona=persona, user_goal=user_goal, ablate_skill=no_skill)
+        if phases:
+            res = await _run_chain(phases, scen, model=model, effort=effort,
+                                   persona=persona, user_goal=user_goal, no_skill=no_skill)
+        else:
+            res = await run_scenario(prompt, repo_root=REPO_ROOT, model=model, effort=effort,
+                                     persona=persona, user_goal=user_goal, ablate_skill=no_skill)
 
         print(f"\n=== TRACE: {len(res.trace.calls)} tool calls ===")
         for i, c in enumerate(res.trace.calls):

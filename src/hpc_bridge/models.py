@@ -131,6 +131,9 @@ class ConnectFacilityResult(BaseModel):
         "failed",
     ]
     facility: str  # the id/subject that was connected (echoes connect_facility's arg)
+    # True when we attached to an already-online endpoint (find_online_endpoint / status=running)
+    # instead of SSH-bootstrapping a fresh one — a zero-SSH reconnect (#20).
+    reused: bool = False
     allocations: list[AllocationOption] = []
     # A draft discovered by probing the login node (phase="proposed_facility_details"): review/correct
     # it with the user, then connect_facility(details=…). None for every other phase.

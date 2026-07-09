@@ -21,7 +21,7 @@ flowchart TD
   P3 --> P4[capture FQDN + pin login node]
 ```
 
-- **Reuse first** (`find_online_endpoint`, `remote.py:643`) — a still-running endpoint from a prior session is reused over AMQP with no SSH. This is the [[Two-channel architecture|SSH-once]] keystone.
+- **Reuse first** (`find_online_endpoint`, `remote.py:643`) — a still-running endpoint from a prior session is reused over AMQP with no SSH. This is the [[Two-channel architecture|SSH-once]] keystone, and the reattach is now **surfaced** on the connect result (`ConnectFacilityResult.reused`) instead of being silent ([#20](https://github.com/ryanchard/hpc-bridge/issues/20)).
 - **Credentials** — seeded only if the remote can't already authenticate (`whoami`). See [[Credential seeding]].
 - **Provision** (`remote.py:585`) — `configure` (forced `--multi-user false`) → write the engine-free manager `config.yaml` + the [[MEP & templated endpoints|UEP template]] → `start --detach`.
 - **Pin** — record the login node so the next session reconnects directly ([[state]]).

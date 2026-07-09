@@ -281,6 +281,7 @@ async def test_bootstrap_seeds_when_remote_db_absent(monkeypatch, tmp_path):
     handle = await fac.bootstrap(Profile(mode="interactive"))
     assert cli.seeded == made  # creds shipped because remote db was absent
     assert handle.login_host == "login03.anvil.rcac.purdue.edu"
+    assert handle.reused is False  # #20: fresh SSH bootstrap, not a reuse
     assert ("start", "hpc-bridge") in cli.calls
 
 
@@ -291,6 +292,7 @@ async def test_bootstrap_skips_seed_when_remote_db_present(monkeypatch, tmp_path
     handle = await fac.bootstrap(Profile(mode="interactive"))
     assert cli.seeded is None  # already had creds -> no reseed
     assert handle.login_host is None  # reused (already-running) endpoint isn't re-probed
+    assert handle.reused is True  # #20: status=running is a reuse
 
 
 async def test_bootstrap_records_login_node_in_store(monkeypatch, tmp_path):
@@ -346,6 +348,7 @@ async def test_bootstrap_reuses_online_endpoint_without_any_ssh():
     fac = SlurmFacility(_profile(), cli=cli, client_factory=lambda: client)
     handle = await fac.bootstrap(Profile(mode="interactive"))
     assert handle.endpoint_id == "reused-eid"
+    assert handle.reused is True  # #20: surfaced as a reuse, not a fresh bootstrap
     assert cli.calls == []  # zero SSH: no status/configure/start/login_exec
     assert cli.seeded is None  # and no credential seeding
 
@@ -354,6 +357,7 @@ async def test_provision_fresh_configures_writes_and_starts():
     cli = _FakeRemoteCLI(status=None)  # not configured yet
     handle = await SlurmFacility(_profile(), cli=cli).provision(Profile(mode="interactive"))
     assert isinstance(handle, EndpointHandle) and handle.endpoint_id == "fake-eid"
+    assert handle.reused is False  # #20: fresh provision
     assert ("configure", "hpc-bridge", False) in cli.calls  # forced single-user
     assert ("start", "hpc-bridge") in cli.calls
     assert "amqp_port: 443" in cli.written["manager"]  # firewall-friendly AMQP in manager cfg

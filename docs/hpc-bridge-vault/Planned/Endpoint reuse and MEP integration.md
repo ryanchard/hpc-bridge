@@ -10,7 +10,7 @@ Three ways to reach a warm compute channel, best-first — each removes more SSH
 | Tier | Mechanism | SSH cost | Status |
 |---|---|---|---|
 | 1. **Facility MEP** | submit a UEP config to a facility's multi-user (identity-mapped) manager UUID | **none, ever** | Phase 2 (this note) |
-| 2. **Our online endpoint** | reattach to an already-running `hpc-bridge-<facility>` by name | none after the first bootstrap | Phase 1 — *detection built, signal not surfaced* |
+| 2. **Our online endpoint** | reattach to an already-running `hpc-bridge-<facility>` by name | none after the first bootstrap | **Phase 1 — SHIPPED** ([#20](https://github.com/ryanchard/hpc-bridge/issues/20)): signal surfaced + inter-agent chain test |
 | 3. **SSH bootstrap** | SSH in once, start our own personal manager | one bootstrap (~2 auths) | built — the current default |
 
 ## Two senses of "MEP" — don't conflate them
@@ -19,9 +19,9 @@ Three ways to reach a warm compute channel, best-first — each removes more SSH
 
 A **facility MEP** (Phase 2) is the *other* sense: a manager the **facility** runs in **true multi-user mode with identity mapping** — one daemon serving many users, forking an identity-mapped UEP per authenticated Globus identity. **That identity mapping is precisely what replaces our SSH bootstrap:** SSH exists today only to authenticate-as-the-user and start their personal manager; a facility MEP already runs the manager and maps our Globus identity to a local account over AMQP, so no SSH is needed. Tier 1 is not "reuse our endpoint" — it's "borrow the facility's."
 
-## Phase 1 — reuse hpc-bridge's own endpoints (do first)
+## Phase 1 — reuse hpc-bridge's own endpoints ✅ SHIPPED ([#20](https://github.com/ryanchard/hpc-bridge/issues/20), PR #26)
 
-**The detection already exists and works cross-session.** `bootstrap()` (`facility/remote.py:544`) asks Globus, *before any SSH*, whether we already own an online endpoint by the stable name `hpc-bridge-<facility>`:
+**The detection already existed and works cross-session.** `bootstrap()` (`facility/remote.py:544`) asks Globus, *before any SSH*, whether we already own an online endpoint by the stable name `hpc-bridge-<facility>`:
 
 ```python
 reused = await self.find_online_endpoint(self.profile.endpoint_name)   # remote.py:559 / :643
@@ -31,12 +31,9 @@ if reused is not None:
 
 Because the name is stable and the manager persists on the cluster, a **fresh server process reconnects to a prior session's endpoint with zero SSH** — the SSH-once story is real *today* ([[Standing up the endpoint]]).
 
-**The gap is the signal, not the logic.** The reuse fact is computed into `reused` and then dropped: `EndpointHandle` (`facility/base.py`) carries no reuse flag, so `_provision` (`server.py:463`) reads only `handle.endpoint_id`, and `_connect_facility` (`server.py:695`) / `ConnectFacilityResult` (`models.py:119`) never learn it happened. Neither the agent nor the user can tell "reattached, free" from "freshly bootstrapped."
+**The gap was the signal, not the logic — now closed.** The reuse fact was computed into `reused` and then dropped (`EndpointHandle` carried no flag), so the connect result never learned it happened. #20 threaded it up: `EndpointHandle.reused` (set at `bootstrap()` `:561` and `provision()`'s `running` case `:593`, false on a fresh `start`) → `EndpointState.reused` → `ConnectFacilityResult.reused` + a "zero-SSH reconnect" notice. The agent and user can now tell "reattached, free" from "freshly bootstrapped."
 
-**The work** — the [[Agentic testing - Plan B (runtime sandbox)|`endpoint_reuse`]] red scenario is the spec ([#20](https://github.com/ryanchard/hpc-bridge/issues/20)):
-- Add `reused: bool` to `EndpointHandle`; set it at the two reuse branches (`bootstrap()` `:561`, `provision()`'s `running` case `:593`), false on a fresh `start`.
-- Thread it up: `_provision` → `EndpointState` → `ConnectFacilityResult.reused`; the tool result signals it and the skill teaches the agent to say "reused (zero-SSH)" rather than imply a fresh bootstrap.
-- Confirm the cross-session path end-to-end: restart the server, `connect_facility` the same facility, assert `reused=True` and no SSH.
+**Verified two ways** (both scenarios green): `endpoint_reuse` (intra-agent — one session, two connects) live, and `endpoint_reuse_chain` (inter-agent — two agent sessions across an MCP-server restart, the true cross-session case) via re-grade of the real trace. The harness gained a `PHASES` chain primitive to run the latter (see [[Agentic testing - Plan B (runtime sandbox)]]).
 
 > [!note] Known sub-gap (deferred, but named): stale-online reuse
 > `find_online_endpoint` trusts the web service's "online" — a **stale registration** (registered-online but dead) is reused as-is and the canary can never warm it (`bootstrap()` docstring caveat). Re-bootstrap-on-stale is the natural Phase 1.5.
