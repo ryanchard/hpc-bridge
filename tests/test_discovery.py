@@ -49,6 +49,43 @@ HPCB_PROBE_END
 """
 
 
+# Polaris-shaped: PBS (qsub, no sbatch), Slingshot hsn0 beside the bond0 mgmt NIC, conda env.
+_POLARIS = """\
+HPCB_PROBE_BEGIN
+USER=rchard
+HOME=/home/rchard
+SCRATCH=
+WORK=
+PSCRATCH=
+SCHED=pbs
+GCE=
+UV=
+MYBALANCE=
+XDUSAGE=
+QUEUE=debug
+QUEUE=prod
+NIC=lo|127.0.0.1/8
+NIC=bond0|10.140.56.127/24
+NIC=hsn0|10.201.3.11/16
+HPCB_PROBE_END
+"""
+
+
+def test_parse_probe_detects_pbs_and_queue():
+    draft, notes = parse_probe(_POLARIS, ssh_host="polaris")
+    assert draft.scheduler == "pbs"
+    assert draft.partition == "debug"       # preferred PBS queue
+
+
+def test_parse_probe_prefers_compute_fabric_over_bond():
+    draft, _notes = parse_probe(_POLARIS, ssh_host="polaris")
+    assert draft.interface == "hsn0"        # Slingshot fabric, not the bond0 mgmt NIC
+
+
+def test_probe_script_checks_qsub_and_qstat():
+    assert "qsub" in discovery._PROBE and "qstat -Q" in discovery._PROBE
+
+
 def test_parse_probe_globus_uv_bootstrap_no_scratch_no_alloc():
     draft, notes = parse_probe(_GLOBUS, ssh_host="globus1")
     assert draft.ssh_host == "globus1" and draft.scheduler == "slurm"

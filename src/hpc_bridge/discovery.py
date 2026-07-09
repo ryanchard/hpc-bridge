@@ -21,8 +21,9 @@ _UV_ENV_SETUP = (
     "command -v globus-compute-endpoint >/dev/null 2>&1 || uv pip install -q globus-compute-endpoint"
 )
 
-# Dedicated HPC high-speed fabrics — a strong `interface` signal vs a management eth.
-_FAST_NIC_PREFIXES = ("ib", "hsn", "ipogif", "hsi", "bond")
+# Dedicated HPC high-speed fabrics — a strong `interface` signal vs a management eth. Ordered by
+# priority: the dedicated compute fabric (hsn/ipogif/ib/hsi) outranks a `bond` mgmt NIC.
+_FAST_NIC_ORDER = ("hsn", "ipogif", "ib", "hsi", "bond")
 _VIRTUAL_NIC_PREFIXES = ("docker", "virbr", "veth", "br-", "cni", "flannel", "tap")
 
 # One batched probe. Each command is guarded so one failure can't abort the sweep; output is framed by
@@ -34,12 +35,13 @@ echo "HOME=${HOME:-}"
 echo "SCRATCH=${SCRATCH:-}"
 echo "WORK=${WORK:-}"
 echo "PSCRATCH=${PSCRATCH:-}"
-if command -v sbatch >/dev/null 2>&1; then echo SCHED=slurm; else echo SCHED=none; fi
+if command -v sbatch >/dev/null 2>&1; then echo SCHED=slurm; elif command -v qsub >/dev/null 2>&1; then echo SCHED=pbs; else echo SCHED=none; fi
 echo "GCE=$(command -v globus-compute-endpoint 2>/dev/null)"
 echo "UV=$(command -v uv 2>/dev/null)"
 echo "MYBALANCE=$(command -v mybalance 2>/dev/null)"
 echo "XDUSAGE=$(command -v xdusage 2>/dev/null)"
 sinfo -h -o 'PART=%P|%a' 2>/dev/null || true
+qstat -Q 2>/dev/null | awk 'NR>2 && $1!="" {print "QUEUE="$1}' || true
 ip -o -4 addr show 2>/dev/null | awk '{print "NIC="$2"|"$4}' || true
 echo HPCB_PROBE_END
 """.strip()
@@ -64,18 +66,27 @@ def parse_probe(stdout: str, *, ssh_host: str) -> tuple[FacilityDetails, list[st
     user = f.get("USER") or ""
     notes: list[str] = []
 
-    if f.get("SCHED") != "slurm":
-        notes.append("scheduler: `sbatch` not found — only Slurm is supported; confirm this is a "
-                     "Slurm facility before proceeding.")
-
     scratch_root, scratch_note = _scratch(
         f.get("SCRATCH") or f.get("WORK") or f.get("PSCRATCH"), f.get("HOME"), user)
     if scratch_note:
         notes.append(scratch_note)
 
-    partition = _default_partition(f.get("PART", []))
-    if not f.get("PART"):
-        notes.append("partition: `sinfo` returned nothing; confirm the queue to use.")
+    sched = f.get("SCHED")
+    if sched == "pbs":
+        scheduler = "pbs"
+        partition = _default_queue(f.get("QUEUE", []))
+        if not f.get("QUEUE"):
+            notes.append("queue: `qstat -Q` returned nothing; confirm the PBS queue to use.")
+    elif sched == "slurm":
+        scheduler = "slurm"
+        partition = _default_partition(f.get("PART", []))
+        if not f.get("PART"):
+            notes.append("partition: `sinfo` returned nothing; confirm the queue to use.")
+    else:
+        scheduler = "slurm"
+        partition = _default_partition(f.get("PART", []))
+        notes.append("scheduler: neither `sbatch` nor `qsub` found; defaulted scheduler='slurm' — "
+                     "confirm the facility's scheduler before proceeding.")
 
     interface, nic_note = _interface(f.get("NIC", []))
     notes.append(nic_note)  # interface is always flagged — it's the field the canary most often fails on
@@ -93,7 +104,7 @@ def parse_probe(stdout: str, *, ssh_host: str) -> tuple[FacilityDetails, list[st
         env_setup=env_setup,
         scratch_root=scratch_root,
         partition=partition,
-        scheduler="slurm",
+        scheduler=scheduler,
         allocation_command=alloc_cmd,
         allocation_parser=alloc_parser,
     )
@@ -103,7 +114,7 @@ def parse_probe(stdout: str, *, ssh_host: str) -> tuple[FacilityDetails, list[st
 def _collect(stdout: str) -> dict:
     """Frame-bounded parse of `KEY=value` lines; PART/NIC accumulate into lists."""
     scalars: dict[str, str] = {}
-    multi: dict[str, list[str]] = {"PART": [], "NIC": []}
+    multi: dict[str, list[str]] = {"PART": [], "NIC": [], "QUEUE": []}
     in_block = False
     for raw in stdout.splitlines():
         line = raw.strip()
@@ -158,6 +169,15 @@ def _default_partition(part_lines: list[str]) -> str:
     return clean[0] if clean else "debug"
 
 
+def _default_queue(queue_lines: list[str]) -> str:
+    """Pick a sensible default PBS queue: prefer a debug/short one, else the first listed."""
+    names = [q.strip() for q in queue_lines if q.strip()]
+    for pref in ("debug", "debug-scaling", "prod", "batch"):
+        if pref in names:
+            return pref
+    return names[0] if names else "debug"
+
+
 def _interface(nic_lines: list[str]) -> tuple[str, str]:
     """Propose the worker-binding NIC from `ip addr` candidates — always low-confidence."""
     cands: list[str] = []
@@ -169,8 +189,12 @@ def _interface(nic_lines: list[str]) -> tuple[str, str]:
     if not cands:
         return "ib0", ("interface: no candidate NIC found via `ip addr`; defaulted to `ib0` — VERIFY "
                        "(a wrong interface ⇒ workers never register).")
-    fast = [c for c in cands if c.startswith(_FAST_NIC_PREFIXES)]
-    pick = fast[0] if fast else cands[0]
+    fast = [c for c in cands if c.startswith(_FAST_NIC_ORDER)]
+
+    def _rank(nic: str) -> int:
+        return next((i for i, p in enumerate(_FAST_NIC_ORDER) if nic.startswith(p)), len(_FAST_NIC_ORDER))
+
+    pick = min(fast, key=_rank) if fast else cands[0]
     return pick, (f"interface: proposed `{pick}` from {cands} — CONFIRM (a wrong interface ⇒ workers "
                   "never register; the login canary catches it).")
 
