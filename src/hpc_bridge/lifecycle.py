@@ -12,6 +12,7 @@ BlockState = Literal["warm", "cold", "provisioning"]
 @dataclass
 class EndpointState:
     endpoint_id: str | None = None
+    reused: bool = False  # endpoint_id came from reattaching to an already-online endpoint
 
 
 async def probe(facility: Facility, state: EndpointState) -> BlockState:
@@ -25,6 +26,6 @@ async def ensure_warm(
 ) -> tuple[BlockState, EndpointState]:
     if state.endpoint_id is None:
         handle = await facility.provision(profile)
-        state = EndpointState(endpoint_id=handle.endpoint_id)
+        state = EndpointState(endpoint_id=handle.endpoint_id, reused=handle.reused)
     block = await probe(facility, state)
     return block, state

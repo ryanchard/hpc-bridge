@@ -11,6 +11,7 @@ class EndpointHandle:
     endpoint_id: str
     name: str
     login_host: str | None = None  # resolved FQDN the manager daemon landed on
+    reused: bool = False  # attached to an already-online endpoint (no fresh provision, no SSH)
 
 
 @runtime_checkable

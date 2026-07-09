@@ -480,7 +480,7 @@ async def _provision(
         bootstrap = getattr(app.facility, "bootstrap", None)
         if bootstrap is not None:
             handle = await bootstrap(app.profile)
-            app.state = EndpointState(endpoint_id=handle.endpoint_id)
+            app.state = EndpointState(endpoint_id=handle.endpoint_id, reused=handle.reused)
     block, app.state = await ensure_warm(app.facility, app.profile, app.state)
     if block == "warm":  # manager online -> confirm a worker is actually live
         block = await _confirm_worker(app, shape, force=force_canary)
@@ -765,18 +765,22 @@ async def _connect_facility(
                 facility=facility,
                 notice=f"hpc-bridge error: {type(exc).__name__}: {exc}"[:500],
             )
+    reused = app.state.reused  # reattached to an already-online endpoint (zero SSH), not a fresh bootstrap
+    reuse_note = "reused the already-online endpoint (zero-SSH reconnect). " if reused else ""
     if block != "warm":  # login node still coming up — nothing to read yet
         return ConnectFacilityResult(
             phase="provisioning",
             facility=facility,
-            notice="bringing up the login node; call connect_facility again shortly to read your allocations",
+            reused=reused,
+            notice=reuse_note + "bringing up the login node; call connect_facility again shortly to read your allocations",
         )
     if entry.allocation is None:  # no auto-listable allocations -> the human supplies the account
         return ConnectFacilityResult(
             phase="needs_account",
             facility=facility,
+            reused=reused,
             allocations=[],
-            notice="login node is up; this facility has no allocation listing — charge a block by "
+            notice=reuse_note + "login node is up; this facility has no allocation listing — charge a block by "
             "passing the account directly: ensure_endpoint_up(account=…, partition=…, confirm_spend=True).",
         )
     out = await _run_shell(app, entry.allocation.command, shape="login")
@@ -791,8 +795,9 @@ async def _connect_facility(
     return ConnectFacilityResult(
         phase="needs_account",
         facility=facility,
+        reused=reused,
         allocations=allocations,
-        notice="pick an allocation, then ensure_endpoint_up(account=…, partition=…, confirm_spend=True)",
+        notice=reuse_note + "pick an allocation, then ensure_endpoint_up(account=…, partition=…, confirm_spend=True)",
     )
 
 

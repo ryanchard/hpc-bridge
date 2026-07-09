@@ -146,6 +146,29 @@ async def test_connect_facility_brings_up_login_and_lists_allocations(monkeypatc
     assert res.facility == "anvil"
     assert [a.account for a in res.allocations] == ["cis250223", "cis250223-gpu"]
     assert app.facility is f and app.machine == "anvil"  # late-bound the chosen facility
+    assert res.reused is False  # fresh bootstrap by default
+
+
+async def test_connect_facility_signals_reuse_when_endpoint_already_online(monkeypatch):
+    # #20: reattaching to an already-online endpoint (find_online_endpoint / status=running) must be
+    # SURFACED — the result carries reused=True (a zero-SSH reconnect), not silently swallowed as it
+    # was before. The signal threads bootstrap/provision -> EndpointHandle -> EndpointState -> result.
+    from hpc_bridge import server
+
+    f = FakeFacility()
+    f.workers = 1  # manager online
+    f.reused = True  # provision reports it attached to an existing endpoint, didn't start one
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, MYBALANCE, ""))
+    monkeypatch.setattr(
+        server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
+    )
+    monkeypatch.setattr(server, "_facility_from_entry", lambda entry, *, account: f)
+
+    res = await server._connect_facility(app, "anvil")
+    assert res.phase == "needs_account"
+    assert res.reused is True
+    assert res.notice and "reused" in res.notice.lower()  # and narrated for the agent
 
 
 async def test_connect_facility_unknown_returns_needs_facility_details(monkeypatch):

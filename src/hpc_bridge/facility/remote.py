@@ -558,7 +558,7 @@ engine:
         canary then can't warm it — re-bootstrap-on-stale is a deferred follow-up.)"""
         reused = await self.find_online_endpoint(self.profile.endpoint_name)
         if reused is not None:
-            return EndpointHandle(endpoint_id=reused, name=self.profile.endpoint_name)
+            return EndpointHandle(endpoint_id=reused, name=self.profile.endpoint_name, reused=True)
         if not await self.cli.whoami():
             with tempfile.TemporaryDirectory() as tmp:
                 trimmed = build_minimal_storage_db(
@@ -590,7 +590,7 @@ engine:
         if st == "running":
             # REUSE: we did NOT launch it, so its node is unknown from a fresh
             # round-robin probe — leave login_host None and keep any prior record.
-            return EndpointHandle(endpoint_id=await self.cli.endpoint_id(name), name=name)
+            return EndpointHandle(endpoint_id=await self.cli.endpoint_id(name), name=name, reused=True)
         if st is None:
             await self.cli.configure(name)
         # config.yaml is the engine-free MANAGER config (amqp_port lives here); the

@@ -12,11 +12,12 @@ class FakeFacility:
         self.workers = 0  # >=1 => manager_online() True (drives warm/cold in tests)
         self.provisioned = False
         self.provisioned_profile: Profile | None = None
+        self.reused = False  # set True to simulate reattaching to an already-online endpoint (#20)
 
     async def provision(self, profile: Profile) -> EndpointHandle:
         self.provisioned = True
         self.provisioned_profile = profile
-        return EndpointHandle(endpoint_id="fake-eid", name="fake")
+        return EndpointHandle(endpoint_id="fake-eid", name="fake", reused=self.reused)
 
     async def manager_online(self, endpoint_id: str) -> bool:
         return self.workers >= 1
