@@ -182,7 +182,7 @@ def _facility_from_entry(entry, *, account: str) -> Facility:
 async def _catalog_facility(machine: str) -> Facility:
     """Build a facility from a catalog entry (HPC_BRIDGE_MACHINE), sourcing the machine config
     from `make_catalog()` (the live Globus Search index — HPC_BRIDGE_SEARCH_INDEX; no bundled
-    fallback). v1 slice: SSH-bootstrap Slurm machines only."""
+    fallback). v1 slice: SSH-bootstrap Slurm/PBS machines only."""
     entry = await make_catalog().get(machine)
     if entry is None:
         raise RuntimeError(f"HPC_BRIDGE_MACHINE={machine!r} not found in the catalog")
@@ -908,7 +908,7 @@ async def _propose_or_ask(
 async def connect_facility(
     facility: str, ctx: Context, ssh_host: str | None = None, details: FacilityDetails | None = None
 ) -> ConnectFacilityResult:
-    """Select an HPC facility and bring up its (free) login node, then list the allocations a Slurm
+    """Select an HPC facility and bring up its (free) login node, then list the allocations a scheduler
     block can be charged to.
 
     **This is the ENTRY POINT for reaching any facility — ALWAYS call it first** (before login_shell,
@@ -921,7 +921,7 @@ async def connect_facility(
     re-auth**. So a known MFA facility reconnects with NO Duo prompt while its endpoint is up.
 
     `facility` is an id/subject/alias from list_facilities() (e.g. "anvil"). This binds the facility,
-    stands up the login shape (SSH cold-bootstrap once, or reuse an online endpoint — no Slurm
+    stands up the login shape (SSH cold-bootstrap once, or reuse an online endpoint — no scheduler
     account needed), runs the allocation command over Compute, and returns phase="needs_account".
     Pick one, then ensure_endpoint_up(account=…, partition=…, confirm_spend=True). phase=
     "provisioning" ⇒ login node still warming — call again shortly.
@@ -1111,7 +1111,7 @@ async def _login_shell(app: AppCtx, command: str) -> LoginShellResult:
 async def login_shell(command: str, ctx: Context) -> LoginShellResult:
     """Run a READ-ONLY command on the HPC login node over a FRESH SSH connection — the
     cold-start discovery escape hatch (`sinfo`, `sacctmgr`, `echo $SCRATCH`) for when no
-    endpoint exists yet. It provisions nothing, starts no Slurm job, costs no allocation.
+    endpoint exists yet. It provisions nothing, starts no scheduler job, costs no allocation.
 
     Prefer `run_shell(command, shape="login")` once an endpoint is up: that runs the same
     login-node command THROUGH the endpoint (over the network), avoiding a fresh SSH — which

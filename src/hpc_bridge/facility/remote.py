@@ -25,7 +25,7 @@ from globus_compute_sdk.sdk.auth.token_storage import (
     _resolve_namespace,
 )
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from ..credentials import build_minimal_storage_db
 from ..profile import Profile
@@ -194,13 +194,13 @@ class MachineProfile:
     display_name: str | None = None
     walltime: str = "00:30:00"
     max_workers_per_node: int = 2     # parsl workers per node (the engine's slots)
-    nodes_per_block: int = 1          # nodes requested per Slurm block
-    max_blocks: int = 1               # ceiling on concurrent Slurm blocks Parsl may hold
+    nodes_per_block: int = 1          # nodes requested per scheduler block
+    max_blocks: int = 1               # ceiling on concurrent scheduler blocks Parsl may hold
     available_accelerators: int | list[str] | None = None  # GPU count or device IDs
     amqp_port: int = 443    # facilities firewall the default AMQPS 5671; 443 is allowed
     scheduler_options: str | None = None
     scratch_root: str | None = None  # session-shell root on the shared filesystem
-    scheduler: str = "slurm"          # "slurm" | "pbs" — selects the config_template branch
+    scheduler: Literal["slurm", "pbs"] = "slurm"  # "slurm" | "pbs" — selects the config_template branch
     cpus_per_node: int | None = None  # PBS: emitted as PBSProProvider.cpus_per_node; Slurm: unused
 
 
@@ -752,7 +752,7 @@ class SlurmFacility:
         return EndpointHandle(endpoint_id=eid, name=name, login_host=host)
 
     async def teardown(self, endpoint_id: str, *, wipe_credentials: bool = False) -> None:
-        """Stop the endpoint and cancel its Slurm block(s) — the cost-control exit. Both ops run
+        """Stop the endpoint and cancel its scheduler block(s) — the cost-control exit. Both ops run
         over SSH, each bounded by `_TEARDOWN_SSH_S`. Credentials are kept by default so a later
         session can reconnect; pass wipe_credentials=True to also remove the remote storage.db."""
         await self.cli.stop(self.profile.endpoint_name)
