@@ -584,6 +584,12 @@ def test_entry_from_details_builds_session_local_entry():
     assert _entry_from_details("x", _details(ssh_host="uchicago:globus")).compute.endpoint_name == "hpc-bridge-uchicago-globus"
     assert _entry_from_details("frontier", _details(endpoint_name="my-ep")).compute.endpoint_name == "my-ep"
     # PBS facility with an explicit cpus_per_node flows through to defaults (full-node compute blocks)
-    pbs = _entry_from_details("polaris", _details(scheduler="pbs", cpus_per_node=32))
+    pbs = _entry_from_details(
+        "polaris",
+        _details(scheduler="pbs", cpus_per_node=32,
+                 scheduler_options="#PBS -l filesystems=home:eagle"),
+    )
     assert pbs.defaults.cpus_per_node == 32
+    # scheduler_options rides onto compute so a session PBS facility can set required site directives
+    assert pbs.compute.scheduler_options == "#PBS -l filesystems=home:eagle"
 

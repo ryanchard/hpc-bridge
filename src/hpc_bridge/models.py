@@ -111,6 +111,13 @@ class FacilityDetails(BaseModel):
         description="PBS only: cores per node to request (PBSProProvider.cpus_per_node). "
         "Omit for Slurm (ignored) or to accept the scheduler default. E.g. Polaris: 32.",
     )
+    scheduler_options: str | None = Field(
+        default=None,
+        description="Raw scheduler directives injected verbatim into the submit script (Parsl "
+        "scheduler_options) — e.g. Polaris REQUIRES '#PBS -l filesystems=home:eagle' or the job "
+        "is held. Omit if none. Multiple directives: newline-separate them.",
+        examples=["#PBS -l filesystems=home:eagle", "#SBATCH --constraint=gpu"],
+    )
     amqp_port: int = Field(default=443, description="AMQPS port (443 is near-universally allowed).")
     endpoint_name: str | None = Field(
         default=None,

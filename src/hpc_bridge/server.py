@@ -698,6 +698,7 @@ def _entry_from_details(facility: str, details: FacilityDetails) -> CatalogEntry
             scratch_root=details.scratch_root,
             endpoint_name=ep_name,
             amqp_port=details.amqp_port,
+            scheduler_options=details.scheduler_options,
         ),
         defaults=Defaults(
             partition=details.partition,
