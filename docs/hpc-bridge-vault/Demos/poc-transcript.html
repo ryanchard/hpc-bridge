@@ -148,11 +148,11 @@ OS        Rocky Linux 8.10 (Green Obsidian)</pre>
 </div>
 <div class="turn asst"><div class="role"><span class="dot"></span>Claude</div>
   <div class="bubble">
-    <p>Located scratch at <span style="font-family:var(--mono)">/anvil/scratch/x-amcsweeneyel</span> (2.8&nbsp;PB free),
+    <p>Located scratch at <span style="font-family:var(--mono)">/anvil/scratch/x-username</span> (2.8&nbsp;PB free),
     confirmed all 128 cores are usable via <span style="font-family:var(--mono)">sched_getaffinity</span>,
     installed numpy into the endpoint venv, then wrote and ran the benchmark.</p>
     <div class="tool">
-      <div class="head"><span class="k">file</span><span class="n">/anvil/scratch/x-amcsweeneyel/mc_pi.py</span><span class="tag">128-way multiprocessing</span></div>
+      <div class="head"><span class="k">file</span><span class="n">/anvil/scratch/x-username/mc_pi.py</span><span class="tag">128-way multiprocessing</span></div>
 <pre><span class="p">def</span> <span class="a">worker</span>(args):
     wid, n_points = args
     rng = np.random.default_rng(np.random.SeedSequence([wid, os.getpid()]))
