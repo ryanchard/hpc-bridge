@@ -949,8 +949,12 @@ def _release_cmd(scheduler: str, eid: str) -> str:
     wrapped Output_Path can't split the marker) and qdel."""
     marker = f"uep.{eid}"
     if scheduler == "pbs":
+        # NB: `qstat -f -u $USER` yields NOTHING on PBS Pro — the -u filter suppresses full-format
+        # output entirely (unlike Slurm's `squeue -u`), which silently no-ops the cancel and lets the
+        # block burn to walltime (caught in live Polaris validation). Use bare `qstat -f` (all jobs)
+        # and let the endpoint-unique `uep.<eid>` marker scope the match to only our jobs.
         return (
-            'ids=$(qstat -f -u "$USER" 2>/dev/null '
+            'ids=$(qstat -f 2>/dev/null '
             "| sed ':a;N;$!ba;s/\\n\\t//g' "
             f"| awk -v m={shlex.quote(marker)} 'BEGIN{{RS=\"Job Id: \"}} index($0,m){{print $1}}'); "
             '[ -n "$ids" ] && qdel $ids; echo "released ${ids:-none}"'

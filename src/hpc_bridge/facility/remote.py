@@ -432,9 +432,13 @@ class RemoteEndpointCLI:
         return ids
 
     async def _cancel_blocks_pbs(self, marker: str) -> list[str]:
-        """PBS variant of cancel_blocks: qstat -f -> unwrap continuations -> match marker -> qdel."""
+        """PBS variant of cancel_blocks: qstat -f -> unwrap continuations -> match marker -> qdel.
+
+        Bare `qstat -f` (NOT `-u $USER`): on PBS Pro the -u filter suppresses full-format output
+        entirely, so `qstat -f -u $USER` returns nothing and the cancel silently no-ops (caught in
+        live Polaris validation). The endpoint-unique `uep.<eid>` marker scopes the match to us."""
         try:
-            q = "qstat -f -u \"$USER\" 2>/dev/null | sed ':a;N;$!ba;s/\\n\\t//g'"
+            q = "qstat -f 2>/dev/null | sed ':a;N;$!ba;s/\\n\\t//g'"
             rc, out, _err = await ssh_exec(
                 self.target, f"bash -lc {shlex.quote(q)}", timeout=_TEARDOWN_SSH_S
             )
@@ -577,7 +581,7 @@ engine:
 {% endif %}
     worker_init: {{ worker_init | default(@@WORKER_INIT@@) }}
     launcher:
-      type: MpiExecLauncher
+      type: SingleNodeLauncher
     init_blocks: {{ init_blocks | default(@@EAGER@@) }}
     min_blocks: 0
     max_blocks: {{ max_blocks | default(@@MAXBLK@@) }}

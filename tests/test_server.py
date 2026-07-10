@@ -346,6 +346,9 @@ def test_release_cmd_pbs_uses_qstat_and_qdel():
     assert "qstat -f" in cmd and "qdel" in cmd
     assert "uep.abc-123" in cmd
     assert "scancel" not in cmd and "squeue" not in cmd
+    # Must NOT filter qstat -f by -u: PBS Pro yields empty full-format output with -u, silently
+    # no-opping the cancel (live Polaris bug). Bare `qstat -f` + the unique marker scopes it.
+    assert "-u" not in cmd
 
 
 def test_release_cmd_slurm_uses_squeue_and_scancel():

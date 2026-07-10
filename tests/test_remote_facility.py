@@ -148,10 +148,11 @@ def test_pbs_template_renders_pbsproprovider_compute_shape():
     assert prov["account"] == "ACC"
     assert prov["cpus_per_node"] == 32
     assert prov["min_blocks"] == 0
-    assert prov["launcher"]["type"] == "MpiExecLauncher"
-    # No bind_threads: the Parsl pinned by globus-compute-endpoint rejects it as an unknown
-    # MpiExecLauncher kwarg (crashes the compute UEP with rc=1) — caught in live Polaris validation.
-    assert "bind_threads" not in prov["launcher"]
+    # SingleNodeLauncher, not MpiExecLauncher: live Polaris validation showed MpiExecLauncher's
+    # generated mpiexec command is incompatible with Polaris's PALS mpiexec under the pinned Parsl
+    # (it printed usage and the worker pool never launched). A single-node block (nodes_per_block=1,
+    # hpc-bridge's model) doesn't need mpiexec; SingleNodeLauncher runs the pool directly.
+    assert prov["launcher"]["type"] == "SingleNodeLauncher"
     assert "partition" not in prov            # PBS uses queue, not partition
     assert prov["scheduler_options"] == "#PBS -l filesystems=home:eagle"
 
@@ -597,6 +598,8 @@ async def test_cancel_blocks_pbs_targets_only_this_endpoints_jobs(monkeypatch):
     assert cancelled == ["111.polaris-pbs-01", "333.polaris-pbs-01"]  # ours only
     qdel = [c for c in seen if "qdel" in c]
     assert len(qdel) == 1
+    # qstat must NOT be -u filtered: PBS Pro emits empty full-format output with -u (live bug).
+    assert "-u" not in next(c for c in seen if "qstat -f" in c)
     assert "111.polaris-pbs-01" in qdel[0] and "333.polaris-pbs-01" in qdel[0]
     assert "222.polaris-pbs-01" not in qdel[0]
     assert "squeue" not in seen[0] and "scancel" not in " ".join(seen)
