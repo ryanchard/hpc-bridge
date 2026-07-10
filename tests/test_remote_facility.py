@@ -149,7 +149,9 @@ def test_pbs_template_renders_pbsproprovider_compute_shape():
     assert prov["cpus_per_node"] == 32
     assert prov["min_blocks"] == 0
     assert prov["launcher"]["type"] == "MpiExecLauncher"
-    assert prov["launcher"]["bind_threads"] is True
+    # No bind_threads: the Parsl pinned by globus-compute-endpoint rejects it as an unknown
+    # MpiExecLauncher kwarg (crashes the compute UEP with rc=1) — caught in live Polaris validation.
+    assert "bind_threads" not in prov["launcher"]
     assert "partition" not in prov            # PBS uses queue, not partition
     assert prov["scheduler_options"] == "#PBS -l filesystems=home:eagle"
 

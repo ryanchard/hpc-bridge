@@ -578,7 +578,6 @@ engine:
     worker_init: {{ worker_init | default(@@WORKER_INIT@@) }}
     launcher:
       type: MpiExecLauncher
-      bind_threads: true
     init_blocks: {{ init_blocks | default(@@EAGER@@) }}
     min_blocks: 0
     max_blocks: {{ max_blocks | default(@@MAXBLK@@) }}
