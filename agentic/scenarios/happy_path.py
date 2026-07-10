@@ -3,7 +3,7 @@ connect -> discover -> gate -> provision -> run -> stop.
 
 Pre-authorises the agent so it needs no human (headless): accept discovered config,
 pick a partition, confirm spend. ``{facility}`` is filled by run.py with a per-run
-unique id so the endpoint name is isolated (hpc-bridge-globus1-<runid>).
+unique id (a distinct session facility; the endpoint itself is keyed on the ssh_host).
 """
 from invariants import compute_ran  # liveness: safety-only gates pass vacuously on inaction
 
@@ -34,6 +34,10 @@ EXPECT_OK = [
 ]
 
 KIND = "regression"
+
+# globus1's cold bootstrap self-provisions the toolchain via uv on the first connect (slow), so the
+# select→discover→gate→provision→wait→stop loop needs more headroom than the 40-turn default rail.
+MAX_TURNS = 60
 
 # Fully delete this run's endpoint afterwards (default). Reuse-chain scenarios set "keep",
 # and can pin a stable FACILITY_ID to share one endpoint across the chain.

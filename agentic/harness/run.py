@@ -5,8 +5,9 @@ Inside the container (creds injected via env + mounted key):
     python run.py <scenario>          # default: happy_path
 
 The scenario's PROMPT may contain ``{facility}`` — we fill it with a per-run unique id
-(``globus1-<runid>``) so each run gets its OWN endpoint name (``hpc-bridge-globus1-<runid>``),
-isolating concurrent/sequential runs and making teardown unambiguous.
+(``globus1-<runid>``) so each run is a distinct SESSION FACILITY. NB: since #27 the server keys the
+endpoint NAME on the ssh_host (not the facility id), so concurrent runs isolate by their distinct
+pool USER, and teardown deletes this user's ``hpc-bridge-*`` endpoints by enumeration (name-agnostic).
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ import asyncio
 import importlib
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -33,8 +35,12 @@ def _short(d: dict, n: int = 72) -> str:
 
 
 def _endpoint_name(facility: str) -> str:
-    # Session facilities register as hpc-bridge-<facility> (server._session_endpoint_name).
-    return f"hpc-bridge-{facility}"
+    # Mirror server._session_endpoint_name: since #27 the endpoint is hpc-bridge-<sanitized ssh_host>,
+    # NOT hpc-bridge-<facility id>. Used for the record's expected-name field; teardown no longer
+    # relies on it (it enumerates — see _teardown). Falls back to the facility id if no ssh host is set.
+    ssh_host = os.environ.get("HPC_BRIDGE_SSH_HOST", "").strip()
+    key = re.sub(r"[^a-z0-9]+", "-", (ssh_host or facility).lower()).strip("-") or "session"
+    return f"hpc-bridge-{key}"
 
 
 def _combine(results: list[RunResult]) -> RunResult:
@@ -61,7 +67,8 @@ async def _run_chain(phase_prompts, scen, *, model, effort, persona, user_goal, 
     for i, pp in enumerate(phase_prompts):
         print(f"\n=== CHAIN PHASE {i + 1}/{len(phase_prompts)} (fresh MCP server) ===")
         r = await run_scenario(pp, repo_root=REPO_ROOT, model=model, effort=effort,
-                               persona=persona, user_goal=user_goal, ablate_skill=no_skill)
+                               persona=persona, user_goal=user_goal, ablate_skill=no_skill,
+                               max_turns=getattr(scen, "MAX_TURNS", 40))
         results.append(r)
         print(f"  phase {i + 1}: {len(r.trace.calls)} calls · is_error={getattr(r.final, 'is_error', None)}")
         if i + 1 < len(phase_prompts) and delay:
@@ -139,22 +146,29 @@ def _postchecks(scen) -> list[Result]:
     return results
 
 
-def _teardown(facility: str, scen) -> None:
-    """Fully delete the run's endpoint (stop + delete — not just release the block) AND scancel
-    the test user's remaining jobs (harness sleepers, finished experiments), unless the scenario
-    keeps state for a reuse chain (TEARDOWN='keep' skips both). Runs AFTER postchecks so cleanup
-    can't mask agent failures. Best-effort: never fails the run."""
-    name = _endpoint_name(facility)
+def _teardown(scen) -> None:
+    """Delete THIS pool user's hpc-bridge endpoints AND scancel its remaining jobs (harness
+    sleepers, finished experiments), unless the scenario keeps state for a reuse chain
+    (TEARDOWN != 'delete' skips both). Runs AFTER postchecks so cleanup can't mask agent failures.
+    Best-effort: never fails the run.
+
+    Name-AGNOSTIC on purpose: since #27 the server keys the endpoint name on the ssh_host, so a
+    computed hpc-bridge-<facility id> would MISS the real endpoint (a silent strand). Enumerating the
+    config dirs (~/.globus_compute/<name>/) and deleting every hpc-bridge-* the user owns can't miss,
+    and self-heals anything a prior crashed run stranded. Parse the DIRS, not `gce list` — its table
+    WRAPS long names across rows, so line parsing silently drops them. The test user is
+    harness-dedicated, so deleting all its endpoints is safe; concurrent runs use DISTINCT users."""
     if getattr(scen, "TEARDOWN", "delete") != "delete":
-        print(f"teardown: KEEP — leaving {name} (and any jobs) for the chain", file=sys.stderr, flush=True)
+        print("teardown: KEEP — leaving endpoint(s) + jobs for the chain", file=sys.stderr, flush=True)
         return
     gce = "$HOME/hpc-bridge/gce-venv/bin/globus-compute-endpoint"
     remote = (
-        f"{gce} stop {name} >/dev/null 2>&1; {gce} delete {name} --yes 2>&1; "
+        f'for ep in $(ls ~/.globus_compute/ 2>/dev/null | grep "^hpc-bridge-"); do '
+        f'{gce} stop "$ep" >/dev/null 2>&1; {gce} delete "$ep" --yes >/dev/null 2>&1; done; '
         'scancel -u "$(whoami)" 2>/dev/null; true'
     )
-    print(f"teardown: deleting {name} + scancel'ing leftover jobs …", file=sys.stderr, flush=True)
-    rc, out = _ssh_run(remote, timeout=60)
+    print("teardown: deleting this user's hpc-bridge-* endpoints + scancel'ing jobs …", file=sys.stderr, flush=True)
+    rc, out = _ssh_run(remote, timeout=90)
     tag = "ok" if rc == 0 else f"rc={rc}"
     print(f"teardown: {tag} — {out.strip().replace(chr(10), ' ')[:200]}", file=sys.stderr, flush=True)
 
@@ -229,7 +243,8 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
                                    persona=persona, user_goal=user_goal, no_skill=no_skill)
         else:
             res = await run_scenario(prompt, repo_root=REPO_ROOT, model=model, effort=effort,
-                                     persona=persona, user_goal=user_goal, ablate_skill=no_skill)
+                                     persona=persona, user_goal=user_goal, ablate_skill=no_skill,
+                                     max_turns=getattr(scen, "MAX_TURNS", 40))
 
         print(f"\n=== TRACE: {len(res.trace.calls)} tool calls ===")
         for i, c in enumerate(res.trace.calls):
@@ -295,7 +310,7 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
             print("RESULT: OK")
             rc = 0
     finally:
-        _teardown(facility, scen)
+        _teardown(scen)
         # Provenance is written LAST and unconditionally — a crashed run still leaves its
         # evidence (partial messages, whatever grading completed, the resolved config).
         rec = write_run_record(

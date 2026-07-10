@@ -17,8 +17,9 @@ only, no billed block: ~6 min for the pair.
 """
 from invariants import Result, Trace, _UP_PHASES
 
-# Each phase is its own agent session (fresh server). {facility} is shared across phases so the
-# endpoint name (hpc-bridge-<facility>) is stable and phase 2 can reattach to phase 1's manager.
+# Each phase is its own agent session (fresh server). Both phases connect to the SAME ssh_host, so the
+# server computes the same endpoint name (hpc-bridge-<ssh_host> since #27) and phase 2 reattaches to
+# phase 1's still-online manager. Sharing {facility} keeps them one session facility across the restart.
 PHASES = [
     (
         "Connect me to the HPC facility with login host `globus1.cs.uchicago.edu` — use facility "
