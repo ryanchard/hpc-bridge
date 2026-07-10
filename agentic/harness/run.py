@@ -35,9 +35,13 @@ def _short(d: dict, n: int = 72) -> str:
 
 
 def _endpoint_name(facility: str) -> str:
-    # Mirror server._session_endpoint_name: since #27 the endpoint is hpc-bridge-<sanitized ssh_host>,
-    # NOT hpc-bridge-<facility id>. Used for the record's expected-name field; teardown no longer
-    # relies on it (it enumerates — see _teardown). Falls back to the facility id if no ssh host is set.
+    # The record's expected-name field (teardown no longer relies on it — it enumerates; see _teardown).
+    # Mirrors the server's resolution: HPC_BRIDGE_ENDPOINT_NAME — the per-run isolation override the
+    # harness sets so concurrent runs don't share one registration — wins; else hpc-bridge-<ssh_host>
+    # (server._session_endpoint_name). Falls back to the facility id if no ssh host is set.
+    override = os.environ.get("HPC_BRIDGE_ENDPOINT_NAME", "").strip()
+    if override:
+        return override
     ssh_host = os.environ.get("HPC_BRIDGE_SSH_HOST", "").strip()
     key = re.sub(r"[^a-z0-9]+", "-", (ssh_host or facility).lower()).strip("-") or "session"
     return f"hpc-bridge-{key}"

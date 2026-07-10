@@ -679,7 +679,12 @@ def _entry_from_details(facility: str, details: FacilityDetails) -> CatalogEntry
     alloc = None
     if details.allocation_command and details.allocation_parser:
         alloc = Allocation(command=details.allocation_command, parser=details.allocation_parser)
-    ep_name = details.endpoint_name or _session_endpoint_name(details.ssh_host or facility)
+    # HPC_BRIDGE_ENDPOINT_NAME: opt-in override giving each agentic-harness RUN a DISTINCT endpoint
+    # name — the shared ssh-host name + a shared test identity would otherwise collide one registration
+    # across concurrent runs. Wins over an agent-supplied name too, so a flailing agent can't defeat run
+    # isolation. Real users leave it unset and get the ssh-host key (_session_endpoint_name).
+    ep_name = (os.environ.get("HPC_BRIDGE_ENDPOINT_NAME", "").strip()
+               or details.endpoint_name or _session_endpoint_name(details.ssh_host or facility))
     return CatalogEntry(
         id=facility,
         facility_key="session",

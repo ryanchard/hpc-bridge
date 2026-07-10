@@ -593,3 +593,17 @@ def test_entry_from_details_builds_session_local_entry():
     # scheduler_options rides onto compute so a session PBS facility can set required site directives
     assert pbs.compute.scheduler_options == "#PBS -l filesystems=home:eagle"
 
+
+def test_entry_from_details_endpoint_name_env_override(monkeypatch):
+    # HPC_BRIDGE_ENDPOINT_NAME (the harness's per-run isolation override) wins over BOTH the ssh-host
+    # default AND an agent-supplied endpoint_name — so concurrent test runs (which share ONE Globus
+    # identity) never collide on one registration, and a flailing agent can't defeat run isolation.
+    from hpc_bridge.server import _entry_from_details
+    monkeypatch.setenv("HPC_BRIDGE_ENDPOINT_NAME", "hpc-bridge-globus1-run-42")
+    assert _entry_from_details("x", _details(ssh_host="globus1")).compute.endpoint_name == "hpc-bridge-globus1-run-42"
+    # wins even over an agent-supplied name (we saw an agent fabricate one mid-flail)
+    assert _entry_from_details("x", _details(endpoint_name="hpc-bridge-recover-00")).compute.endpoint_name == "hpc-bridge-globus1-run-42"
+    # unset -> product default (ssh-host key) is unchanged
+    monkeypatch.delenv("HPC_BRIDGE_ENDPOINT_NAME", raising=False)
+    assert _entry_from_details("x", _details(ssh_host="globus1")).compute.endpoint_name == "hpc-bridge-globus1"
+
