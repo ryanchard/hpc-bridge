@@ -583,4 +583,7 @@ def test_entry_from_details_builds_session_local_entry():
     # facility id is slugified into the endpoint name; an explicit name is preserved (override)
     assert _entry_from_details("x", _details(ssh_host="uchicago:globus")).compute.endpoint_name == "hpc-bridge-uchicago-globus"
     assert _entry_from_details("frontier", _details(endpoint_name="my-ep")).compute.endpoint_name == "my-ep"
+    # PBS facility with an explicit cpus_per_node flows through to defaults (full-node compute blocks)
+    pbs = _entry_from_details("polaris", _details(scheduler="pbs", cpus_per_node=32))
+    assert pbs.defaults.cpus_per_node == 32
 

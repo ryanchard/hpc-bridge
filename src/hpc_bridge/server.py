@@ -699,7 +699,11 @@ def _entry_from_details(facility: str, details: FacilityDetails) -> CatalogEntry
             endpoint_name=ep_name,
             amqp_port=details.amqp_port,
         ),
-        defaults=Defaults(partition=details.partition, walltime=details.walltime),
+        defaults=Defaults(
+            partition=details.partition,
+            walltime=details.walltime,
+            cpus_per_node=details.cpus_per_node,
+        ),
         provenance="session",
         last_validated=datetime.date.today(),
     )

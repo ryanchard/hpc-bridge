@@ -106,6 +106,11 @@ class FacilityDetails(BaseModel):
         "implemented today; omit (with allocation_command) if unsure.",
     )
     walltime: str = Field(default="00:30:00", description="Default block walltime (HH:MM:SS).")
+    cpus_per_node: int | None = Field(
+        default=None,
+        description="PBS only: cores per node to request (PBSProProvider.cpus_per_node). "
+        "Omit for Slurm (ignored) or to accept the scheduler default. E.g. Polaris: 32.",
+    )
     amqp_port: int = Field(default=443, description="AMQPS port (443 is near-universally allowed).")
     endpoint_name: str | None = Field(
         default=None,
