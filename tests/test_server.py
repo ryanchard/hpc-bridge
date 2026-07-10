@@ -1,3 +1,5 @@
+import pytest
+
 from hpc_bridge.lifecycle import EndpointState
 from hpc_bridge.profile import Profile
 from hpc_bridge.runner import CanaryResult
@@ -52,6 +54,27 @@ async def test_ensure_endpoint_up_reports_up_when_warm():
     assert res.status == "up" and res.block_state == "warm"
     assert res.endpoint_id == "fake-eid"
     assert res.notice and "worker live" in res.notice  # warm => a worker answered, not just the manager
+
+
+@pytest.mark.xfail(reason="#21: a billed compute block's silent bounds (~600s idle-release, ~110s "
+                          "per-task cap) are not surfaced in the result notice yet — the observability "
+                          "fix is pending. strict=True flags the xpass when the fix lands.", strict=True)
+async def test_billed_compute_result_surfaces_its_idle_and_task_bounds():
+    # #21 (RED — expected to FAIL today). A billed `compute` block self-releases after ~600s idle
+    # (max_idletime, min_blocks=0) and caps a single run_shell task at ~110s (runner walltime =
+    # timeout-10). Both are silent: a caller reasoning "I have the node for its walltime" is wrong on
+    # two counts. The warm result SHOULD name them so the agent can plan (sbatch-on-login / checkpoint).
+    # This defines the observability fix (#21 item 1) — green when the notice surfaces the bounds; a
+    # failure now CONFIRMS the hypothesis that the bounds are unsurfaced.
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
+    res = await _ensure_endpoint_up(app, confirm_spend=True)
+    assert res.status == "up" and res.block_state == "warm"  # a billed block is live
+    low = (res.notice or "").lower()
+    assert "idle" in low, f"warm compute notice must name the ~600s idle-release; got {res.notice!r}"
+    assert "110" in low or "cap" in low, f"warm compute notice must name the ~110s per-task cap; got {res.notice!r}"
 
 
 async def test_ensure_endpoint_up_provisioning_when_manager_up_but_worker_cold():

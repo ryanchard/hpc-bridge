@@ -203,11 +203,13 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
     # PHASES => a cross-restart CHAIN: each phase is a separate agent session (fresh MCP server),
     # sharing this run's facility id so a later phase reattaches to an earlier phase's endpoint. A
     # single PROMPT is just the one-phase case.
-    phases = [p.format(facility=facility) for p in (getattr(scen, "PHASES", []) or [])]
-    prompt = phases[0] if phases else scen.PROMPT.format(facility=facility)
+    # Literal {facility} substitution, NOT str.format: a prompt may embed a code block with other
+    # braces (e.g. a #21 probe's `f'{x}'`), which str.format would choke on with a KeyError.
+    phases = [p.replace("{facility}", facility) for p in (getattr(scen, "PHASES", []) or [])]
+    prompt = phases[0] if phases else scen.PROMPT.replace("{facility}", facility)
     # Interactive mode: persona from the CLI override, else the scenario's default.
     persona = persona or getattr(scen, "PERSONA", None)
-    user_goal = getattr(scen, "USER_GOAL", "").format(facility=facility)
+    user_goal = getattr(scen, "USER_GOAL", "").replace("{facility}", facility)
 
     # Resolved-config snapshot for the provenance record (what actually ran, not defaults).
     config = {
