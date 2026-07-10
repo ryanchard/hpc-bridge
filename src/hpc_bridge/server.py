@@ -454,6 +454,16 @@ def _worker_notice(canary: CanaryResult | None) -> str | None:
     return note
 
 
+def _billed_bounds_note(app: "AppCtx") -> str:
+    """The two silent limits of a billed compute block ([#21]), surfaced so a caller can plan long work
+    instead of being cut without warning: the block idle-releases after `max_idletime` of no Compute
+    tasks (min_blocks=0), and a single run_shell task caps at ~110s (runner walltime = timeout − 10)."""
+    idle = getattr(app.profile, "max_idletime_s", 600)
+    return (f"billed block bounds — it idle-releases after ~{idle}s with no Compute task (min_blocks=0), "
+            "and a single run_shell task caps at ~110s; run long or detached work via sbatch on "
+            "shape='login' (or checkpoint) so it isn't cut")
+
+
 def _note_dispatch(rt: ShapeRuntime, out: ShellOutcome) -> None:
     """A real result is the strongest liveness proof — refresh the canary TTL. A dispatch
     timeout means the worker may be gone, so void the confirmation to force a re-canary."""
@@ -592,6 +602,8 @@ async def _ensure_endpoint_up(
             )
         if block == "warm":
             status, notice = "up", _worker_notice(rt.last_canary)
+            if _billable(rt):  # #21: warn about the silent bounds a caller would otherwise hit unaware
+                notice = f"{notice}. {_billed_bounds_note(app)}" if notice else _billed_bounds_note(app)
         else:
             status = "provisioning"
             notice = f"allocating nodes on {active_partition!r}…" if active_partition else "allocating nodes…"
