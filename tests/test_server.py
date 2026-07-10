@@ -8,7 +8,7 @@ from tests.fakes import FakeFacility
 def _confirm_slurm(app):
     """Acknowledge spend for the default billed (slurm) shape, as the budget gate would — so
     run_shell/reset tests exercise dispatch rather than tripping the deterministic spend floor."""
-    _shape_runtime(app, "slurm").spend_confirmed = True
+    _shape_runtime(app, "compute").spend_confirmed = True
 
 
 class _Res:
@@ -154,9 +154,9 @@ async def test_two_shapes_keep_independent_runners():
     app = AppCtx(facility=f, profile=Profile())
     app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
     await _run_shell(app, "echo a", shape="login")
-    await _run_shell(app, "echo b", shape="slurm")
-    assert set(app.shapes) == {"login", "slurm"}
-    assert app.shapes["login"].runner is not app.shapes["slurm"].runner
+    await _run_shell(app, "echo b", shape="compute")
+    assert set(app.shapes) == {"login", "compute"}
+    assert app.shapes["login"].runner is not app.shapes["compute"].runner
 
 
 async def test_server_registers_run_shell_tool():
@@ -259,13 +259,13 @@ async def test_stop_releases_block_over_login_and_keeps_endpoint(monkeypatch):
     f = _NoTeardown()
     app = AppCtx(facility=f, profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
     slurm_runner = _FakeRunner("eid-1", _Res(0, "", ""))
-    app.shapes["slurm"] = ShapeRuntime(user_endpoint_config={"is_slurm": True}, runner=slurm_runner)
+    app.shapes["compute"] = ShapeRuntime(user_endpoint_config={"compute": True}, runner=slurm_runner)
     app.shapes["login"] = ShapeRuntime(
         user_endpoint_config={"provider_type": "LocalProvider"}, warm_confirmed_at=1.0
     )
     seen = {}
 
-    async def fake_run_shell(a, command, session_id="default", shape="slurm"):
+    async def fake_run_shell(a, command, session_id="default", shape="compute"):
         seen["shape"], seen["cmd"] = shape, command
         return ShellOutcome(phase="complete", exit_code=0, stdout="released 123\n", block_state="warm")
 
@@ -273,7 +273,7 @@ async def test_stop_releases_block_over_login_and_keeps_endpoint(monkeypatch):
     res = await _stop_endpoint(app)
     assert seen["shape"] == "login"  # the scancel rode AMQP, not SSH
     assert "scancel" in seen["cmd"] and "uep.eid-1" in seen["cmd"]
-    assert "slurm" not in app.shapes  # billed shape dropped -> a later run re-provisions fresh
+    assert "compute" not in app.shapes  # billed shape dropped -> a later run re-provisions fresh
     assert slurm_runner.closed  # its (now-dead) runner was closed
     assert "login" in app.shapes  # login shape kept (warm, free, for cheap reconnect)
     assert app.state.endpoint_id == "eid-1"  # endpoint NOT torn down
@@ -294,11 +294,11 @@ async def test_stop_is_honest_when_release_channel_is_cold(monkeypatch):
     monkeypatch.setenv("HPC_BRIDGE_RELEASE_BACKOFF_S", "0")  # no real sleeps in the retry loop
     app = AppCtx(facility=FakeFacility(), profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
     slurm_runner = _FakeRunner("eid-1", _Res(0, "", ""))
-    app.shapes["slurm"] = ShapeRuntime(user_endpoint_config={"is_slurm": True}, runner=slurm_runner)
+    app.shapes["compute"] = ShapeRuntime(user_endpoint_config={"compute": True}, runner=slurm_runner)
     app.shapes["login"] = ShapeRuntime(user_endpoint_config={"provider_type": "LocalProvider"})
     calls = {"n": 0}
 
-    async def cold_run_shell(a, command, session_id="default", shape="slurm"):
+    async def cold_run_shell(a, command, session_id="default", shape="compute"):
         calls["n"] += 1  # login worker never warms -> every dispatch is a cold_start (not complete)
         return ShellOutcome(phase="cold_start", block_state="cold", notice="allocating nodes…")
 
@@ -308,7 +308,7 @@ async def test_stop_is_honest_when_release_channel_is_cold(monkeypatch):
     assert res.status not in ("down", "stopped")
     assert "not confirmed" in (res.notice or "").lower()
     assert calls["n"] >= 2  # it RETRIED the cold channel rather than giving up on the first miss
-    assert "slurm" not in app.shapes and slurm_runner.closed  # billed shape still dropped (spend clock banked)
+    assert "compute" not in app.shapes and slurm_runner.closed  # billed shape still dropped (spend clock banked)
 
 
 async def test_stop_retries_cold_channel_then_confirms(monkeypatch):
@@ -320,11 +320,11 @@ async def test_stop_retries_cold_channel_then_confirms(monkeypatch):
 
     monkeypatch.setenv("HPC_BRIDGE_RELEASE_BACKOFF_S", "0")
     app = AppCtx(facility=FakeFacility(), profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
-    app.shapes["slurm"] = ShapeRuntime(user_endpoint_config={"is_slurm": True}, runner=_FakeRunner("eid-1", _Res(0, "", "")))
+    app.shapes["compute"] = ShapeRuntime(user_endpoint_config={"compute": True}, runner=_FakeRunner("eid-1", _Res(0, "", "")))
     app.shapes["login"] = ShapeRuntime(user_endpoint_config={"provider_type": "LocalProvider"})
     calls = {"n": 0}
 
-    async def warming_run_shell(a, command, session_id="default", shape="slurm"):
+    async def warming_run_shell(a, command, session_id="default", shape="compute"):
         calls["n"] += 1
         if calls["n"] == 1:  # cold on the first hit (worker scaled in) ...
             return ShellOutcome(phase="cold_start", block_state="cold", notice="allocating nodes…")
@@ -334,6 +334,75 @@ async def test_stop_retries_cold_channel_then_confirms(monkeypatch):
     res = await _stop_endpoint(app)
     assert res.status == "down"  # ... confirmed on retry
     assert calls["n"] == 2 and "online for reuse" in (res.notice or "")
+
+
+# --- cancel: qdel/qstat on the cost-critical stop path (PBS) --------------------------------
+
+
+def test_release_cmd_pbs_uses_qstat_and_qdel():
+    from hpc_bridge.server import _release_cmd
+
+    cmd = _release_cmd("pbs", "abc-123")
+    assert "qstat -f" in cmd and "qdel" in cmd
+    assert "uep.abc-123" in cmd
+    assert "scancel" not in cmd and "squeue" not in cmd
+    # Must NOT filter qstat -f by -u: PBS Pro yields empty full-format output with -u, silently
+    # no-opping the cancel (live Polaris bug). Bare `qstat -f` + the unique marker scopes it.
+    assert "-u" not in cmd
+
+
+def test_release_cmd_slurm_uses_squeue_and_scancel():
+    from hpc_bridge.server import _release_cmd
+
+    cmd = _release_cmd("slurm", "abc-123")
+    assert "squeue" in cmd and "scancel" in cmd and "uep.abc-123" in cmd
+
+
+def test_release_cmd_slurm_matches_prior_inline_command():
+    # Byte-for-byte: the extracted helper must build the EXACT string the old inline
+    # marker=...+cmd=(...) block in _release_blocks_over_login used to build.
+    import shlex
+
+    from hpc_bridge.server import _release_cmd
+
+    eid = "eid-1"
+    marker = shlex.quote(f"uep.{eid}")
+    expected = (
+        'ids=$(squeue -u "$USER" -h -O "JobID:30,StdOut:1024" 2>/dev/null '
+        f"| grep -F {marker} | awk '{{print $1}}'); "
+        '[ -n "$ids" ] && scancel $ids; echo "released ${ids:-none}"'
+    )
+    assert _release_cmd("slurm", eid) == expected
+
+
+async def test_stop_dispatches_pbs_release_cmd_when_facility_scheduler_is_pbs(monkeypatch):
+    # _release_blocks_over_login must branch on the facility's scheduler (PBS uses
+    # qstat/qdel, never squeue/scancel) so a PBS block is actually cancelled, not silently
+    # missed by a Slurm-only command.
+    from hpc_bridge import server
+    from hpc_bridge.models import ShellOutcome
+    from hpc_bridge.server import ShapeRuntime, _stop_endpoint
+    from types import SimpleNamespace
+
+    class _PbsFacility(FakeFacility):
+        def __init__(self):
+            super().__init__()
+            self.profile = SimpleNamespace(scheduler="pbs")
+
+    app = AppCtx(facility=_PbsFacility(), profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
+    app.shapes["compute"] = ShapeRuntime(user_endpoint_config={"compute": True}, runner=_FakeRunner("eid-1", _Res(0, "", "")))
+    app.shapes["login"] = ShapeRuntime(user_endpoint_config={"provider_type": "LocalProvider"}, warm_confirmed_at=1.0)
+    seen = {}
+
+    async def fake_run_shell(a, command, session_id="default", shape="compute"):
+        seen["cmd"] = command
+        return ShellOutcome(phase="complete", exit_code=0, stdout="released 123\n", block_state="warm")
+
+    monkeypatch.setattr(server, "_run_shell", fake_run_shell)
+    await _stop_endpoint(app)
+    assert "qstat -f" in seen["cmd"] and "qdel" in seen["cmd"]
+    assert "scancel" not in seen["cmd"] and "squeue" not in seen["cmd"]
+    assert "uep.eid-1" in seen["cmd"]
 
 
 async def test_teardown_endpoint_stops_manager_and_clears_state(monkeypatch):
@@ -351,10 +420,10 @@ async def test_teardown_endpoint_stops_manager_and_clears_state(monkeypatch):
 
     app = AppCtx(facility=_F(), profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
     slurm_runner = _FakeRunner("eid-1", _Res(0, "", ""))
-    app.shapes["slurm"] = ShapeRuntime(user_endpoint_config={"is_slurm": True}, runner=slurm_runner)
+    app.shapes["compute"] = ShapeRuntime(user_endpoint_config={"compute": True}, runner=slurm_runner)
     app.shapes["login"] = ShapeRuntime(user_endpoint_config={"provider_type": "LocalProvider"})
 
-    async def fake_run_shell(a, command, session_id="default", shape="slurm"):
+    async def fake_run_shell(a, command, session_id="default", shape="compute"):
         return ShellOutcome(phase="complete", exit_code=0, stdout="released 1\n", block_state="warm")
 
     monkeypatch.setattr(server, "_run_shell", fake_run_shell)
@@ -377,7 +446,7 @@ async def test_ensure_endpoint_up_provisions_onto_selected_partition():
     app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
     res = await _ensure_endpoint_up(app, partition="shared", confirm_spend=True)
     assert res.partition == "shared"
-    assert app.shapes["slurm"].user_endpoint_config["partition"] == "shared"
+    assert app.shapes["compute"].user_endpoint_config["partition"] == "shared"
 
 
 async def test_partition_change_invalidates_runner():
@@ -395,12 +464,12 @@ async def test_partition_change_invalidates_runner():
 
     app.runner_factory = factory
     await _ensure_endpoint_up(app, partition="shared", confirm_spend=True)
-    r1 = app.shapes["slurm"].runner
+    r1 = app.shapes["compute"].runner
     await _ensure_endpoint_up(app, partition="gpu", confirm_spend=True)
-    r2 = app.shapes["slurm"].runner
+    r2 = app.shapes["compute"].runner
     assert r2 is not r1  # runner rebuilt for the new partition
     assert r1.closed  # old runner torn down (its block idle-releases via min_blocks=0)
-    assert app.shapes["slurm"].user_endpoint_config["partition"] == "gpu"
+    assert app.shapes["compute"].user_endpoint_config["partition"] == "gpu"
 
 
 async def test_no_partition_is_noop_and_persists_previous_selection():
@@ -411,11 +480,11 @@ async def test_no_partition_is_noop_and_persists_previous_selection():
     app = AppCtx(facility=f, profile=Profile())
     app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
     await _ensure_endpoint_up(app, partition="debug", confirm_spend=True)
-    r1 = app.shapes["slurm"].runner
+    r1 = app.shapes["compute"].runner
     res = await _ensure_endpoint_up(app)  # no partition, already confirmed -> no-op
-    assert app.shapes["slurm"].runner is r1  # runner NOT rebuilt
+    assert app.shapes["compute"].runner is r1  # runner NOT rebuilt
     assert not r1.closed
-    assert app.shapes["slurm"].user_endpoint_config["partition"] == "debug"  # selection persisted
+    assert app.shapes["compute"].user_endpoint_config["partition"] == "debug"  # selection persisted
     assert res.partition == "debug"
 
 
@@ -429,7 +498,7 @@ async def test_ensure_endpoint_up_rejects_invalid_partition():
     assert res.status == "down"
     assert res.notice and "invalid partition" in res.notice
     assert not f.provisioned  # rejected before any provisioning
-    assert "slurm" not in app.shapes  # no shape state was mutated
+    assert "compute" not in app.shapes  # no shape state was mutated
 
 
 async def test_login_shape_ignores_partition():
@@ -675,7 +744,7 @@ def test_total_session_spend_sums_only_billable_shapes(monkeypatch):
     app = AppCtx(facility=FakeFacility(), profile=Profile(nodes_per_block=1), charge_factor=1.0)
     slurm = ShapeRuntime(user_endpoint_config={"provider_type": "SlurmProvider"})
     login = ShapeRuntime(user_endpoint_config={"provider_type": "LocalProvider"})
-    app.shapes = {"slurm": slurm, "login": login}
+    app.shapes = {"compute": slurm, "login": login}
 
     srv._settle_billing(slurm, app, "warm")
     srv._settle_billing(login, app, "warm")
@@ -775,7 +844,7 @@ async def test_stop_keeps_login_node_pin_for_reuse(tmp_path, monkeypatch):
             self.store = store
             self.alias = "anvil.x"
 
-    async def fake_run_shell(a, command, session_id="default", shape="slurm"):
+    async def fake_run_shell(a, command, session_id="default", shape="compute"):
         return ShellOutcome(phase="complete", exit_code=0, stdout="released none\n", block_state="warm")
 
     monkeypatch.setattr(server, "_run_shell", fake_run_shell)
@@ -807,7 +876,7 @@ async def test_billed_provision_needs_confirmation():
     assert res.notice and "confirm_spend=True" in res.notice and "balance" in res.notice
     assert f.provisioned is False  # nothing started
     assert created == []  # no runner built, no canary, no block kicked
-    assert app.shapes["slurm"].spend_confirmed is False
+    assert app.shapes["compute"].spend_confirmed is False
 
 
 async def test_confirm_spend_provisions_and_persists_for_session():
@@ -818,7 +887,7 @@ async def test_confirm_spend_provisions_and_persists_for_session():
     app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
     res = await _ensure_endpoint_up(app, confirm_spend=True)
     assert res.status == "up"
-    assert app.shapes["slurm"].spend_confirmed is True
+    assert app.shapes["compute"].spend_confirmed is True
     res2 = await _ensure_endpoint_up(app)  # no confirm_spend, but ack persists
     assert res2.status == "up"  # NOT needs_confirmation
 
@@ -862,3 +931,18 @@ async def test_run_shell_runs_after_spend_confirmed():
     await _ensure_endpoint_up(app, confirm_spend=True)
     out = await _run_shell(app, "echo hi")
     assert out.phase == "complete" and out.stdout == "hi\n"
+
+
+def test_pbs_entry_is_supported():
+    from hpc_bridge.server import _unsupported_entry_reason
+    from hpc_bridge.catalog.entry import CatalogEntry, Compute, Defaults
+    import datetime
+    entry = CatalogEntry(
+        id="polaris", facility_key="alcf", facility="ALCF", description="d",
+        display_name="Polaris", ssh_host="polaris",
+        compute=Compute(scheduler="pbs", interface="hsn0",
+                        env_setup="x", scratch_root="/home/{user}/.hpc-bridge"),
+        defaults=Defaults(partition="debug"),
+        last_validated=datetime.date(2026, 7, 10),
+    )
+    assert _unsupported_entry_reason(entry) is None

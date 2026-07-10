@@ -47,7 +47,7 @@ async def test_ensure_endpoint_up_provisions_with_selected_account():
     app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
     res = await _ensure_endpoint_up(app, account="cis250223", confirm_spend=True)
     assert res.account == "cis250223"
-    assert app.shapes["slurm"].user_endpoint_config["account"] == "cis250223"
+    assert app.shapes["compute"].user_endpoint_config["account"] == "cis250223"
 
 
 async def test_account_change_invalidates_runner():
@@ -58,10 +58,10 @@ async def test_account_change_invalidates_runner():
     app = AppCtx(facility=f, profile=Profile())
     app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
     await _ensure_endpoint_up(app, account="cis250223", confirm_spend=True)
-    r1 = app.shapes["slurm"].runner
+    r1 = app.shapes["compute"].runner
     await _ensure_endpoint_up(app, account="cis999999", confirm_spend=True)
-    assert app.shapes["slurm"].runner is not r1
-    assert app.shapes["slurm"].user_endpoint_config["account"] == "cis999999"
+    assert app.shapes["compute"].runner is not r1
+    assert app.shapes["compute"].user_endpoint_config["account"] == "cis999999"
 
 
 async def test_ensure_endpoint_up_rejects_invalid_account():
@@ -583,4 +583,13 @@ def test_entry_from_details_builds_session_local_entry():
     # facility id is slugified into the endpoint name; an explicit name is preserved (override)
     assert _entry_from_details("x", _details(ssh_host="uchicago:globus")).compute.endpoint_name == "hpc-bridge-uchicago-globus"
     assert _entry_from_details("frontier", _details(endpoint_name="my-ep")).compute.endpoint_name == "my-ep"
+    # PBS facility with an explicit cpus_per_node flows through to defaults (full-node compute blocks)
+    pbs = _entry_from_details(
+        "polaris",
+        _details(scheduler="pbs", cpus_per_node=32,
+                 scheduler_options="#PBS -l filesystems=home:eagle"),
+    )
+    assert pbs.defaults.cpus_per_node == 32
+    # scheduler_options rides onto compute so a session PBS facility can set required site directives
+    assert pbs.compute.scheduler_options == "#PBS -l filesystems=home:eagle"
 

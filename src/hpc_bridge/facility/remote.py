@@ -25,7 +25,7 @@ from globus_compute_sdk.sdk.auth.token_storage import (
     _resolve_namespace,
 )
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from ..credentials import build_minimal_storage_db
 from ..profile import Profile
@@ -194,12 +194,14 @@ class MachineProfile:
     display_name: str | None = None
     walltime: str = "00:30:00"
     max_workers_per_node: int = 2     # parsl workers per node (the engine's slots)
-    nodes_per_block: int = 1          # nodes requested per Slurm block
-    max_blocks: int = 1               # ceiling on concurrent Slurm blocks Parsl may hold
+    nodes_per_block: int = 1          # nodes requested per scheduler block
+    max_blocks: int = 1               # ceiling on concurrent scheduler blocks Parsl may hold
     available_accelerators: int | list[str] | None = None  # GPU count or device IDs
     amqp_port: int = 443    # facilities firewall the default AMQPS 5671; 443 is allowed
     scheduler_options: str | None = None
     scratch_root: str | None = None  # session-shell root on the shared filesystem
+    scheduler: Literal["slurm", "pbs"] = "slurm"  # "slurm" | "pbs" — selects the config_template branch
+    cpus_per_node: int | None = None  # PBS: emitted as PBSProProvider.cpus_per_node; Slurm: unused
 
 
 def profile_from_catalog_entry(
@@ -247,6 +249,7 @@ def profile_from_catalog_entry(
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _JOBID = re.compile(r"^\d+(_\d+)?$")  # plain or array slurm job id (guards what we scancel)
+_JOBID_PBS = re.compile(r"^\d+(\.\S+)?$")  # PBS: bare or host-qualified (1234567.polaris-pbs-01)
 
 
 class RemoteEndpointCLI:
@@ -392,8 +395,8 @@ class RemoteEndpointCLI:
         """Remove the seeded credential from the remote host (best-effort)."""
         await ssh_exec(self.target, f'rm -f "{self.remote_dir}/storage.db"')
 
-    async def cancel_blocks(self, endpoint_id: str) -> list[str]:
-        """Best-effort `scancel` of THIS endpoint's Slurm blocks; returns the cancelled IDs.
+    async def cancel_blocks(self, endpoint_id: str, scheduler: str = "slurm") -> list[str]:
+        """Best-effort cancel of THIS endpoint's scheduler blocks; returns the cancelled IDs.
 
         An ungraceful `stop` (it can die on a psutil traceback) won't scale Parsl's block in,
         so the compute keeps its allocation until walltime. We find our blocks precisely by
@@ -401,6 +404,8 @@ class RemoteEndpointCLI:
         (`uep.<endpoint_id>.*`) — so we never touch another GlobusComputeEngine endpoint's
         jobs. Never raises: teardown must not crash on a flaky scheduler query."""
         marker = f"uep.{endpoint_id}"
+        if scheduler == "pbs":
+            return await self._cancel_blocks_pbs(marker)
         try:
             squeue = 'squeue -u "$USER" -h -O "JobID:30,StdOut:1024" 2>/dev/null'
             rc, out, _err = await ssh_exec(
@@ -420,6 +425,37 @@ class RemoteEndpointCLI:
                 await ssh_exec(
                     self.target,
                     f"bash -lc {shlex.quote('scancel ' + ' '.join(ids))}",
+                    timeout=_TEARDOWN_SSH_S,
+                )
+            except Exception:  # noqa: BLE001 - best-effort
+                pass
+        return ids
+
+    async def _cancel_blocks_pbs(self, marker: str) -> list[str]:
+        """PBS variant of cancel_blocks: qstat -f -> unwrap continuations -> match marker -> qdel.
+
+        Bare `qstat -f` (NOT `-u $USER`): on PBS Pro the -u filter suppresses full-format output
+        entirely, so `qstat -f -u $USER` returns nothing and the cancel silently no-ops (caught in
+        live Polaris validation). The endpoint-unique `uep.<eid>` marker scopes the match to us."""
+        try:
+            q = "qstat -f 2>/dev/null | sed ':a;N;$!ba;s/\\n\\t//g'"
+            rc, out, _err = await ssh_exec(
+                self.target, f"bash -lc {shlex.quote(q)}", timeout=_TEARDOWN_SSH_S
+            )
+        except Exception:  # noqa: BLE001 - scheduler unreachable -> nothing to cancel
+            return []
+        if rc != 0:
+            return []
+        ids: list[str] = []
+        for record in out.split("Job Id: ")[1:]:
+            jid = record.split(None, 1)[0] if record.split() else ""
+            if marker in record and _JOBID_PBS.match(jid):
+                ids.append(jid)
+        if ids:
+            try:
+                await ssh_exec(
+                    self.target,
+                    f"bash -lc {shlex.quote('qdel ' + ' '.join(ids))}",
                     timeout=_TEARDOWN_SSH_S,
                 )
             except Exception:  # noqa: BLE001 - best-effort
@@ -474,6 +510,92 @@ class RemoteEndpointCLI:
             pass
 
 
+_SLURM_TEMPLATE = """\
+engine:
+  type: GlobusComputeEngine
+  run_in_sandbox: true
+  max_workers_per_node: {{ max_workers_per_node | default(@@MAXW@@) }}
+  address:
+    type: address_by_interface
+    ifname: {{ interface | default(@@IFACE@@) }}
+{% if available_accelerators is defined and available_accelerators %}
+{% if available_accelerators is iterable and available_accelerators is not string %}
+  available_accelerators: [{{ available_accelerators | join(', ') }}]
+{% else %}
+  available_accelerators: {{ available_accelerators }}
+{% endif %}
+{% endif %}
+  job_status_kwargs:
+    max_idletime: @@IDLE@@
+    strategy_period: 30
+  provider:
+    type: {{ provider_type | default('SlurmProvider') }}
+{% if compute | default(true) %}
+    partition: {{ partition | default(@@PARTITION@@) }}
+    account: {{ account | default(@@ACCOUNT@@) }}
+    walltime: {{ walltime | default(@@WALLTIME@@) }}
+    nodes_per_block: {{ nodes_per_block | default(@@NODES@@) }}
+    worker_init: {{ worker_init | default(@@WORKER_INIT@@) }}
+    launcher:
+      type: SrunLauncher
+    init_blocks: {{ init_blocks | default(@@EAGER@@) }}
+    min_blocks: 0
+    max_blocks: {{ max_blocks | default(@@MAXBLK@@) }}
+{% if scheduler_options is defined and scheduler_options %}
+    scheduler_options: {{ scheduler_options }}
+{% endif %}
+{% else %}
+    init_blocks: 1
+    min_blocks: 0
+    max_blocks: {{ max_blocks | default(@@MAXBLK@@) }}
+{% endif %}
+"""
+
+_PBS_TEMPLATE = """\
+engine:
+  type: GlobusComputeEngine
+  run_in_sandbox: true
+  max_workers_per_node: {{ max_workers_per_node | default(@@MAXW@@) }}
+  address:
+    type: address_by_interface
+    ifname: {{ interface | default(@@IFACE@@) }}
+{% if available_accelerators is defined and available_accelerators %}
+{% if available_accelerators is iterable and available_accelerators is not string %}
+  available_accelerators: [{{ available_accelerators | join(', ') }}]
+{% else %}
+  available_accelerators: {{ available_accelerators }}
+{% endif %}
+{% endif %}
+  job_status_kwargs:
+    max_idletime: @@IDLE@@
+    strategy_period: 30
+  provider:
+    type: {{ provider_type | default('PBSProProvider') }}
+{% if compute | default(true) %}
+    account: {{ account | default(@@ACCOUNT@@) }}
+    queue: {{ partition | default(@@PARTITION@@) }}
+    walltime: {{ walltime | default(@@WALLTIME@@) }}
+    nodes_per_block: {{ nodes_per_block | default(@@NODES@@) }}
+{% if cpus_per_node is defined and cpus_per_node %}
+    cpus_per_node: {{ cpus_per_node }}
+{% endif %}
+    worker_init: {{ worker_init | default(@@WORKER_INIT@@) }}
+    launcher:
+      type: SingleNodeLauncher
+    init_blocks: {{ init_blocks | default(@@EAGER@@) }}
+    min_blocks: 0
+    max_blocks: {{ max_blocks | default(@@MAXBLK@@) }}
+{% if scheduler_options is defined and scheduler_options %}
+    scheduler_options: {{ scheduler_options }}
+{% endif %}
+{% else %}
+    init_blocks: 1
+    min_blocks: 0
+    max_blocks: {{ max_blocks | default(@@MAXBLK@@) }}
+{% endif %}
+"""
+
+
 # ---------------------------------------------------------------- the facility
 
 
@@ -516,7 +638,7 @@ class SlurmFacility:
         Two render-time invariants imposed by the endpoint manager (`render_config_user_template`
         → `_sanitize_user_json`), both learned by live debugging:
         - It json.dumps's every *string* user_opt, so `"SlurmProvider"` arrives as
-          `'"SlurmProvider"'`. Branch on the BOOLEAN `is_slurm` (bools pass through the
+          `'"SlurmProvider"'`. Branch on the BOOLEAN `compute` (bools pass through the
           sanitizer unchanged), never a string equality — a string compare silently fails
           and drops the whole provider block.
         - Because the sanitizer already quotes strings, the template must NOT also `| tojson`
@@ -524,46 +646,7 @@ class SlurmFacility:
           quotes) and breaks the worker. The json.dumps'd defaults are pre-quoted to match."""
         p = self.profile
         eager = 1 if hpc.mode == "interactive" else 0
-        template = """\
-engine:
-  type: GlobusComputeEngine
-  run_in_sandbox: true
-  max_workers_per_node: {{ max_workers_per_node | default(@@MAXW@@) }}
-  address:
-    type: address_by_interface
-    ifname: {{ interface | default(@@IFACE@@) }}
-{% if available_accelerators is defined and available_accelerators %}
-{% if available_accelerators is iterable and available_accelerators is not string %}
-  available_accelerators: [{{ available_accelerators | join(', ') }}]
-{% else %}
-  available_accelerators: {{ available_accelerators }}
-{% endif %}
-{% endif %}
-  job_status_kwargs:
-    max_idletime: @@IDLE@@
-    strategy_period: 30
-  provider:
-    type: {{ provider_type | default('SlurmProvider') }}
-{% if is_slurm | default(true) %}
-    partition: {{ partition | default(@@PARTITION@@) }}
-    account: {{ account | default(@@ACCOUNT@@) }}
-    walltime: {{ walltime | default(@@WALLTIME@@) }}
-    nodes_per_block: {{ nodes_per_block | default(@@NODES@@) }}
-    worker_init: {{ worker_init | default(@@WORKER_INIT@@) }}
-    launcher:
-      type: SrunLauncher
-    init_blocks: {{ init_blocks | default(@@EAGER@@) }}
-    min_blocks: 0
-    max_blocks: {{ max_blocks | default(@@MAXBLK@@) }}
-{% if scheduler_options is defined and scheduler_options %}
-    scheduler_options: {{ scheduler_options }}
-{% endif %}
-{% else %}
-    init_blocks: 1
-    min_blocks: 0
-    max_blocks: {{ max_blocks | default(@@MAXBLK@@) }}
-{% endif %}
-"""
+        template = _PBS_TEMPLATE if p.scheduler == "pbs" else _SLURM_TEMPLATE
         subs = {
             "@@MAXW@@": str(p.max_workers_per_node),
             "@@IFACE@@": json.dumps(p.interface),
@@ -592,6 +675,8 @@ engine:
             defaults["scheduler_options"] = p.scheduler_options
         if p.available_accelerators is not None:
             defaults["available_accelerators"] = p.available_accelerators
+        if p.cpus_per_node is not None:
+            defaults["cpus_per_node"] = p.cpus_per_node
         return template, defaults
 
     async def bootstrap(self, hpc: Profile) -> EndpointHandle:
@@ -670,14 +755,14 @@ engine:
         return EndpointHandle(endpoint_id=eid, name=name, login_host=host)
 
     async def teardown(self, endpoint_id: str, *, wipe_credentials: bool = False) -> None:
-        """Stop the endpoint and cancel its Slurm block(s) — the cost-control exit. Both ops run
+        """Stop the endpoint and cancel its scheduler block(s) — the cost-control exit. Both ops run
         over SSH, each bounded by `_TEARDOWN_SSH_S`. Credentials are kept by default so a later
         session can reconnect; pass wipe_credentials=True to also remove the remote storage.db."""
         await self.cli.stop(self.profile.endpoint_name)
         # `stop` kills the manager, but an ungraceful stop leaves Parsl's block holding the
         # allocation until walltime (no manager left to scale it in). Explicitly cancel this
         # endpoint's blocks so "teardown released the compute" actually holds.
-        await self.cli.cancel_blocks(endpoint_id)
+        await self.cli.cancel_blocks(endpoint_id, self.profile.scheduler)
         if wipe_credentials:
             await self.cli.wipe_storage_db()
         await self.cli.close()  # drop the shared SSH master; the endpoint is gone

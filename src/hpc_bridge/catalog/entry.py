@@ -42,6 +42,7 @@ class Defaults(BaseModel):
     walltime: str = "00:30:00"
     max_workers_per_node: int = 2
     nodes_per_block: int = 1
+    cpus_per_node: int | None = None  # PBSProProvider.cpus_per_node; Slurm ignores it
     max_blocks: int = 1
     available_accelerators: int | list[str] | None = None
 
@@ -111,9 +112,10 @@ class CatalogEntry(BaseModel):
 
         `account` is intentionally absent — it is per-user, from allocation selection.
         `worker_init` is absent — in the code it is derived as `= env_setup`.
-        `ssh_host` and `compute.scheduler` are also absent — consumed by the transport layer
-        (SshTarget) / facility selection, not MachineProfile. `auth_method` is reserved (only
-        ssh-key is wired; nothing reads it yet).
+        `ssh_host` is also absent — consumed by the transport layer (SshTarget) / facility
+        selection, not MachineProfile. `scheduler` IS passed through to the profile (the
+        template dispatches on it). `auth_method` is reserved (only ssh-key is wired; nothing
+        reads it yet).
         """
         return {
             "name": self.id,
@@ -130,4 +132,6 @@ class CatalogEntry(BaseModel):
             "amqp_port": self.compute.amqp_port,
             "scheduler_options": self.compute.scheduler_options,
             "scratch_root": self.compute.scratch_root,
+            "scheduler": self.compute.scheduler,
+            "cpus_per_node": self.defaults.cpus_per_node,
         }

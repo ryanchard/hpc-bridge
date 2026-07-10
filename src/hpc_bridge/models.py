@@ -8,7 +8,7 @@ NodeHours = float
 
 
 class ShellOutcome(BaseModel):
-    # needs_confirmation: a billed (Slurm) shape whose spend hasn't been acknowledged — the
+    # needs_confirmation: a scheduler compute shape whose spend hasn't been acknowledged — the
     # command was NOT dispatched and no block was started (run ensure_endpoint_up(confirm_spend=True)).
     phase: Literal["complete", "cold_start", "failed", "needs_confirmation"]
     exit_code: int | None = None
@@ -21,7 +21,7 @@ class ShellOutcome(BaseModel):
 
 
 class EndpointStatus(BaseModel):
-    # needs_confirmation: a billed (Slurm) block was requested without an explicit spend
+    # needs_confirmation: a scheduler compute block was requested without an explicit spend
     # acknowledgement — nothing was provisioned; re-call with confirm_spend=True to proceed.
     # draining: stop_endpoint dispatched the block cancel but could NOT confirm it (the login
     # release channel was cold) — spend is NOT verifiably stopped; idle-release is the backstop
@@ -31,11 +31,11 @@ class EndpointStatus(BaseModel):
     block_state: Literal["warm", "cold", "provisioning"]
     endpoint_id: str | None = None
     session_spend: NodeHours = 0.0
-    # Slurm partition this shape will provision onto (from the discovery selection gate, or
-    # the facility default). None for non-Slurm shapes (login/local).
+    # Scheduler queue/partition this shape will provision onto (from the discovery selection gate,
+    # or the facility default). None for the login shape.
     partition: str | None = None
-    # Allocation/account this Slurm shape charges to (from connect_facility's selection, or the
-    # facility default). None for non-Slurm shapes.
+    # Allocation/account this scheduler shape charges to (from connect_facility's selection, or the
+    # facility default). None for the login shape.
     account: str | None = None
     notice: str | None = None
 
@@ -86,11 +86,13 @@ class FacilityDetails(BaseModel):
         examples=["/anvil/scratch/{user}/.hpc-bridge", "/lustre/orion/scratch/{user}/.hpc-bridge"],
     )
     partition: str = Field(
-        description="Default Slurm partition/queue for compute blocks.",
+        description="Default scheduler partition/queue for compute blocks.",
         examples=["shared", "batch", "debug"],
     )
-    scheduler: Literal["slurm"] = Field(
-        default="slurm", description="Scheduler. Only 'slurm' is supported in this version."
+    scheduler: Literal["slurm", "pbs"] = Field(
+        default="slurm",
+        description="Batch scheduler: 'slurm' or 'pbs' (PBS Pro). Picks the provider/launcher "
+        "and the queue vs partition wording; LSF is not supported yet.",
     )
     allocation_command: str | None = Field(
         default=None,
@@ -104,6 +106,18 @@ class FacilityDetails(BaseModel):
         "implemented today; omit (with allocation_command) if unsure.",
     )
     walltime: str = Field(default="00:30:00", description="Default block walltime (HH:MM:SS).")
+    cpus_per_node: int | None = Field(
+        default=None,
+        description="PBS only: cores per node to request (PBSProProvider.cpus_per_node). "
+        "Omit for Slurm (ignored) or to accept the scheduler default. E.g. Polaris: 32.",
+    )
+    scheduler_options: str | None = Field(
+        default=None,
+        description="Raw scheduler directives injected verbatim into the submit script (Parsl "
+        "scheduler_options) — e.g. Polaris REQUIRES '#PBS -l filesystems=home:eagle' or the job "
+        "is held. Omit if none. Multiple directives: newline-separate them.",
+        examples=["#PBS -l filesystems=home:eagle", "#SBATCH --constraint=gpu"],
+    )
     amqp_port: int = Field(default=443, description="AMQPS port (443 is near-universally allowed).")
     endpoint_name: str | None = Field(
         default=None,
