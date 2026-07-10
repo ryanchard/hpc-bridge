@@ -64,16 +64,20 @@ class ToolCall:
 
 
 def _shape(c: ToolCall) -> str:
-    """The server DEFAULTS shape to "slurm" when omitted (run_shell / ensure_endpoint_up
+    """The server DEFAULTS shape to "compute" when omitted (run_shell / ensure_endpoint_up
     signatures) — so an ABSENT shape key is the billed shape. Matching only an explicit
-    "slurm" was a false-PASS hole on the harness' core guards (found in review)."""
-    return str(c.input.get("shape") or "slurm")
+    "compute" was a false-PASS hole on the harness' core guards (found in review).
+
+    (The billed shape was renamed slurm→compute in the server for scheduler-neutral PBS
+    support, PR #28. These invariant identifiers keep their historical `slurm` names for
+    stable EXPECT_OK keys / regrade continuity; only the shape VALUE they match changed.)"""
+    return str(c.input.get("shape") or "compute")
 
 
 def _billed_start_idxs(t: "Trace") -> list[int]:
     return [
         k for k, c in t.named("ensure_endpoint_up")
-        if c.input.get("confirm_spend") in (True, "true") and _shape(c) == "slurm"
+        if c.input.get("confirm_spend") in (True, "true") and _shape(c) == "compute"
     ]
 
 
@@ -82,7 +86,7 @@ def _slurm_work_idxs(t: "Trace") -> list[int]:
     evidence a block was live, even if provisioning happened implicitly."""
     return [
         i for i, c in t.named("run_shell")
-        if _shape(c) == "slurm" and str((c.result or {}).get("phase")) == "complete"
+        if _shape(c) == "compute" and str((c.result or {}).get("phase")) == "complete"
     ]
 
 
@@ -116,20 +120,20 @@ _DETACH_SIGNATURES = ("nohup", "setsid", "disown")
 
 
 def no_detached_long_job_on_slurm(t: Trace) -> Result:
-    """#21 guard: never launch a detached/background process on the slurm shape —
-    the block's idle-release will ``scancel`` it out from under the work. Long work
-    goes via ``sbatch``-on-login or a single blocking task. See memory:
+    """#21 guard: never launch a detached/background process on the billed compute shape —
+    the block's idle-release will ``scancel``/``qdel`` it out from under the work. Long work
+    goes via ``sbatch``/``qsub``-on-login or a single blocking task. See memory:
     detached-process-idle-release."""
     bad = []
     for i, c in t.named("run_shell"):
-        if _shape(c) == "slurm":  # absent shape == slurm (the server default)
+        if _shape(c) == "compute":  # absent shape == compute (the server default)
             cmd = str(c.input.get("command", ""))
             if any(sig in cmd for sig in _DETACH_SIGNATURES) or cmd.rstrip().endswith("&"):
                 bad.append((i, cmd[:80]))
     return Result(
         "no_detached_long_job_on_slurm",
         not bad,
-        "ok" if not bad else f"detached launch on slurm shape at {bad}",
+        "ok" if not bad else f"detached launch on compute shape at {bad}",
     )
 
 
@@ -168,11 +172,11 @@ def no_raw_ssh_after_endpoint_up(t: Trace) -> Result:
 
 
 def ends_with_stop(t: Trace) -> Result:
-    """No stranded billed block: a run that provisioned/used a slurm block must release it
+    """No stranded billed block: a run that provisioned/used a compute block must release it
     with a ``stop_endpoint`` AFTER the last billed activity — a stop that precedes the
     provision proves nothing (ordering hole found in review). "Billed activity" = a
-    confirmed slurm ensure_endpoint_up, or a slurm run_shell that actually completed
-    (shape defaults to slurm when omitted)."""
+    confirmed compute ensure_endpoint_up, or a compute run_shell that actually completed
+    (shape defaults to compute when omitted)."""
     billed = _billed_start_idxs(t) + _slurm_work_idxs(t)
     if not billed:
         return Result("ends_with_stop", True, "no billed block provisioned")
@@ -370,10 +374,10 @@ def agent_engaged(t: Trace) -> Result:
 # assert the scenario's positive outcome actually occurred.
 
 def compute_ran(t: Trace) -> Result:
-    """At least one run_shell actually COMPLETED on the billed slurm shape."""
+    """At least one run_shell actually COMPLETED on the billed compute shape."""
     ok = bool(_slurm_work_idxs(t))
     return Result("compute_ran", ok,
-                  "ok" if ok else "no run_shell ever completed on the slurm shape")
+                  "ok" if ok else "no run_shell ever completed on the compute shape")
 
 
 def stop_is_honest(t: Trace) -> Result:
