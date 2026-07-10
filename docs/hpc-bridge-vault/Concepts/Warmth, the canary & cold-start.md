@@ -5,7 +5,7 @@
 
 ## The cold-start gap
 
-`manager_online` is a cheap Globus *web* query that only reflects the **login-node manager**. But in the [[MEP & templated endpoints|MEP model]] the first task forks the UEP and submits the Slurm block, so the manager reads "online" while the next command would still **cold-start** (no worker yet). Trusting `manager_online` makes `run_shell` dispatch into a 124 timeout.
+`manager_online` is a cheap Globus *web* query that only reflects the **login-node manager**. But in the [[MEP & templated endpoints|MEP model]] the first task forks the UEP and submits the scheduler block, so the manager reads "online" while the next command would still **cold-start** (no worker yet). Trusting `manager_online` makes `run_shell` dispatch into a 124 timeout.
 
 ## The canary
 

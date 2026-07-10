@@ -47,7 +47,7 @@ Modules add a short **code-anchor** style: cite the symbol with its line, e.g. `
 - **Code anchors:** cite `symbol` + `:line`. The *symbol* is the durable anchor (survives line drift); the line is a convenience. When you move code, fix the anchors — they are part of "tracks the codebase."
 - **Callouts** (`> [!type]`): use sparingly and meaningfully.
   - `[!abstract]` — the one-line role at the top (every note).
-  - `[!warning]` — a **load-bearing invariant or trap**: the thing that silently breaks if you get it wrong (e.g. the `is_slurm` bool, login-node pinning, "warm = a worker answered"). If it wouldn't cause a real bug, it's not a warning.
+  - `[!warning]` — a **load-bearing invariant or trap**: the thing that silently breaks if you get it wrong (e.g. the `compute` bool, login-node pinning, "warm = a worker answered"). If it wouldn't cause a real bug, it's not a warning.
   - `[!note]` / `[!info]` — secondary context, reading order.
 - **Wiki-links:** link the first mention of any other note; always include a **See also** footer. Prefer linking the relevant Concept note over re-explaining it. A link to a not-yet-written note is fine — it's a stub marker, not an error.
 - **Mermaid:** use a `mermaid` fenced block when a *flow* beats prose (architecture, lifecycle). Don't diagram what a sentence covers.
