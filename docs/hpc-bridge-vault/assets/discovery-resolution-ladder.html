@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>connect_facility — the discovery resolution ladder</title>
+<style>
+  :root{
+    --paper:#EEF1F4; --card:#FCFDFE; --ink:#19212E; --ink-soft:#586274; --ink-faint:#8B94A3;
+    --rule:#D5DBE3; --rule-soft:#E4E8EE;
+    --teal:#0C6E77; --teal-tint:#E4F1F2;
+    --amber:#9C5A12; --amber-tint:#F5EBD9;
+    --rust:#9E3529; --rust-tint:#F3E4E1;
+    --good:#2C7A57;
+    --sans:ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);
+    line-height:1.55;-webkit-font-smoothing:antialiased;font-size:15px}
+  .wrap{max-width:940px;margin:0 auto;padding:48px 28px 72px}
+  code,.mono{font-family:var(--mono);font-variant-ligatures:none}
+  .anchor{font-family:var(--mono);color:var(--ink-faint);font-size:.82em;font-variant-numeric:tabular-nums}
+
+  /* ---- header ---- */
+  header{border-bottom:1px solid var(--rule);padding-bottom:26px;margin-bottom:34px}
+  .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--teal);margin:0 0 12px}
+  h1{font-size:29px;font-weight:700;letter-spacing:-.02em;margin:0 0 10px;text-wrap:balance;line-height:1.15}
+  h1 .fn{font-family:var(--mono);font-weight:600;font-size:.82em;color:var(--ink-soft)}
+  .lede{margin:0;max-width:64ch;color:var(--ink-soft);font-size:15.5px}
+  .lede b{color:var(--ink);font-weight:600}
+
+  .legend{display:flex;flex-wrap:wrap;gap:8px 18px;margin-top:20px}
+  .legend span{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;color:var(--ink-soft)}
+  .dot{width:11px;height:11px;border-radius:2px;flex:none}
+  .dot.free{background:var(--teal)} .dot.ssh{background:var(--amber)}
+  .dot.dev{background:var(--rust)} .dot.hit{background:var(--good)}
+
+  /* ---- section labels ---- */
+  .eyebrow{font-family:var(--mono);font-size:11.5px;letter-spacing:.12em;text-transform:uppercase;
+    color:var(--ink-faint);margin:0 0 14px;display:flex;align-items:center;gap:12px}
+  .eyebrow::after{content:"";height:1px;background:var(--rule);flex:1}
+
+  /* ---- agent band ---- */
+  .agent{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .tool{background:var(--card);border:1px solid var(--rule);border-radius:4px;padding:15px 17px}
+  .tool .call{font-family:var(--mono);font-size:13px;color:var(--ink);font-weight:600}
+  .tool .call .arg{color:var(--teal)}
+  .tool p{margin:8px 0 0;font-size:13px;color:var(--ink-soft)}
+  .agent-note{margin:14px 0 0;font-size:13px;color:var(--ink-soft);
+    border-left:2px solid var(--teal);padding:2px 0 2px 13px}
+  .agent-note b{color:var(--ink)}
+
+  /* ---- boundary ---- */
+  .boundary{display:flex;align-items:center;gap:14px;margin:30px 0 24px;
+    font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;color:var(--ink-faint)}
+  .boundary::before,.boundary::after{content:"";height:0;border-top:1px dashed var(--rule);flex:1}
+  .boundary b{color:var(--ink-soft);font-weight:600}
+
+  /* ---- ladder ---- */
+  .ladder{position:relative}
+  .rung{display:grid;grid-template-columns:44px 1fr auto;gap:16px;align-items:stretch;
+    background:var(--card);border:1px solid var(--rule);border-left:3px solid var(--teal);
+    border-radius:4px;padding:15px 17px}
+  .rung--ssh{border-left-color:var(--amber)}
+  .rung--cache{background:var(--teal-tint);border-color:#BFDFE1;border-left-width:3px}
+  .rung__num{font-family:var(--mono);font-size:21px;font-weight:600;color:var(--teal);
+    line-height:1;padding-top:2px;font-variant-numeric:tabular-nums}
+  .rung--ssh .rung__num{color:var(--amber)}
+  .rung__head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px}
+  .rung__title{font-family:var(--mono);font-size:15px;font-weight:600;color:var(--ink)}
+  .rung__call{display:block;font-size:12.5px;color:var(--ink-soft);margin:0 0 7px;
+    white-space:nowrap;overflow-x:auto}
+  .rung__desc{margin:0;font-size:13px;color:var(--ink-soft)}
+  .rung__desc b{color:var(--ink);font-weight:600}
+  .rung__hit{align-self:center;text-align:right;font-size:12px;color:var(--ink-faint);
+    white-space:nowrap;padding-left:8px;border-left:1px solid var(--rule-soft)}
+  .rung__hit b{display:block;color:var(--good);font-family:var(--mono);font-size:12.5px;
+    font-weight:600;margin-top:3px}
+
+  .chip{font-family:var(--mono);font-size:10.5px;letter-spacing:.04em;text-transform:uppercase;
+    padding:2px 7px;border-radius:3px;font-weight:600;white-space:nowrap}
+  .chip.free{background:var(--teal-tint);color:var(--teal);border:1px solid #C4E1E3}
+  .rung--cache .chip.free{background:#D3EBEC}
+  .chip.ssh{background:var(--amber-tint);color:var(--amber);border:1px solid #E6D2AE}
+
+  .miss{display:flex;align-items:center;gap:8px;padding:5px 0 5px 20px;
+    font-family:var(--mono);font-size:11.5px;letter-spacing:.05em;color:var(--ink-faint)}
+  .miss::before{content:"↓";font-size:15px;color:var(--rule)}
+
+  /* ---- write-back ---- */
+  .writeback{margin-top:22px;background:var(--card);border:1px dashed #BFDFE1;border-radius:4px;
+    padding:16px 18px}
+  .writeback .wb-title{font-family:var(--mono);font-size:12px;letter-spacing:.06em;
+    text-transform:uppercase;color:var(--teal);margin:0 0 12px}
+  .wb-flow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:13px}
+  .wb-step{font-family:var(--mono);font-size:12.5px;background:var(--paper);border:1px solid var(--rule);
+    border-radius:3px;padding:5px 9px;color:var(--ink)}
+  .wb-step.persist{background:var(--teal-tint);border-color:#BFDFE1;color:var(--teal);font-weight:600}
+  .wb-arrow{color:var(--ink-faint);font-family:var(--mono)}
+  .wb-loop{margin:12px 0 0;font-size:12.5px;color:var(--ink-soft);font-style:italic}
+  .wb-loop b{color:var(--teal);font-style:normal}
+
+  /* ---- deviations ---- */
+  .devs{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  .dev{background:var(--card);border:1px solid var(--rule);border-top:3px solid var(--rust);
+    border-radius:4px;padding:15px 16px}
+  .dev h3{margin:0 0 8px;font-size:14px;font-weight:600;color:var(--ink);letter-spacing:-.01em}
+  .dev p{margin:0;font-size:12.5px;color:var(--ink-soft)}
+  .dev p b{color:var(--rust);font-weight:600}
+  .dev .tag{font-family:var(--mono);font-size:10px;letter-spacing:.05em;text-transform:uppercase;
+    color:var(--rust);display:block;margin-bottom:8px}
+
+  section{margin-top:40px}
+  @media(max-width:680px){
+    .agent,.devs{grid-template-columns:1fr}
+    .rung{grid-template-columns:32px 1fr}
+    .rung__hit{grid-column:1/-1;text-align:left;border-left:0;border-top:1px solid var(--rule-soft);
+      padding:8px 0 0;margin-top:4px}
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <p class="kicker">hpc-bridge · discovery</p>
+    <h1>The resolution ladder <span class="fn">— inside connect_facility()</span></h1>
+    <p class="lede">The agent only ever calls two discovery tools. Everything else — the cache read, the
+      index query, the SSH probe — happens <b>server-side, inside a single tool call</b>, walked top-to-bottom
+      until something resolves. The agent never touches <code>facilities.json</code>.</p>
+    <div class="legend">
+      <span><i class="dot free"></i> resolves with no SSH</span>
+      <span><i class="dot ssh"></i> costs an SSH round-trip</span>
+      <span><i class="dot hit"></i> on hit → login shape up</span>
+      <span><i class="dot dev"></i> where the agent can deviate</span>
+    </div>
+  </header>
+
+  <p class="eyebrow">what the agent calls · visible in the trace</p>
+  <div class="agent">
+    <div class="tool">
+      <div class="call">list_facilities(<span class="arg">query</span>)</div>
+      <p>Browse the curated Globus Search <b>index</b>. Returns agent-safe summaries. The explicit
+        “what machines exist?” step. <span class="anchor">:645</span></p>
+    </div>
+    <div class="tool">
+      <div class="call">connect_facility(<span class="arg">facility, ssh_host?, details?</span>)</div>
+      <p>Resolve <em>and</em> bind. This is the only call that walks the ladder below —
+        cache, index, and probe all live in here. <span class="anchor">:718</span></p>
+    </div>
+  </div>
+  <p class="agent-note"><b>Local discovery is embedded, not a step.</b> For a catalogued machine you
+    usually see <code>list_facilities</code> then <code>connect_facility</code>. For a <em>cached</em>
+    machine you see only <code>connect_facility(ssh_host=…)</code> — the cache hit is invisible; the tell
+    is an immediate <code>needs_account</code> with no <code>proposed_facility_details</code> and no SSH.</p>
+
+  <div class="boundary"><b>▼ inside connect_facility — server-internal, invisible to the agent ▼</b></div>
+
+  <div class="ladder">
+    <div class="rung">
+      <div class="rung__num">1</div>
+      <div>
+        <div class="rung__head"><span class="rung__title">session cache</span><span class="chip free">no ssh</span></div>
+        <code class="rung__call">app.session_facilities.get(facility) <span class="anchor">:740</span></code>
+        <p class="rung__desc">In-memory, this process. A facility already connected earlier <b>this session</b>.</p>
+      </div>
+      <div class="rung__hit">on hit<b>→ login shape up</b></div>
+    </div>
+    <div class="miss">miss — try disk</div>
+
+    <div class="rung rung--cache">
+      <div class="rung__num">2</div>
+      <div>
+        <div class="rung__head"><span class="rung__title">facilities.json</span><span class="chip free">no ssh</span></div>
+        <code class="rung__call">_facility_store().get(ssh_host or facility) <span class="anchor">:745</span></code>
+        <p class="rung__desc"><b>Local discovery.</b> A BYO config confirmed in a <b>prior session</b>, cached
+          to disk (keyed by <code>ssh_host</code>). Hit → reuse the online endpoint over the web. <b>Zero SSH.</b></p>
+      </div>
+      <div class="rung__hit">on hit<b>→ login shape up</b></div>
+    </div>
+    <div class="miss">miss — try the index</div>
+
+    <div class="rung">
+      <div class="rung__num">3</div>
+      <div>
+        <div class="rung__head"><span class="rung__title">catalog / index</span><span class="chip free">no ssh</span></div>
+        <code class="rung__call">make_catalog().get(facility) <span class="anchor">:754</span></code>
+        <p class="rung__desc">The curated Globus Search index — a <b>catalogued</b> machine (e.g. Anvil). Same
+          index <code>list_facilities</code> browses; resolved by id here.</p>
+      </div>
+      <div class="rung__hit">on hit<b>→ login shape up</b></div>
+    </div>
+    <div class="miss">miss — nothing known; probe or ask</div>
+
+    <div class="rung rung--ssh">
+      <div class="rung__num">4</div>
+      <div>
+        <div class="rung__head"><span class="rung__title">probe / ask</span><span class="chip ssh">ssh round-trip</span></div>
+        <code class="rung__call">_propose_or_ask(facility, ssh_host) <span class="anchor">:762</span></code>
+        <p class="rung__desc">Never-seen, un-indexed. With an <code>ssh_host</code> → <b>probe the login node</b>
+          over raw SSH and return <code>proposed_facility_details</code>. Without one → ask for the host.</p>
+      </div>
+      <div class="rung__hit">returns<b>proposed_details</b></div>
+    </div>
+  </div>
+
+  <div class="writeback">
+    <p class="wb-title">↑ how rung ② gets filled — the confirm → persist loop</p>
+    <div class="wb-flow">
+      <span class="wb-step">proposed_facility_details</span>
+      <span class="wb-arrow">→ agent confirms →</span>
+      <span class="wb-step">connect_facility(<span style="color:var(--teal)">details=</span>)</span>
+      <span class="wb-arrow">→</span>
+      <span class="wb-step persist">_facility_store().put(ssh_host) :738</span>
+    </div>
+    <p class="wb-loop">A confirmed <code>details=</code> with an <code>ssh_host</code> is written to
+      <code>facilities.json</code> — so <b>next session, rung ② hits with zero SSH.</b> The index is a curated
+      cache of discovery; this file is the local one.</p>
+  </div>
+
+  <section>
+    <p class="eyebrow">deviations · where the agent breaks the flow</p>
+    <div class="devs">
+      <div class="dev">
+        <span class="tag">bypass</span>
+        <h3>Skips connect_facility</h3>
+        <p>Reasons about SSH/Duo or reaches for <code>login_shell</code> <b>before</b> connect_facility. The
+          cache lives <b>inside</b> that call, so it's never consulted → needless re-probe or “please SSH in”.</p>
+      </div>
+      <div class="dev">
+        <span class="tag">key miss</span>
+        <h3>Inconsistent ssh_host</h3>
+        <p>The cache key is the <b>raw string</b>. Confirm with <code>midway3.rcc.uchicago.edu</code>, reconnect
+          with <code>midway3</code> → <b>different key → miss → re-probe</b>. (Endpoint name sanitizes; the key doesn't.)</p>
+      </div>
+      <div class="dev">
+        <span class="tag">override</span>
+        <h3>Fabricates details</h3>
+        <p>Invents a <code>details=</code> / <code>endpoint_name</code> mid-flail (the <code>recover-00</code> we
+          saw) — an explicit <code>details=</code> <b>overrides</b> the ladder, writing the wrong config to cache.</p>
+      </div>
+    </div>
+  </section>
+</div>
+
+</body>
+</html>

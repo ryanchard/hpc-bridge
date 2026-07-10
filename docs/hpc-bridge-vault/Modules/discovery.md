@@ -16,6 +16,9 @@
 
 Reached from `connect_facility`'s index-miss path: `_propose_or_ask` ([[server]] `:871`) builds the bare target and returns `phase="proposed_facility_details"` (or `needs_preauth` when the host needs an interactive login).
 
+> [!note] The full resolution ladder
+> This probe is the **last rung**. `connect_facility` walks session → `facilities.json` (local cache) → catalog → probe, first hit wins — the agent never reads the cache itself; it's resolved server-side inside the one call. See the interactive diagram: **[the resolution ladder](../assets/discovery-resolution-ladder.html)** (open in a browser), which also maps where the agent can *deviate* — bypassing `connect_facility`, an inconsistent `ssh_host` key, or a fabricated `details=`.
+
 > [!warning] Propose, don't invent
 > Discovery *proposes* discovered facts for the user to confirm; it must not silently commit. A wrong `interface`/`env_setup` is caught by the [[Warmth, the canary & cold-start|canary]] (the worker never registers), so the draft is **checkable, not trusted** — elicit → propose → confirm → validate.
 

@@ -19,6 +19,7 @@ This vault has two halves:
 - [[Session continuity]] — the cwd/env shim
 - [[Cost control]] — idle-release · spend clock · budget gate
 - [[Discovery today]] — login-shape probe · the catalog
+- [Resolution ladder](assets/discovery-resolution-ladder.html) *(interactive diagram)* — how `connect_facility` resolves: session → cache → index → probe, and where the agent deviates
 - [[Facility catalog]] — index/seed → `MachineProfile`; `list_facilities` / `connect_facility`
 
 ## Modules — `src/hpc_bridge/`
