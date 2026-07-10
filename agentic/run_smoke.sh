@@ -67,6 +67,7 @@ ARGS=(
   -e HPC_BRIDGE_SSH_USER="$SSH_USER"
   -e HPC_BRIDGE_SSH_KEY=/run/secrets/test_key
   -e HPC_BRIDGE_SSH_HOST=globus1.cs.uchicago.edu   # FQDN — the container has no ~/.ssh/config alias
+  -e HPC_BRIDGE_ENDPOINT_NAME="hpc-bridge-globus1-$RUNID"   # per-run isolation: runs share ONE Globus identity, so a unique NAME keeps their registrations distinct (product default, unset, = ssh-host key)
   -e HPC_BRIDGE_USER_DIR="$USER_DIR"
   -e GLOBUS_COMPUTE_USER_DIR="$USER_DIR"   # so the MCP process's Globus SDK finds the mounted db
   -e HPCB_RUNS_DIR=/work/hpc-bridge/agentic/runs
@@ -85,5 +86,5 @@ RUN_ARGS=("$SCENARIO")
 [ -n "${HPCB_EFFORT:-}" ]  && RUN_ARGS+=(--effort "$HPCB_EFFORT")    # pin a reasoning level (low..max)
 [ -n "${HPCB_PERSONA:-}" ] && RUN_ARGS+=(--persona "$HPCB_PERSONA")  # interactive: simulated-human persona
 [ -n "${HPCB_NO_SKILL:-}" ] && RUN_ARGS+=(--no-skill)                # ablation: withhold SKILL.md
-echo "running '$SCENARIO'${HPCB_MODEL:+ model=$HPCB_MODEL}${HPCB_EFFORT:+ effort=$HPCB_EFFORT}${HPCB_PERSONA:+ persona=$HPCB_PERSONA}${HPCB_NO_SKILL:+ ABLATED:skill}  (user $SSH_USER, endpoint hpc-bridge-globus1-$RUNID)…"
+echo "running '$SCENARIO'${HPCB_MODEL:+ model=$HPCB_MODEL}${HPCB_EFFORT:+ effort=$HPCB_EFFORT}${HPCB_PERSONA:+ persona=$HPCB_PERSONA}${HPCB_NO_SKILL:+ ABLATED:skill}  (user $SSH_USER, facility globus1-$RUNID)…"
 docker run "${ARGS[@]}" hpc-bridge-agentic "${RUN_ARGS[@]}"

@@ -60,6 +60,17 @@ class RunResult:
     dialogue: list[Any] = None  # interactive mode: the human-sim's Q&A Exchanges
 
 
+@dataclass
+class _AbortedResult:
+    """Stand-in `final` when the SDK stream dies mid-run (max_turns / budget / transport error)
+    instead of yielding a ResultMessage. `is_error=True` routes it to run.py's completion gate as a
+    hard FAIL while the PARTIAL trace is still graded + recorded — an overrun must not crash the
+    harness or vanish without evidence. `result` carries the reason (the rate-limit sniff reads it).
+    Downstream reads every ResultMessage attr via getattr(default=None), so absent fields are fine."""
+    result: str
+    is_error: bool = True
+
+
 def _server_env() -> dict[str, str]:
     missing = [k for k in _REQUIRED_ENV if k not in os.environ]
     if missing:
@@ -192,20 +203,29 @@ async def run_scenario(
     options = ClaudeAgentOptions(**opts)
     messages: list[Any] = []
     final: Any = None
-    if interactive:
-        async with ClaudeSDKClient(options=options) as client:
-            await client.query(prompt)
-            async for msg in client.receive_response():
+    try:
+        if interactive:
+            async with ClaudeSDKClient(options=options) as client:
+                await client.query(prompt)
+                async for msg in client.receive_response():
+                    messages.append(msg)
+                    _live(msg)
+                    if type(msg).__name__ == "ResultMessage":
+                        final = msg
+        else:
+            async for msg in query(prompt=prompt, options=options):
                 messages.append(msg)
                 _live(msg)
                 if type(msg).__name__ == "ResultMessage":
                     final = msg
-    else:
-        async for msg in query(prompt=prompt, options=options):
-            messages.append(msg)
-            _live(msg)
-            if type(msg).__name__ == "ResultMessage":
-                final = msg
+    except Exception as e:  # noqa: BLE001 — max_turns / budget / transport death mid-stream
+        # The SDK RAISES (e.g. "Reached maximum number of turns") rather than yielding a final
+        # ResultMessage. Swallow it here so the PARTIAL trace collected so far is returned, graded,
+        # and recorded — an overrun becomes a graceful FAIL (run_completed), not a lost bundle plus a
+        # top-level traceback. Keep a real ResultMessage if one already arrived; else synthesize one.
+        print(f"  ⚠ run aborted mid-stream: {e}", file=sys.stderr, flush=True)
+        if final is None:
+            final = _AbortedResult(result=str(e))
     return RunResult(
         trace=build_trace(messages, injected_answers=injected_answers),
         final=final, messages=messages,
