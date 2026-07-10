@@ -10,9 +10,9 @@ flowchart TD
   C["0 · Configure & install<br/>SSH via ~/.ssh/config"] --> L["1 · Select facility<br/>list_facilities → connect_facility(facility)<br/><i>login shape up + allocations</i>"]
   L --> D["2 · Discover partitions<br/>run_shell(shape=login): sinfo · squeue"]
   D --> G["3 · Gate: allocation + partition + budget<br/>AskUserQuestion"]
-  G --> P["4 · Provision slurm block<br/>ensure_endpoint_up(account, partition, confirm_spend=True)"]
+  G --> P["4 · Provision compute block<br/>ensure_endpoint_up(account, partition, confirm_spend=True)"]
   P --> W["5 · Wait for warm<br/>poll squeue (login shape) → canary"]
-  W --> R["6 · Run work<br/>run_shell(shape=slurm)"]
+  W --> R["6 · Run work<br/>run_shell(shape=compute)"]
   R --> S["7 · Stop / idle-release<br/>stop_endpoint"]
 ```
 
@@ -22,9 +22,9 @@ flowchart TD
 1. **Select the facility** — `list_facilities()` browses the [[Facility catalog|catalog]]; `connect_facility(facility)` brings up the **free login shape** (reuse over web, else one SSH bootstrap; seed creds; pin the login node) and lists the user's allocations. → [[Facility catalog]] · [[Standing up the endpoint]] · [[Credential seeding]]
 2. **Discover partitions** — `run_shell(shape="login")` runs `sinfo`/`squeue` over AMQP, **no SSH**. → [[Discovery today]]
 3. **Gate** — present the allocations (balance) + partitions (live idle) + estimated cost; the human picks. → [[Resource shapes & the spend floor]]
-4. **Provision the billed block** — `ensure_endpoint_up(shape="slurm", account=…, partition=…, confirm_spend=True)`; the spend floor blocks an *unconfirmed* start. → [[Resource shapes & the spend floor]] · [[MEP & templated endpoints]]
+4. **Provision the billed block** — `ensure_endpoint_up(shape="compute", account=…, partition=…, confirm_spend=True)`; the spend floor blocks an *unconfirmed* start. The `compute` shape is scheduler-neutral — the facility's `profile.scheduler` picks Slurm or PBS. → [[Resource shapes & the spend floor]] · [[MEP & templated endpoints]]
 5. **Wait for warm** — poll `squeue` via the login shape until `RUNNING`, then one canary confirms a *live worker*. → [[Warmth, the canary & cold-start]]
-6. **Run work** — `run_shell(shape="slurm")`; cwd/env persist across calls per session. → [[The MCP tools]] · [[Session continuity]]
+6. **Run work** — `run_shell(shape="compute")`; cwd/env persist across calls per session. → [[The MCP tools]] · [[Session continuity]]
 7. **Stop / idle-release** — `stop_endpoint`, or the block self-releases when idle. → [[Cost control]]
 
 > [!note] Keep this consistent with the skill

@@ -12,7 +12,7 @@ This vault has two halves:
 ## Concepts — how it works
 - [[Two-channel architecture]] — SSH control plane vs AMQP hot path
 - [[Standing up the endpoint]] — bootstrap on a login node · SSH-once · reuse
-- [[MEP & templated endpoints]] — manager + per-task UEP template → Slurm block → compute node
+- [[MEP & templated endpoints]] — manager + per-task UEP template → scheduler block (Slurm/PBS) → compute node
 - [[Credential seeding]] — why we ship a trimmed `storage.db`
 - [[Warmth, the canary & cold-start]] — what "up" really means
 - [[Resource shapes & the spend floor]] — `login` vs `slurm`; `confirm_spend`
