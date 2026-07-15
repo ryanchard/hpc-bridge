@@ -32,7 +32,13 @@ async def execute(
     try:
         res = await runner.run(command)
     except Exception as exc:  # noqa: BLE001 - deliberately translate ALL failures to an outcome
-        return _failure_outcome(exc, block_state, max_output_chars)
+        return failure_outcome(exc, block_state, max_output_chars)
+    return complete_outcome(res, block_state, max_output_chars)
+
+
+def complete_outcome(res: ShellLike, block_state: str, max_output_chars: int) -> ShellOutcome:
+    """Shape a successful runner result into a `complete` outcome. Shared by execute() and the
+    submit/poll path (server._run_shell / poll_task) so the completion mapping lives in one place."""
     return ShellOutcome(
         phase="complete",
         exit_code=res.returncode,
@@ -42,7 +48,7 @@ async def execute(
     )
 
 
-def _failure_outcome(exc: Exception, block_state: str, max_output_chars: int) -> ShellOutcome:
+def failure_outcome(exc: Exception, block_state: str, max_output_chars: int) -> ShellOutcome:
     name = type(exc).__name__
     if isinstance(exc, TimeoutError):
         return ShellOutcome(

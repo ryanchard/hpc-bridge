@@ -25,6 +25,8 @@
 | `HPC_BRIDGE_SCRATCH` | Override the [[Session continuity\|session-shell root]] (else the facility's `$SCRATCH`, else a local default). |
 | `HPC_BRIDGE_STATE_DIR` | Base dir for hpc-bridge's **local state** — login-node pins (`endpoints.json`), the local-discovery facility cache (`facilities.json`), and the SSH ControlMaster sockets. Default `~/.hpc-bridge`; relocating it isolates all state (the test suite points it at a tmp dir so tests never touch the real one). |
 | `HPC_BRIDGE_CHARGE_FACTOR` | The QOS SU multiplier for the [[Cost control\|spend clock]] (default `0.0` = free). |
+| `HPC_BRIDGE_SYNC_WAIT_S` | How long `run_shell` blocks for a result before handing back a poll handle (default `120`). A command still running past it comes back `running` + `task_id` (**not** cut); retrieve it with `poll_task`. Clamped strictly below the task ceiling. |
+| `HPC_BRIDGE_MAX_TASK_S` | Optional cap (seconds) on a single task before the worker kills it (exit 124). **Unset ⇒ the ceiling is the block walltime** — the deterministic default. Set it to bound the blast radius of a hung task on a long-walltime facility ([[Cost control]], [#21](https://github.com/ryanchard/hpc-bridge/issues/21)). |
 | `HPC_BRIDGE_USER_DIR` | Local `globus_compute` dir (set by `.mcp.json`). |
 
 ## BYO endpoint

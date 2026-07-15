@@ -1,15 +1,16 @@
 # The MCP tools
 
 > [!abstract] Role
-> The agent-facing surface — **eight** tools, all declared in [[server]], all returning structured [[models|Pydantic results]] (failures come back as outcomes, never raw crashes).
+> The agent-facing surface — **nine** tools, all declared in [[server]], all returning structured [[models|Pydantic results]] (failures come back as outcomes, never raw crashes).
 
 ## Stand up & run
 
 | Tool | Returns | What it does |
 |---|---|---|
 | `ensure_endpoint_up(shape="compute", partition=None, confirm_spend=False, account=None)` | `EndpointStatus` | Provision/probe the endpoint; reports `up` only once a **worker answers a canary** ([[Warmth, the canary & cold-start]]), else `provisioning`. A billed `compute` block won't start without `confirm_spend=True` → `needs_confirmation`. `partition` and `account` (the chosen allocation) select the **scheduler target** — a Slurm partition or PBS queue — and persist for the session. |
-| `run_shell(command, session_id="default", shape="compute")` | `ShellOutcome` | Run a command on the warm block (`shape="compute"`) or the login node (`shape="login"`, free — the no-SSH discovery channel). Cold endpoint → `cold_start` (no hang). cwd/env persist per session ([[Session continuity]]). |
-| `reset_session(session_id="default", shape="compute")` | `ShellOutcome` | Clear a session's persisted cwd + environment (per shape). |
+| `run_shell(command, session_id="default", shape="compute")` | `ShellOutcome` | Run a command on the warm block (`shape="compute"`) or the login node (`shape="login"`, free — the no-SSH discovery channel). Cold endpoint → `cold_start` (no hang). A command that outlives the sync-wait comes back `running` + a `task_id` (**not** cut — it runs up to the block walltime) → retrieve it with `poll_task`. cwd/env persist per session ([[Session continuity]]). |
+| `poll_task(task_id, wait=0.0)` | `ShellOutcome` | Retrieve a long task's result: `complete` once it finishes, else `running` (poll again); `wait` optionally blocks up to N seconds. This is what lets long work be a *foreground task* instead of a detached process — a running task keeps the block busy, so it's never idle-released ([[Cost control]], [#21](https://github.com/ryanchard/hpc-bridge/issues/21)). |
+| `reset_session(session_id="default", shape="compute")` | `ShellOutcome` | Clear a session's persisted cwd + environment (per shape). A session with a task still running is busy — reset (like a second `run_shell`) is refused until it's polled. |
 | `stop_endpoint()` | `EndpointStatus` | Release the billed block over the login endpoint (AMQP, no SSH) via the scheduler's own cancel (`scancel` on Slurm, `qdel` on PBS); **leave the login-node endpoint online** for a zero-SSH reconnect. "Stop" = stop spending, not tear down ([[Cost control]]). Retries a cold release channel to confirm; `status="down"` = cancel confirmed, `status="draining"` = dispatched but **unconfirmed** (re-call to confirm; [#24](https://github.com/ryanchard/hpc-bridge/issues/24)). |
 | `teardown_endpoint()` | `EndpointStatus` | The explicit "destroy it entirely": `gce stop` + `delete` over SSH and clear all state — for when the user insists on removing the login endpoint (normally it's left online for reuse). After it, don't `run_shell` (that re-provisions a fresh one). |
 | `login_shell(command)` | `LoginShellResult` | Read-only command on the login node over a **fresh SSH** connection — the cold-start discovery escape hatch. Prefer `run_shell(shape="login")` once an endpoint is up ([[Discovery today]]). Requires a connected SSH facility. |

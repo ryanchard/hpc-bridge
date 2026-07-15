@@ -58,6 +58,20 @@ class ShapeRuntime:
 
 
 @dataclass
+class TaskHandle:
+    """A dispatched command still running past the client sync-wait — a poll handle (phase="running").
+    Its future lives on the shape's long-lived Executor, so poll_task can retrieve the result whenever
+    it resolves; the running task also keeps the block busy (a warmth signal) until it finishes."""
+
+    future: object  # concurrent.futures.Future from the Executor (opaque, to avoid the SDK import here)
+    shape: str
+    session_id: str
+    command: str
+    submitted_at: float
+    ceiling_s: float
+
+
+@dataclass
 class AppCtx:
     facility: Facility
     profile: Profile
@@ -69,6 +83,10 @@ class AppCtx:
     charge_factor: float = 0.0
     max_output_chars: int = 1_000_000
     shapes: dict[str, ShapeRuntime] = field(default_factory=dict)
+    # Live long-task handles (phase="running") keyed by task_id. The future lives on the shape's
+    # Executor; poll_task resolves it. Drained when the block goes away (swap/stop/connect/teardown).
+    tasks: dict[str, TaskHandle] = field(default_factory=dict)
+    task_seq: int = 0  # monotonic task-id counter (bumped under app.lock)
     # Session-local facilities the agent supplied for machines NOT in the catalog (the Socratic
     # fallback) — keyed by the id passed to connect_facility. Never written to the shared index.
     session_facilities: dict[str, CatalogEntry] = field(default_factory=dict)
@@ -313,6 +331,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppCtx]:
     try:
         yield app
     finally:
+        app.tasks.clear()  # drop any live poll handles — their blocks are going away with the process
         for rt in app.shapes.values():
             if rt.runner is not None:
                 rt.runner.close()
@@ -328,6 +347,15 @@ CANARY_TTL_S = 45.0  # trust a confirmed worker this long before re-canarying. S
 # block needs >= max_idletime (default 600s) of SILENCE to release, so a worker seen <45s ago
 # cannot have idle-released out from under us.
 CANARY_TIMEOUT_S = 8.0  # a live worker answers in ~1-2s; a cold block blows past this -> not warm
+
+# --- long-task submit/poll bounds (#21) ---
+# The client blocks up to SYNC_WAIT_S for a task's result; a task still running past it is NOT cut —
+# the caller gets a poll handle (poll_task) and the task runs on up to its ceiling. _runner_for clamps
+# the effective wait strictly below the ceiling so a task finishing near the boundary still returns.
+SYNC_WAIT_S = _env_float("HPC_BRIDGE_SYNC_WAIT_S", 120.0)
+# A task's ceiling = the block walltime − this margin, so the worker kills it (exit 124) gracefully
+# BEFORE the scheduler tears the block down (preserving the result). See _task_ceiling_s.
+TASK_CEILING_MARGIN_S = 20.0
 
 
 def _shape_runtime(app: AppCtx, shape: str) -> ShapeRuntime:
@@ -352,6 +380,48 @@ def _shape_runtime(app: AppCtx, shape: str) -> ShapeRuntime:
     return rt
 
 
+def _parse_hhmmss(s: str | None) -> int:
+    """HH:MM:SS (also H:MM:SS / MM:SS / SS) -> seconds. Deterministic and total: returns 0 on anything
+    missing or malformed so callers fall back rather than crash; never negative."""
+    if not s:
+        return 0
+    parts = str(s).strip().split(":")
+    if not 1 <= len(parts) <= 3 or not all(p.strip().isdigit() for p in parts):
+        return 0
+    secs = 0
+    for p in parts:
+        secs = secs * 60 + int(p)
+    return secs
+
+
+def _task_ceiling_s(uec: dict) -> float:
+    """The per-task kill ceiling (seconds) passed to the runner as the ShellFunction walltime: the block
+    walltime minus a margin (so a task dies with a 124 result just BEFORE the scheduler reclaims the
+    block), optionally capped by HPC_BRIDGE_MAX_TASK_S (unset = the full block walltime — the
+    deterministic default). Falls back to a safe non-zero value when the block walltime is absent."""
+    block_s = _parse_hhmmss(uec.get("walltime"))
+    ceiling = block_s - TASK_CEILING_MARGIN_S
+    if ceiling <= 0:  # missing/tiny walltime (e.g. LocalFacility has none) -> a safe default
+        ceiling = max(SYNC_WAIT_S + TASK_CEILING_MARGIN_S, 300.0)
+    cap = _env_float("HPC_BRIDGE_MAX_TASK_S", 0.0)
+    if cap > 0:
+        ceiling = min(ceiling, cap)
+    return float(ceiling)
+
+
+def _live_task_handles(app: AppCtx, shape: str) -> list[tuple[str, TaskHandle]]:
+    """(task_id, handle) for this shape whose task is still RUNNING (future not yet done) — i.e. still
+    holding the block. The warmth signal and the swap/session-busy guards all key off this."""
+    return [(tid, h) for tid, h in app.tasks.items() if h.shape == shape and not h.future.done()]
+
+
+def _drain_shape_tasks(app: AppCtx, shape: str) -> None:
+    """Drop a shape's task handles — its block is going away (endpoint swap/stop/connect/teardown), so
+    the futures are moot. poll_task on a drained id reports it ended rather than polling a dead future."""
+    for tid in [tid for tid, h in app.tasks.items() if h.shape == shape]:
+        app.tasks.pop(tid, None)
+
+
 def _runner_for(app: AppCtx, shape: str) -> GlobusRunner:
     """Reuse the shape's runner if it's bound to the current endpoint, else (re)create it. A
     new endpoint voids the prior worker confirmation and banks the old endpoint's spend."""
@@ -359,9 +429,17 @@ def _runner_for(app: AppCtx, shape: str) -> GlobusRunner:
     eid = app.state.endpoint_id
     if rt.runner is None or rt.runner.endpoint_id != eid or rt.runner_stale:
         if rt.runner is not None:
+            # A config-only swap (runner_stale) is barred while a task runs (see _apply_partition/
+            # _apply_account), so reaching here with a live task means the ENDPOINT changed — that
+            # block (and its tasks) is gone; drop the handles before closing so no dead future is polled.
+            _drain_shape_tasks(app, shape)
             rt.runner.close()
             _bank_warm_interval(rt, app)
-        rt.runner = app.runner_factory(eid, user_endpoint_config=rt.user_endpoint_config)
+        ceiling_s = _task_ceiling_s(rt.user_endpoint_config)
+        sync_wait_s = max(min(SYNC_WAIT_S, ceiling_s - TASK_CEILING_MARGIN_S), 5.0)
+        rt.runner = app.runner_factory(
+            eid, user_endpoint_config=rt.user_endpoint_config, walltime=ceiling_s, timeout=sync_wait_s
+        )
         rt.runner_stale = False
         rt.warm_confirmed_at = None
     return rt.runner
@@ -376,6 +454,12 @@ async def _confirm_worker(app: AppCtx, shape: str, *, force: bool) -> str:
     rt = _shape_runtime(app, shape)
     runner = _runner_for(app, shape)
     now = time.monotonic()
+    # A task still running on this shape IS liveness — the worker is demonstrably executing our work.
+    # Trust it and skip the canary, which would otherwise queue behind the sole worker and (on timeout)
+    # flip us to 'not warm', banking the spend clock while the block is still burning (#21).
+    if _live_task_handles(app, shape):
+        rt.warm_confirmed_at = now
+        return "warm"
     if not force and rt.warm_confirmed_at is not None and now - rt.warm_confirmed_at < CANARY_TTL_S:
         return "warm"
     result = await runner.canary(timeout=CANARY_TIMEOUT_S)
@@ -454,22 +538,30 @@ def _worker_notice(canary: CanaryResult | None) -> str | None:
     return note
 
 
-def _billed_bounds_note(app: "AppCtx") -> str:
-    """The two silent limits of a billed compute block ([#21]), surfaced so a caller can plan long work
-    instead of being cut without warning: the block idle-releases after `max_idletime` of no Compute
-    tasks (min_blocks=0), and a single run_shell task caps at ~110s (runner walltime = timeout − 10)."""
+def _billed_bounds_note(app: "AppCtx", rt: "ShapeRuntime") -> str:
+    """The bounds of a billed compute block ([#21]), surfaced so a caller runs long work AS A TASK
+    rather than being surprised: a run_shell task runs up to the block walltime (then the worker kills
+    it, exit 124) and, if it outlives the sync-wait, comes back as a poll handle (poll_task) — it is
+    NOT cut at ~110s any more. The block idle-releases after `max_idletime` once nothing is running or
+    queued, so keep long work in the FOREGROUND (a running task holds the block); a detached process
+    is not a Compute task and would be idle-released out from under itself."""
     idle = getattr(app.profile, "max_idletime_s", 600)
-    return (f"billed block bounds — it idle-releases after ~{idle}s with no Compute task (min_blocks=0), "
-            "and a single run_shell task caps at ~110s; run long or detached work via sbatch on "
-            "shape='login' (or checkpoint) so it isn't cut")
+    ceiling = int(_task_ceiling_s(rt.user_endpoint_config))
+    return (f"billed block bounds — a task runs up to ~{ceiling}s (the block walltime); one that "
+            f"outlives the ~{int(SYNC_WAIT_S)}s sync-wait returns a poll handle (poll_task), it is NOT "
+            f"cut. The block idle-releases after ~{idle}s once nothing runs or is queued, so run long "
+            "work as a foreground task — don't detach it (a detached process isn't a Compute task).")
 
 
 def _note_dispatch(rt: ShapeRuntime, out: ShellOutcome) -> None:
-    """A real result is the strongest liveness proof — refresh the canary TTL. A dispatch
-    timeout means the worker may be gone, so void the confirmation to force a re-canary."""
-    if out.phase == "complete":
+    """A real result — or a task still running — is the strongest liveness proof, so refresh the canary
+    TTL. A dispatch FAILURE (transport timeout/error) means the worker may be gone, so void the
+    confirmation to force a re-canary. A completed exit-124 is the worker ENFORCING the task ceiling
+    (it answered — it's alive), so it no longer voids (the old timeout==124 heuristic is obsolete now
+    that a slow task returns a poll handle, not a 124 failure)."""
+    if out.phase in ("complete", "running"):
         rt.warm_confirmed_at = time.monotonic()
-    elif out.exit_code == 124:
+    elif out.phase == "failed":
         rt.warm_confirmed_at = None
 
 
@@ -509,8 +601,11 @@ _VALID_PARTITION = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 _VALID_ACCOUNT = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 
 
-def _apply_partition(rt: ShapeRuntime, partition: str | None) -> None:
-    """Point this shape's next provision at `partition`, invalidating a stale runner.
+def _apply_partition(app: AppCtx, shape: str, rt: ShapeRuntime, partition: str | None) -> str | None:
+    """Point this shape's next provision at `partition`, invalidating a stale runner. Returns a
+    rejection notice (and applies nothing) when a task is still running on the shape: the change would
+    mark the runner stale, and the next _runner_for would close its Executor and cancel that task — so
+    make the caller poll_task/stop_endpoint first. Otherwise returns None.
 
     No-op when `partition` is None (keep the facility/profile default) or unchanged, or for the
     login shape, which has no partition. A real change means a different scheduler block,
@@ -519,27 +614,38 @@ def _apply_partition(rt: ShapeRuntime, partition: str | None) -> None:
     the old block idle-releases on its own (min_blocks=0). The selection persists in
     user_endpoint_config for the rest of the session."""
     if partition is None or not rt.user_endpoint_config.get("compute"):
-        return
+        return None
     if rt.user_endpoint_config.get("partition") == partition:
-        return
+        return None
+    live = _live_task_handles(app, shape)
+    if live:
+        return (f"can't change partition to {partition!r}: a task is still running "
+                f"(task_id={live[0][0]!r}) on shape {shape!r}. poll_task it or stop_endpoint first.")
     rt.user_endpoint_config["partition"] = partition
     rt.runner_stale = True
     rt.warm_confirmed_at = None
+    return None
 
 
-def _apply_account(rt: ShapeRuntime, account: str | None) -> None:
+def _apply_account(app: AppCtx, shape: str, rt: ShapeRuntime, account: str | None) -> str | None:
     """Point this shape's next provision at `account` (the chosen allocation) — the account
-    analogue of _apply_partition. compute-shape only; the config_template renders `account` from
-    user_endpoint_config with the profile default, so a selection here overrides it. A change
-    invalidates the cached runner (banking the prior warm interval) and drops the warm
+    analogue of _apply_partition. Returns a rejection notice (and applies nothing) when a task is still
+    running on the shape (the runner swap would cancel it). compute-shape only; the config_template
+    renders `account` from user_endpoint_config with the profile default, so a selection here overrides
+    it. A change invalidates the cached runner (banking the prior warm interval) and drops the warm
     confirmation; the selection persists for the session."""
     if account is None or not rt.user_endpoint_config.get("compute"):
-        return
+        return None
     if rt.user_endpoint_config.get("account") == account:
-        return
+        return None
+    live = _live_task_handles(app, shape)
+    if live:
+        return (f"can't change account to {account!r}: a task is still running "
+                f"(task_id={live[0][0]!r}) on shape {shape!r}. poll_task it or stop_endpoint first.")
     rt.user_endpoint_config["account"] = account
     rt.runner_stale = True
     rt.warm_confirmed_at = None
+    return None
 
 
 async def _ensure_endpoint_up(
@@ -568,8 +674,17 @@ async def _ensure_endpoint_up(
         # A login shape has no partition; surface that we ignored a supplied one rather than
         # silently dropping the user's selection.
         ignored = partition is not None and not rt.user_endpoint_config.get("compute")
-        _apply_partition(rt, partition)
-        _apply_account(rt, account)
+        reject = _apply_partition(app, shape, rt, partition) or _apply_account(app, shape, rt, account)
+        if reject:  # a live task blocks repointing the block (the swap would cancel it) — change nothing
+            return EndpointStatus(
+                status="up",
+                block_state="warm",
+                endpoint_id=app.state.endpoint_id,
+                session_spend=_total_session_spend(app),
+                partition=rt.user_endpoint_config.get("partition"),
+                account=rt.user_endpoint_config.get("account"),
+                notice=reject,
+            )
         active_partition = rt.user_endpoint_config.get("partition")
         active_account = rt.user_endpoint_config.get("account")
         try:
@@ -602,8 +717,9 @@ async def _ensure_endpoint_up(
             )
         if block == "warm":
             status, notice = "up", _worker_notice(rt.last_canary)
-            if _billable(rt):  # #21: warn about the silent bounds a caller would otherwise hit unaware
-                notice = f"{notice}. {_billed_bounds_note(app)}" if notice else _billed_bounds_note(app)
+            if _billable(rt):  # #21: name the block's bounds so a caller runs long work as a task
+                bounds = _billed_bounds_note(app, rt)
+                notice = f"{notice}. {bounds}" if notice else bounds
         else:
             status = "provisioning"
             notice = f"allocating nodes on {active_partition!r}…" if active_partition else "allocating nodes…"
@@ -794,6 +910,7 @@ async def _connect_facility(
             notice=f"hpc-bridge error: {type(exc).__name__}: {exc}"[:500],
         )
     async with app.lock:  # switch facilities: drop the old shapes/endpoint, bind the new one
+        app.tasks.clear()  # the old endpoint's blocks (and their poll handles) are gone
         for rt in app.shapes.values():
             if rt.runner is not None:
                 rt.runner.close()
@@ -1033,6 +1150,7 @@ async def _stop_endpoint(app: AppCtx) -> EndpointStatus:
         # points at the cancelled block). Keep the login shape, the manager, the endpoint_id, and
         # the login-node pin — the endpoint stays online and reusable. We drop it regardless of
         # confirmation: the runner is dead either way, and the spend clock must stop banking now.
+        _drain_shape_tasks(app, DEFAULT_SHAPE)  # the released block's poll handles are now dead
         compute = app.shapes.pop(DEFAULT_SHAPE, None)
         if compute is not None:
             _bank_warm_interval(compute, app)  # stop the spend clock for the released block
@@ -1086,6 +1204,7 @@ async def _teardown_endpoint(app: AppCtx) -> EndpointStatus:
         except Exception as exc:  # noqa: BLE001 - report, don't crash the tool
             notice = f"block released; manager teardown reported {type(exc).__name__}: {exc}"[:280]
     async with app.lock:  # clear everything so a stray run_shell can't silently revive a stale endpoint
+        app.tasks.clear()  # every block is gone -> drop all poll handles
         for rt in app.shapes.values():
             if rt.runner is not None:
                 rt.runner.close()
@@ -1183,21 +1302,116 @@ def _with_spend(app: AppCtx, out: ShellOutcome) -> ShellOutcome:
     return out
 
 
+def _busy_session(app: AppCtx, shape: str, session_id: str) -> str | None:
+    """task_id of a task still running on this (shape, session_id), else None. A busy session can't
+    take a second command: the two would concurrently mutate the same on-disk cwd/env on the worker.
+    (Covers the sequential case — a prior command that became a poll handle; two *simultaneously*
+    submitted commands on one session is a pre-existing race, unchanged here.)"""
+    for tid, h in _live_task_handles(app, shape):
+        if h.session_id == session_id:
+            return tid
+    return None
+
+
+def _busy_session_outcome(task_id: str, shape: str, session_id: str) -> ShellOutcome:
+    return ShellOutcome(
+        phase="failed",
+        block_state="warm",
+        exit_code=None,
+        notice=(f"session {session_id!r} on shape {shape!r} still has a task running "
+                f"(task_id={task_id!r}); poll_task it, or run in a different session_id. Two commands "
+                "can't share one session's cwd/env at once."),
+    )
+
+
+def _register_task(app: AppCtx, shape: str, session_id: str, command: str, fut, ceiling_s: float) -> str:
+    """Register a still-running task as a poll handle and return its id. Caller holds app.lock."""
+    app.task_seq += 1
+    task_id = f"{shape}-{app.task_seq}"
+    app.tasks[task_id] = TaskHandle(
+        future=fut,
+        shape=shape,
+        session_id=session_id,
+        command=command,
+        submitted_at=time.monotonic(),
+        ceiling_s=ceiling_s,
+    )
+    return task_id
+
+
+def _running_outcome(app: AppCtx, task_id: str, ceiling_s: float) -> ShellOutcome:
+    out = ShellOutcome(
+        phase="running",
+        block_state="warm",
+        task_id=task_id,
+        notice=(f"still running past the ~{int(SYNC_WAIT_S)}s sync-wait — it was NOT cut. Poll for its "
+                f"result with poll_task({task_id!r}). It runs up to ~{int(ceiling_s)}s (the block "
+                "walltime) then is killed (exit 124); submit a batch job for anything longer. The "
+                "block stays warm while it runs."),
+    )
+    return _with_spend(app, out)
+
+
+def _resolve_task(app: AppCtx, task_id: str) -> ShellOutcome | None:
+    """Under the caller's app.lock: shape a terminal outcome if the task is gone/cancelled/finished
+    (popping it — the atomic claim, so a concurrent poll gets a benign miss), else None if it's still
+    running. Refreshes worker liveness / spend on a finished task."""
+    handle = app.tasks.get(task_id)
+    if handle is None:
+        return ShellOutcome(
+            phase="failed", block_state="warm", exit_code=None,
+            notice=f"no task {task_id!r} — already retrieved, or its block ended (stop / partition / switch).",
+        )
+    fut = handle.future
+    if fut.cancelled():
+        app.tasks.pop(task_id, None)
+        return _with_spend(app, ShellOutcome(
+            phase="failed", block_state="warm", exit_code=None,
+            notice=f"task {task_id!r} was cancelled when its block was torn down.",
+        ))
+    if not fut.done():
+        return None  # still running
+    app.tasks.pop(task_id, None)  # atomic claim under the lock
+    try:
+        res = fut.result()  # done -> returns at once (or raises the task's own exception)
+    except Exception as exc:  # noqa: BLE001 - shape a failed task exactly as execute() would
+        out = dispatch.failure_outcome(exc, "warm", app.max_output_chars)
+    else:
+        out = dispatch.complete_outcome(res, "warm", app.max_output_chars)
+    _note_dispatch(_shape_runtime(app, handle.shape), out)
+    return _with_spend(app, out)
+
+
 async def _run_shell(
     app: AppCtx, command: str, session_id: str = "default", shape: str = DEFAULT_SHAPE
 ) -> ShellOutcome:
     session = Session(session_id, app.scratch_root)  # validates session_id before provisioning
+    busy = None
     async with app.lock:  # provision + bind the runner atomically (no race with a concurrent stop)
         not_warm = await _ensure_warm_runner(app, shape)
         runner = _shape_runtime(app, shape).runner
+        if not_warm is None:
+            busy = _busy_session(app, shape, session_id)
     if not_warm == "needs_confirmation":  # billed shape, spend not acknowledged -> don't dispatch
         return _needs_confirmation_outcome()
     if not_warm is not None:
         return _cold_outcome(not_warm)
+    if busy is not None:  # a live task owns this session's cwd/env -> don't dispatch a second command
+        return _busy_session_outcome(busy, shape, session_id)
     wrapped = session_shell.wrap(command, session)
-    out = await dispatch.execute(  # dispatch OUTSIDE the lock so long commands don't serialize
-        wrapped, runner, block_state="warm", max_output_chars=app.max_output_chars
-    )
+    fut = runner.submit(wrapped)  # submit; wait a bounded time OFF the lock, else hand back a handle
+    try:
+        res = await asyncio.to_thread(fut.result, runner.timeout)
+    except TimeoutError:  # still running past the sync-wait -> a poll handle, NOT a kill
+        async with app.lock:
+            task_id = _register_task(app, shape, session_id, command, fut, runner.walltime)
+            out = _running_outcome(app, task_id, runner.walltime)
+            _note_dispatch(_shape_runtime(app, shape), out)  # the worker took our task -> it's alive
+            return out
+    except Exception as exc:  # noqa: BLE001 - translate ALL dispatch failures to a structured outcome
+        out = dispatch.failure_outcome(exc, "warm", app.max_output_chars)
+    else:
+        out = dispatch.complete_outcome(res, "warm", app.max_output_chars)
     async with app.lock:
         _note_dispatch(_shape_runtime(app, shape), out)
         return _with_spend(app, out)
@@ -1207,13 +1421,18 @@ async def _reset_session(
     app: AppCtx, session_id: str = "default", shape: str = DEFAULT_SHAPE
 ) -> ShellOutcome:
     session = Session(session_id, app.scratch_root)  # validates session_id before provisioning
+    busy = None
     async with app.lock:
         not_warm = await _ensure_warm_runner(app, shape)
         runner = _shape_runtime(app, shape).runner
+        if not_warm is None:
+            busy = _busy_session(app, shape, session_id)
     if not_warm == "needs_confirmation":  # billed shape, spend not acknowledged -> don't dispatch
         return _needs_confirmation_outcome()
     if not_warm is not None:
         return _cold_outcome(not_warm)
+    if busy is not None:  # don't clear a session's cwd/env while a task is still using it
+        return _busy_session_outcome(busy, shape, session_id)
     cmd = session_shell.reset_command(session)
     out = await dispatch.execute(
         cmd, runner, block_state="warm", max_output_chars=app.max_output_chars
@@ -1221,6 +1440,31 @@ async def _reset_session(
     async with app.lock:
         _note_dispatch(_shape_runtime(app, shape), out)
     return out
+
+
+async def _poll_task(app: AppCtx, task_id: str, wait: float = 0.0) -> ShellOutcome:
+    """Retrieve a running task's result (or report it still running). Optionally block up to `wait`
+    seconds for it OFF the lock, then re-check under the lock."""
+    wait = max(0.0, min(wait, 600.0))  # a bounded courtesy wait; never an unbounded tool hang
+    async with app.lock:
+        resolved = _resolve_task(app, task_id)
+        if resolved is not None:
+            return resolved
+        handle = app.tasks[task_id]  # resolved is None => the still-running handle is present
+        fut, ceiling_s = handle.future, handle.ceiling_s
+    if wait > 0:
+        try:
+            await asyncio.to_thread(fut.result, wait)
+        except Exception:  # noqa: BLE001 - the re-resolve reads the true state (done / failed / timeout)
+            pass
+        async with app.lock:
+            resolved = _resolve_task(app, task_id)
+            if resolved is not None:
+                return resolved
+            handle = app.tasks.get(task_id)
+            if handle is not None:
+                ceiling_s = handle.ceiling_s
+    return _running_outcome(app, task_id, ceiling_s)
 
 
 def _error_outcome(exc: Exception) -> ShellOutcome:
@@ -1241,12 +1485,34 @@ async def run_shell(
     `shape` picks the execution target on the same endpoint: "compute" runs on a
     scheduler block (heavy compute, billed, idle-released); "login" runs on the login
     node via a LocalProvider (lightweight, no allocation). Sessions (cwd/env) persist
-    per session_id within a shape."""
+    per session_id within a shape.
+
+    LONG WORK: run it as a normal (foreground) command — do NOT background/detach it. A command
+    still running past the sync-wait comes back phase="running" with a task_id; poll it with
+    poll_task(task_id) until phase="complete". The task runs up to the block walltime and keeps the
+    block warm while it runs, so it won't be cut or idle-released — but a *detached* process is not a
+    task, so the block would idle-release out from under it (issue #21)."""
     try:
         return await _run_shell(
             ctx.request_context.lifespan_context, command, session_id, shape
         )
     except Exception as exc:  # noqa: BLE001
+        return _error_outcome(exc)
+
+
+@mcp.tool()
+async def poll_task(task_id: str, ctx: Context, wait: float = 0.0) -> ShellOutcome:
+    """Retrieve the result of a long task that run_shell returned as phase="running" (with a task_id).
+
+    Returns phase="complete" (exit_code, stdout, stderr) once the task finishes, or phase="running"
+    if it's still going — poll again. `wait` optionally blocks up to that many seconds for the result
+    before returning (default 0 = check once and return now). The task runs up to the block walltime
+    and the block stays warm while it runs, so a long job never needs detaching. An unknown or ended
+    task_id returns a failed outcome explaining why (already retrieved, or the block was
+    stopped/repointed)."""
+    try:
+        return await _poll_task(ctx.request_context.lifespan_context, task_id, wait)
+    except Exception as exc:  # noqa: BLE001 - never crash the tool; return a structured failure
         return _error_outcome(exc)
 
 
