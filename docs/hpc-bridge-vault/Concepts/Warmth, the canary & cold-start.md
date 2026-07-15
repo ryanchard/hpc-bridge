@@ -16,6 +16,8 @@
 
 A successful canary is trusted for `CANARY_TTL_S = 45 s` (`server.py:321`) so an interactive burst doesn't pay the round-trip every call. (Safe: an idle block needs ≥ `max_idletime`, default 600 s, of silence to release, so a worker seen < 45 s ago can't have vanished.)
 
+A **running task is itself liveness.** While a long poll-handle task ([#21](https://github.com/ryanchard/hpc-bridge/issues/21)) is executing on a shape, `_confirm_worker` returns `warm` **without** a canary: the worker is demonstrably running our work, and a canary would only queue behind the sole worker and — on timeout — wrongly flip us to "not warm", banking the [[Cost control|spend clock]] while the block is still burning.
+
 > [!warning] dill skew is the real failure mode
 > The canary reports the worker's dill version; if it differs from ours, function (de)serialization breaks. `_worker_notice` surfaces that as the warm descriptor's warning — it's the genuine compatibility hazard behind "the worker is up but tasks fail."
 

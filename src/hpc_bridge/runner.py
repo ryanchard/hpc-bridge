@@ -61,8 +61,10 @@ class GlobusRunner:
     ) -> None:
         self.endpoint_id = endpoint_id
         self.timeout = timeout
-        # Server-side wall-clock: the worker kills the process and returns 124 at
-        # `walltime`, slightly before the client stops waiting at `timeout`.
+        # Server-side per-task ceiling: the worker kills the process and returns 124 at `walltime`.
+        # DECOUPLED from the client sync-wait `timeout` — a task that outlives `timeout` is NOT
+        # killed; the caller gets a poll handle and the task runs on until `walltime` (the block
+        # walltime). The default (when unset) keeps the old timeout-linked value for back-compat.
         self.walltime = walltime if walltime is not None else max(timeout - 10.0, 5.0)
         self.user_endpoint_config = user_endpoint_config
         self._ex = None
@@ -81,11 +83,18 @@ class GlobusRunner:
             self._ex = self._factory()
         return self._ex
 
-    async def run(self, command: str):
+    def submit(self, command: str):
+        """Submit a shell command as a task and return its future WITHOUT waiting. The task runs on
+        the worker up to `walltime` regardless of when the caller stops waiting; the long-lived
+        Executor's result subscription resolves the future whenever it finishes, so a later poll can
+        retrieve it. This is what lets a long task outlive the client sync-wait as a poll handle."""
         from globus_compute_sdk import ShellFunction
 
         fn = ShellFunction(_escape_for_shellfunction(command), walltime=self.walltime)
-        fut = self.executor().submit(fn)
+        return self.executor().submit(fn)
+
+    async def run(self, command: str):
+        fut = self.submit(command)
         # .result() blocks on the AMQP round-trip; run it off the event loop.
         return await asyncio.to_thread(fut.result, self.timeout)
 

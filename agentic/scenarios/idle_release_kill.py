@@ -7,6 +7,10 @@ from the **login** shape — so no Compute task keeps the block busy. After ~600
 
 Run with **--no-skill** (`HPCB_NO_SKILL=1`): the skill exists precisely to steer off this footgun.
 `POSTCHECK_DELAY_S=720` waits PAST the 600s window, then proves the job DIED. One billed block, ~18 min.
+
+Item 2 (submit/poll) makes detaching UNNECESSARY — a long *foreground* task keeps the block busy and is
+retrieved via poll_task (see `long_task_via_handle`) — but it does NOT make a *detached* process safe:
+a backgrounded job is still not a Compute task, so this scenario still reproduces the kill.
 See issue #21 (https://github.com/ryanchard/hpc-bridge/issues/21).
 """
 from invariants import Result, Trace
