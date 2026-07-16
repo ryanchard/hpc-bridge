@@ -491,6 +491,19 @@ def test_routable_pin_drops_internal_hostnames():
     assert _routable_pin(None) is None and _routable_pin("") is None
 
 
+def test_routable_pin_drops_management_plane_hostnames():
+    # ALCF Aurora's `hostname -f` is a management-plane name (seen live) whose `hostmgmt.cm` infix isn't
+    # routable through the bastion — pinning it would break teardown/reconnect. Drop it -> fall back to
+    # the alias (which the user pins to a specific UAN in ~/.ssh/config).
+    from hpc_bridge.facility.remote import _routable_pin
+    assert _routable_pin("aurora-uan-0009.hostmgmt.cm.aurora.alcf.anl.gov") is None  # Aurora, seen live
+    assert _routable_pin("x.cm.polaris.alcf.anl.gov") is None                        # ALCF cluster-mgmt plane
+    assert _routable_pin("n01.mgmt.example.gov") is None
+    # whole-label match only — legit external names that merely CONTAIN those substrings are kept
+    assert _routable_pin("cms.web.cern.ch") == "cms.web.cern.ch"                     # 'cms' != 'cm' label
+    assert _routable_pin("mgmtnode.hpc.example.edu") == "mgmtnode.hpc.example.edu"   # 'mgmtnode' != 'mgmt'
+
+
 async def test_provision_rebinds_cli_to_the_node_the_daemon_landed_on():
     # After `start` captures the manager's real login node, the live CLI must repoint
     # there so later control-plane ops (esp. teardown) reach THIS node instead of the
