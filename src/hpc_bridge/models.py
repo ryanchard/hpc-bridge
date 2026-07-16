@@ -10,13 +10,18 @@ NodeHours = float
 class ShellOutcome(BaseModel):
     # needs_confirmation: a scheduler compute shape whose spend hasn't been acknowledged — the
     # command was NOT dispatched and no block was started (run ensure_endpoint_up(confirm_spend=True)).
-    phase: Literal["complete", "cold_start", "failed", "needs_confirmation"]
+    # running: the command was dispatched and is STILL executing past the client sync-wait — it was
+    # NOT cut; `task_id` is a handle to poll for its result via poll_task(task_id). The task runs up
+    # to the block walltime, and the block stays warm because a running task keeps it busy.
+    phase: Literal["complete", "cold_start", "failed", "needs_confirmation", "running"]
     exit_code: int | None = None
     stdout: str = ""
     stderr_snippet: str = ""
     block_state: Literal["warm", "cold", "provisioning"]
     session_spend: NodeHours = 0.0
     est_wait_s: int | None = None
+    # phase="running": poll for this task's result with poll_task(task_id). None for every other phase.
+    task_id: str | None = None
     notice: str | None = None
 
 

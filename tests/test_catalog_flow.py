@@ -12,16 +12,36 @@ class _Res:
         self.returncode, self.stdout, self.stderr = rc, out, err
 
 
+class _DoneFuture:
+    def __init__(self, res):
+        self._res = res
+
+    def done(self):
+        return True
+
+    def cancelled(self):
+        return False
+
+    def result(self, timeout=None):
+        return self._res
+
+
 class _FakeRunner:
-    def __init__(self, endpoint_id, res, *, canary_result=None):
+    def __init__(self, endpoint_id, res, *, canary_result=None, walltime=1780.0, timeout=120.0):
         self.endpoint_id = endpoint_id
         self._res = res
+        self.walltime = walltime
+        self.timeout = timeout
         self._canary = canary_result or CanaryResult(
             ok=True, worker_host="a070", worker_python="3.11.7", worker_dill="0.3.9"
         )
         self.closed = False
         self.commands: list[str] = []
         self.canaries = 0
+
+    def submit(self, command):
+        self.commands.append(command)
+        return _DoneFuture(self._res)
 
     async def run(self, command):
         self.commands.append(command)
@@ -44,7 +64,7 @@ async def test_ensure_endpoint_up_provisions_with_selected_account():
     f = FakeFacility()
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile())
-    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, "", ""))
     res = await _ensure_endpoint_up(app, account="cis250223", confirm_spend=True)
     assert res.account == "cis250223"
     assert app.shapes["compute"].user_endpoint_config["account"] == "cis250223"
@@ -56,7 +76,7 @@ async def test_account_change_invalidates_runner():
     f = FakeFacility()
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile())
-    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, "", ""))
     await _ensure_endpoint_up(app, account="cis250223", confirm_spend=True)
     r1 = app.shapes["compute"].runner
     await _ensure_endpoint_up(app, account="cis999999", confirm_spend=True)
@@ -80,7 +100,7 @@ async def test_login_shape_ignores_account():
     f = FakeFacility()
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile())
-    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, "", ""))
     res = await _ensure_endpoint_up(app, shape="login", account="cis250223")
     assert "account" not in app.shapes["login"].user_endpoint_config
     assert res.account is None
@@ -135,7 +155,7 @@ async def test_connect_facility_brings_up_login_and_lists_allocations(monkeypatc
     f = FakeFacility()
     f.workers = 1  # manager online; the runner's canary (below) confirms the login worker
     app = AppCtx(facility=FakeFacility(), profile=Profile())
-    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, MYBALANCE, ""))
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, MYBALANCE, ""))
     monkeypatch.setattr(
         server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
     )
@@ -159,7 +179,7 @@ async def test_connect_facility_signals_reuse_when_endpoint_already_online(monke
     f.workers = 1  # manager online
     f.reused = True  # provision reports it attached to an existing endpoint, didn't start one
     app = AppCtx(facility=FakeFacility(), profile=Profile())
-    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, MYBALANCE, ""))
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, MYBALANCE, ""))
     monkeypatch.setattr(
         server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
     )
@@ -195,7 +215,7 @@ async def test_connect_facility_provisioning_when_login_worker_cold(monkeypatch)
     f = FakeFacility()
     f.workers = 1
     app = AppCtx(facility=FakeFacility(), profile=Profile())
-    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(
         eid, _Res(0, MYBALANCE, ""), canary_result=CanaryResult(ok=False, error="timeout")
     )
     monkeypatch.setattr(
@@ -250,7 +270,7 @@ async def test_connect_facility_moves_scratch_root_to_the_facility(monkeypatch):
     f.workers = 1
     f.scratch_root = "/anvil/scratch/me/.hpc-bridge"  # the bound facility's remote scratch
     app = AppCtx(facility=FakeFacility(), profile=Profile())  # starts with a different (local) facility
-    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, MYBALANCE, ""))
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, MYBALANCE, ""))
     monkeypatch.delenv("HPC_BRIDGE_SCRATCH", raising=False)
     monkeypatch.setattr(
         server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
@@ -284,7 +304,7 @@ def _byo_app(monkeypatch, f):
 
     f.workers = 1
     app = AppCtx(facility=FakeFacility(), profile=Profile())
-    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, MYBALANCE, ""))
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, MYBALANCE, ""))
     monkeypatch.setattr(
         server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
     )
@@ -341,7 +361,7 @@ async def test_connect_index_error_with_details_proceeds(monkeypatch):
     f = FakeFacility()
     f.workers = 1
     app = AppCtx(facility=FakeFacility(), profile=Profile())
-    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, MYBALANCE, ""))
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, MYBALANCE, ""))
     monkeypatch.setattr(server, "make_catalog", _no_catalog)  # raises
     monkeypatch.setattr(server, "_facility_from_entry", lambda entry, *, account: f)
     res = await server._connect_facility(app, "frontier", details=_details())
@@ -433,7 +453,7 @@ async def test_explicit_details_rebuild_overrides_cached_entry(monkeypatch):
     f = FakeFacility()
     f.workers = 1
     app = AppCtx(facility=FakeFacility(), profile=Profile())
-    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, MYBALANCE, ""))
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, MYBALANCE, ""))
     monkeypatch.setattr(server, "_facility_from_entry", lambda entry, *, account: f)
     real = server._entry_from_details
     built = []
@@ -481,7 +501,7 @@ async def test_local_discovery_reuses_cached_config_without_probing(monkeypatch)
 
     # 1) confirm details -> persists to the cache keyed by ssh_host
     app = AppCtx(facility=FakeFacility(), profile=Profile())
-    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, MYBALANCE, ""))
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, MYBALANCE, ""))
     await server._connect_facility(app, "midway3", details=_details(ssh_host="midway3"))
     assert server._facility_store().get("midway3") is not None  # cached by ssh_host
 
@@ -491,7 +511,7 @@ async def test_local_discovery_reuses_cached_config_without_probing(monkeypatch)
 
     monkeypatch.setattr(server, "discover_facility_details", no_probe)
     app2 = AppCtx(facility=FakeFacility(), profile=Profile())
-    app2.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, MYBALANCE, ""))
+    app2.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, MYBALANCE, ""))
     res = await server._connect_facility(app2, "midway3", ssh_host="midway3")
     assert res.phase in ("needs_account", "provisioning")  # resolved straight from cache, brought up
     assert "midway3" in app2.session_facilities  # config loaded from the local cache, no probe

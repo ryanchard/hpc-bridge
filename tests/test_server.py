@@ -18,10 +18,71 @@ class _Res:
         self.stderr = err
 
 
+class _DoneFuture:
+    """An already-resolved future — the fast-task path: _run_shell gets the result within the
+    sync-wait and returns 'complete'."""
+
+    def __init__(self, res=None, exc=None):
+        self._res, self._exc = res, exc
+
+    def done(self):
+        return True
+
+    def cancelled(self):
+        return False
+
+    def result(self, timeout=None):
+        if self._exc is not None:
+            raise self._exc
+        return self._res
+
+
+class _PendingFuture:
+    """A controllable future: starts not-done so result(timeout) raises TimeoutError (so _run_shell
+    hands back a poll handle). finish()/fail()/cancel() resolve it for a later poll."""
+
+    def __init__(self):
+        self._res = None
+        self._exc = None
+        self._done = False
+        self._cancelled = False
+
+    def done(self):
+        return self._done or self._cancelled
+
+    def cancelled(self):
+        return self._cancelled
+
+    def result(self, timeout=None):
+        if self._cancelled:
+            from concurrent.futures import CancelledError
+
+            raise CancelledError()
+        if not self._done:
+            raise TimeoutError()
+        if self._exc is not None:
+            raise self._exc
+        return self._res
+
+    def finish(self, res):
+        self._res, self._done = res, True
+
+    def fail(self, exc):
+        self._exc, self._done = exc, True
+
+    def cancel(self):
+        self._cancelled = True
+
+
 class _FakeRunner:
-    def __init__(self, endpoint_id, res, *, canary_result=None):
+    def __init__(
+        self, endpoint_id, res, *, canary_result=None, walltime=1780.0, timeout=120.0, pending=False
+    ):
         self.endpoint_id = endpoint_id
         self._res = res
+        self.walltime = walltime  # the per-task ceiling _run_shell records on a poll handle
+        self.timeout = timeout  # the client sync-wait _run_shell blocks for before handing a handle
+        self.pending = pending  # True -> submit() returns a not-done future (long task -> poll handle)
         # default: a live worker (so existing warm-path tests stay warm); pass a not-ok
         # canary_result to simulate the cold-start gap (manager up, no worker yet).
         self._canary = canary_result or CanaryResult(
@@ -29,7 +90,14 @@ class _FakeRunner:
         )
         self.closed = False
         self.commands = []
+        self.futures = []
         self.canaries = 0
+
+    def submit(self, command):
+        self.commands.append(command)
+        fut = _PendingFuture() if self.pending else _DoneFuture(self._res)
+        self.futures.append(fut)
+        return fut
 
     async def run(self, command):
         self.commands.append(command)
@@ -47,7 +115,7 @@ async def test_ensure_endpoint_up_reports_up_when_warm():
     f = FakeFacility()
     f.workers = 1  # manager online; the canary (below) confirms a live worker
     app = AppCtx(facility=f, profile=Profile())
-    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, "", ""))
     res = await _ensure_endpoint_up(app, confirm_spend=True)
     assert res.status == "up" and res.block_state == "warm"
     assert res.endpoint_id == "fake-eid"
@@ -55,20 +123,21 @@ async def test_ensure_endpoint_up_reports_up_when_warm():
 
 
 async def test_billed_compute_result_surfaces_its_idle_and_task_bounds():
-    # #21 item 1 (observability). A billed `compute` block self-releases after ~600s idle
-    # (max_idletime, min_blocks=0) and caps a single run_shell task at ~110s (runner walltime =
-    # timeout-10). Both were silent — a caller reasoning "I have the node for its walltime" was wrong
-    # on two counts. The warm result now NAMES both bounds (see `_billed_bounds_note`) so the agent
-    # can plan (sbatch-on-login / checkpoint). Was an xfail red test that confirmed the gap live; now green.
+    # #21 item 2 (prevention). A billed `compute` block still idle-releases after ~600s
+    # (max_idletime, min_blocks=0), but a task is no longer capped at ~110s — it runs up to the block
+    # walltime, and one that outlives the sync-wait returns a poll handle (poll_task) rather than being
+    # cut. The warm result names the surviving bounds and the run-foreground-don't-detach guidance.
     f = FakeFacility()
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile())
-    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, "", ""))
     res = await _ensure_endpoint_up(app, confirm_spend=True)
     assert res.status == "up" and res.block_state == "warm"  # a billed block is live
     low = (res.notice or "").lower()
-    assert "idle" in low, f"warm compute notice must name the ~600s idle-release; got {res.notice!r}"
-    assert "110" in low or "cap" in low, f"warm compute notice must name the ~110s per-task cap; got {res.notice!r}"
+    assert "idle" in low, f"warm compute notice must still name the idle-release; got {res.notice!r}"
+    assert "poll" in low, f"warm compute notice must name the poll-handle behaviour; got {res.notice!r}"
+    assert "detach" in low, f"warm compute notice must warn against detaching long work; got {res.notice!r}"
+    assert "110" not in low, f"the ~110s per-task cap is gone in item 2; got {res.notice!r}"
 
 
 def test_pilot_status_cmd_and_summarize():
@@ -99,7 +168,7 @@ def test_pilot_status_cmd_and_summarize():
 def _split_shape_factory(login_res):
     """A runner_factory whose COMPUTE runner fails the canary (-> provisioning) while its LOGIN
     runner is warm and returns `login_res` from run() — so the #32 pilot query has something to read."""
-    def factory(eid, user_endpoint_config=None):
+    def factory(eid, user_endpoint_config=None, **_kw):  # **_kw absorbs walltime/timeout (#31 _runner_for)
         if user_endpoint_config and user_endpoint_config.get("compute"):
             return _FakeRunner(eid, _Res(0, "", ""), canary_result=CanaryResult(ok=False, error="timeout"))
         return _FakeRunner(eid, login_res)
@@ -151,7 +220,7 @@ async def test_ensure_endpoint_up_provisioning_when_manager_up_but_worker_cold()
     f = FakeFacility()
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile())
-    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(
         eid, _Res(0, "", ""), canary_result=CanaryResult(ok=False, error="timeout")
     )
     res = await _ensure_endpoint_up(app, confirm_spend=True)
@@ -177,7 +246,7 @@ async def test_run_shell_warm_returns_complete_outcome():
     f = FakeFacility()
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile())
-    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "hi\n", ""))
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, "hi\n", ""))
     _confirm_slurm(app)
     out = await _run_shell(app, "echo hi")
     assert out.phase == "complete"
@@ -202,7 +271,7 @@ async def test_run_shell_cold_start_when_worker_not_registered():
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile())
     runner = _FakeRunner("fake-eid", _Res(0, "", ""), canary_result=CanaryResult(ok=False, error="timeout"))
-    app.runner_factory = lambda eid, user_endpoint_config=None: runner
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: runner
     _confirm_slurm(app)
     out = await _run_shell(app, "echo hi")
     assert out.phase == "cold_start"
@@ -216,7 +285,7 @@ async def test_canary_ttl_skips_repeat_canary_on_hot_path():
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile())
     runner = _FakeRunner("fake-eid", _Res(0, "ok\n", ""))
-    app.runner_factory = lambda eid, user_endpoint_config=None: runner
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: runner
     _confirm_slurm(app)
     await _run_shell(app, "echo a")
     await _run_shell(app, "echo b")
@@ -230,7 +299,7 @@ async def test_run_shell_login_shape_uses_localprovider_config():
     app = AppCtx(facility=f, profile=Profile())
     seen = {}
 
-    def factory(eid, user_endpoint_config=None):
+    def factory(eid, user_endpoint_config=None, **_kw):
         seen["uec"] = user_endpoint_config
         return _FakeRunner(eid, _Res(0, "", ""))
 
@@ -243,7 +312,7 @@ async def test_two_shapes_keep_independent_runners():
     f = FakeFacility()
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile())
-    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, "", ""))
     await _run_shell(app, "echo a", shape="login")
     await _run_shell(app, "echo b", shape="compute")
     assert set(app.shapes) == {"login", "compute"}
@@ -260,7 +329,7 @@ async def test_run_shell_wraps_command_with_session_shim():
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile())
     runner = _FakeRunner("fake-eid", _Res(0, "", ""))
-    app.runner_factory = lambda eid, user_endpoint_config=None: runner
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: runner
     _confirm_slurm(app)
     await _run_shell(app, "make", session_id="s1")
     sent = runner.commands[-1]
@@ -276,7 +345,7 @@ async def test_reset_session_dispatches_reset_command():
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile())
     runner = _FakeRunner("fake-eid", _Res(0, "", ""))
-    app.runner_factory = lambda eid, user_endpoint_config=None: runner
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: runner
     _confirm_slurm(app)
     await _reset_session(app, "s1")
     sent = runner.commands[-1]
@@ -295,7 +364,7 @@ async def test_run_shell_rejects_traversal_session_id():
     f = FakeFacility()
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile())
-    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, "", ""))
     with pytest.raises(ValueError):
         await _run_shell(app, "echo hi", session_id="../../etc")
 
@@ -306,7 +375,7 @@ async def test_byo_endpoint_skips_provisioning():
     f = FakeFacility()
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile(), state=EndpointState(endpoint_id="byo-uuid"))
-    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, "", ""))
     res = await _ensure_endpoint_up(app, confirm_spend=True)
     assert res.status == "up" and res.endpoint_id == "byo-uuid"
     assert f.provisioned is False
@@ -534,7 +603,7 @@ async def test_ensure_endpoint_up_provisions_onto_selected_partition():
     f = FakeFacility()
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile())
-    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, "", ""))
     res = await _ensure_endpoint_up(app, partition="shared", confirm_spend=True)
     assert res.partition == "shared"
     assert app.shapes["compute"].user_endpoint_config["partition"] == "shared"
@@ -548,7 +617,7 @@ async def test_partition_change_invalidates_runner():
     app = AppCtx(facility=f, profile=Profile())
     built = []
 
-    def factory(eid, user_endpoint_config=None):
+    def factory(eid, user_endpoint_config=None, **_kw):
         r = _FakeRunner(eid, _Res(0, "", ""))
         built.append(r)
         return r
@@ -569,7 +638,7 @@ async def test_no_partition_is_noop_and_persists_previous_selection():
     f = FakeFacility()
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile())
-    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, "", ""))
     await _ensure_endpoint_up(app, partition="debug", confirm_spend=True)
     r1 = app.shapes["compute"].runner
     res = await _ensure_endpoint_up(app)  # no partition, already confirmed -> no-op
@@ -598,7 +667,7 @@ async def test_login_shape_ignores_partition():
     f = FakeFacility()
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile())
-    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, "", ""))
     res = await _ensure_endpoint_up(app, shape="login", partition="shared")
     uec = app.shapes["login"].user_endpoint_config
     assert "partition" not in uec  # not forced onto a LocalProvider config
@@ -880,7 +949,7 @@ async def test_concurrent_run_shell_serializes_runner_creation():
     app = AppCtx(facility=f, profile=Profile())
     created = []
 
-    def factory(eid, user_endpoint_config=None):
+    def factory(eid, user_endpoint_config=None, **_kw):
         r = _FakeRunner(eid, _Res(0, "ok\n", ""))
         created.append(r)
         return r
@@ -956,7 +1025,7 @@ async def test_billed_provision_needs_confirmation():
     app = AppCtx(facility=f, profile=Profile())
     created = []
 
-    def factory(eid, user_endpoint_config=None):
+    def factory(eid, user_endpoint_config=None, **_kw):
         r = _FakeRunner(eid, _Res(0, "", ""))
         created.append(r)
         return r
@@ -975,7 +1044,7 @@ async def test_confirm_spend_provisions_and_persists_for_session():
     f = FakeFacility()
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile())
-    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, "", ""))
     res = await _ensure_endpoint_up(app, confirm_spend=True)
     assert res.status == "up"
     assert app.shapes["compute"].spend_confirmed is True
@@ -988,7 +1057,7 @@ async def test_login_shape_never_needs_confirmation():
     f = FakeFacility()
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile())
-    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "", ""))
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, "", ""))
     res = await _ensure_endpoint_up(app, shape="login")  # no confirm_spend
     assert res.status == "up"
 
@@ -1001,7 +1070,7 @@ async def test_run_shell_blocked_until_spend_confirmed():
     app = AppCtx(facility=f, profile=Profile())
     created = []
 
-    def factory(eid, user_endpoint_config=None):
+    def factory(eid, user_endpoint_config=None, **_kw):
         r = _FakeRunner(eid, _Res(0, "", ""))
         created.append(r)
         return r
@@ -1018,7 +1087,7 @@ async def test_run_shell_runs_after_spend_confirmed():
     f = FakeFacility()
     f.workers = 1
     app = AppCtx(facility=f, profile=Profile())
-    app.runner_factory = lambda eid, user_endpoint_config=None: _FakeRunner(eid, _Res(0, "hi\n", ""))
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, "hi\n", ""))
     await _ensure_endpoint_up(app, confirm_spend=True)
     out = await _run_shell(app, "echo hi")
     assert out.phase == "complete" and out.stdout == "hi\n"
@@ -1037,3 +1106,204 @@ def test_pbs_entry_is_supported():
         last_validated=datetime.date(2026, 7, 10),
     )
     assert _unsupported_entry_reason(entry) is None
+
+
+# --- #21 item 2: long-task submit/poll -------------------------------------------------------
+
+
+async def test_server_registers_poll_task_tool():
+    tools = await mcp.list_tools()
+    assert any(t.name == "poll_task" for t in tools)
+
+
+async def test_long_task_returns_handle_then_polls_to_complete():
+    # A command that outlives the sync-wait comes back phase="running" with a registered task_id
+    # (NOT cut); once it finishes, poll_task returns the full result and reaps the handle.
+    from hpc_bridge.server import _poll_task
+
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    runner = _FakeRunner("fake-eid", _Res(0, "", ""), pending=True)
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: runner
+    _confirm_slurm(app)
+    out = await _run_shell(app, "sleep 999")
+    assert out.phase == "running" and out.task_id  # handed a poll handle, not cut at ~110s
+    assert out.task_id in app.tasks  # registered
+    assert await _poll_task(app, out.task_id) and (await _poll_task(app, out.task_id)).phase == "running"
+    runner.futures[0].finish(_Res(0, "done\n", ""))  # the task finishes on the worker
+    done = await _poll_task(app, out.task_id)
+    assert done.phase == "complete" and done.exit_code == 0 and done.stdout == "done\n"
+    assert out.task_id not in app.tasks  # handle dropped after retrieval
+
+
+async def test_completed_exit_124_does_not_void_warmth():
+    # A task hitting its ceiling returns a COMPLETED exit-124 (the worker enforced it and is alive),
+    # so warmth is NOT voided (the old timeout==124 heuristic is gone) and the spend clock runs on.
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(124, "partial", ""))
+    _confirm_slurm(app)
+    out = await _run_shell(app, "sleep 999")
+    assert out.phase == "complete" and out.exit_code == 124
+    assert _shape_runtime(app, "compute").warm_confirmed_at is not None  # alive -> warmth kept
+
+
+async def test_partition_change_rejected_while_task_running():
+    # Repointing the block while a task runs would tear it down and cancel the task -> the change is
+    # rejected with a clear notice, the runner is NOT swapped, and the live task is untouched.
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    runner = _FakeRunner("fake-eid", _Res(0, "", ""), pending=True)
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: runner
+    _confirm_slurm(app)
+    assert (await _run_shell(app, "sleep 999")).phase == "running"
+    before = app.shapes["compute"].runner
+    res = await _ensure_endpoint_up(app, partition="gpu", confirm_spend=True)
+    assert "still running" in (res.notice or "")  # rejected, not applied
+    assert app.shapes["compute"].runner is before and not before.closed  # runner NOT swapped/cancelled
+    assert app.shapes["compute"].user_endpoint_config.get("partition") != "gpu"
+
+
+async def test_stop_endpoint_drains_task_registry(monkeypatch):
+    # A close site (stop_endpoint here) drops the released block's poll handles so no dead future is
+    # polled; poll_task then reports the task ended.
+    from hpc_bridge import server
+    from hpc_bridge.models import ShellOutcome
+    from hpc_bridge.server import ShapeRuntime, TaskHandle, _poll_task, _stop_endpoint
+
+    app = AppCtx(facility=FakeFacility(), profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
+    slurm_runner = _FakeRunner("eid-1", _Res(0, "", ""))
+    app.shapes["compute"] = ShapeRuntime(user_endpoint_config={"compute": True}, runner=slurm_runner)
+    app.shapes["login"] = ShapeRuntime(
+        user_endpoint_config={"provider_type": "LocalProvider"}, warm_confirmed_at=1.0
+    )
+    app.tasks["compute-1"] = TaskHandle(
+        future=_PendingFuture(), shape="compute", session_id="default",
+        command="sleep 999", submitted_at=0.0, ceiling_s=1780.0,
+    )
+
+    async def fake_run_shell(a, command, session_id="default", shape="compute"):
+        return ShellOutcome(phase="complete", exit_code=0, stdout="released\n", block_state="warm")
+
+    monkeypatch.setattr(server, "_run_shell", fake_run_shell)
+    await _stop_endpoint(app)
+    assert "compute-1" not in app.tasks  # drained with the released block
+    ended = await _poll_task(app, "compute-1")
+    assert ended.phase == "failed" and "no task" in (ended.notice or "").lower()
+
+
+async def test_second_command_on_busy_session_is_rejected():
+    # A session whose task is still running can't take a second command (they'd race the same cwd/env);
+    # a DIFFERENT session_id runs fine.
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    runner = _FakeRunner("fake-eid", _Res(0, "", ""), pending=True)
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: runner
+    _confirm_slurm(app)
+    assert (await _run_shell(app, "sleep 999", session_id="s1")).phase == "running"
+    second = await _run_shell(app, "echo hi", session_id="s1")  # same session -> refused
+    assert second.phase == "failed" and "still has a task running" in (second.notice or "")
+    assert len(runner.futures) == 1  # the refused command was NOT submitted
+    third = await _run_shell(app, "echo hi", session_id="s2")  # a different session is fine
+    assert third.phase == "running" and len(runner.futures) == 2
+
+
+async def test_double_poll_on_done_task_is_claimed_once():
+    # The pop-under-lock is the atomic claim: the first poll of a finished task gets the result, a
+    # second gets a benign miss (never a double spend-count / KeyError).
+    from hpc_bridge.server import _poll_task
+
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    runner = _FakeRunner("fake-eid", _Res(0, "", ""), pending=True)
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: runner
+    _confirm_slurm(app)
+    running = await _run_shell(app, "sleep 999")
+    runner.futures[0].finish(_Res(0, "out\n", ""))
+    first = await _poll_task(app, running.task_id)
+    second = await _poll_task(app, running.task_id)
+    assert first.phase == "complete" and first.stdout == "out\n"
+    assert second.phase == "failed" and "no task" in (second.notice or "").lower()
+    assert running.task_id not in app.tasks
+
+
+async def test_poll_with_wait_times_out_to_running():
+    # poll_task(wait=W) that doesn't resolve within W returns phase="running" (never a 124 failure),
+    # and the handle stays registered for the next poll.
+    from hpc_bridge.server import _poll_task
+
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    runner = _FakeRunner("fake-eid", _Res(0, "", ""), pending=True)
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: runner
+    _confirm_slurm(app)
+    running = await _run_shell(app, "sleep 999")
+    out = await _poll_task(app, running.task_id, wait=0.01)
+    assert out.phase == "running" and out.task_id == running.task_id
+    assert running.task_id in app.tasks
+
+
+def test_parse_hhmmss_and_task_ceiling():
+    import os
+
+    from hpc_bridge.server import _parse_hhmmss, _task_ceiling_s
+
+    assert _parse_hhmmss("00:30:00") == 1800
+    assert _parse_hhmmss("48:00:00") == 172800
+    assert _parse_hhmmss("90") == 90 and _parse_hhmmss("5:00") == 300
+    assert _parse_hhmmss("") == 0 and _parse_hhmmss(None) == 0 and _parse_hhmmss("abc") == 0
+    assert _task_ceiling_s({"walltime": "00:30:00"}) == 1780.0  # block walltime - margin
+    assert _task_ceiling_s({}) >= 300.0  # missing walltime -> safe non-zero fallback, not 0/crash
+    os.environ["HPC_BRIDGE_MAX_TASK_S"] = "600"  # opt-in cap clamps a long-walltime facility
+    try:
+        assert _task_ceiling_s({"walltime": "48:00:00"}) == 600.0
+    finally:
+        del os.environ["HPC_BRIDGE_MAX_TASK_S"]
+
+
+async def test_runner_gets_ceiling_walltime_and_sync_wait_below_it():
+    # _runner_for passes the block-walltime ceiling as the runner walltime, and clamps the client
+    # sync-wait strictly below it (so a task finishing near the boundary still returns, never a race).
+    from hpc_bridge.server import _runner_for
+
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
+    seen = {}
+
+    def factory(eid, user_endpoint_config=None, **kw):
+        seen.clear()
+        seen.update(kw)
+        return _FakeRunner(eid, _Res(0, "", ""))
+
+    app.runner_factory = factory
+    rt = _shape_runtime(app, "compute")
+    rt.user_endpoint_config["walltime"] = "00:30:00"
+    _runner_for(app, "compute")
+    assert seen["walltime"] == 1780.0 and seen["timeout"] < seen["walltime"]
+    rt.runner = None  # force a rebuild with a tiny walltime
+    rt.user_endpoint_config["walltime"] = "00:01:00"
+    _runner_for(app, "compute")
+    assert seen["timeout"] < seen["walltime"]  # invariant holds even for a 60s block
+
+
+async def test_running_task_short_circuits_the_canary():
+    # A live task IS liveness: a status probe while it runs must NOT fire a canary (which would queue
+    # behind the sole worker and, on timeout, bank/stop the spend clock while the block still burns).
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    runner = _FakeRunner("fake-eid", _Res(0, "", ""), pending=True)
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: runner
+    _confirm_slurm(app)
+    assert (await _run_shell(app, "sleep 999")).phase == "running"
+    canaries = runner.canaries  # the one canary paid during provisioning
+    res = await _ensure_endpoint_up(app, confirm_spend=True)
+    assert res.status == "up" and res.block_state == "warm"
+    assert runner.canaries == canaries  # no extra canary behind the busy worker

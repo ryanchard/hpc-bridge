@@ -49,6 +49,14 @@ This is a *policy gate*: discovery surfaces the options + the budget, the human 
 - **Gate, not interrogation:** the consequential, cost-bearing choices are gated — the **allocation** (only when there's a real choice), the partition, and the spend confirmation; walltime/nodes are sensible-defaulted. Don't prompt for the unambiguous (a single allocation → just use it).
 - **Headless fallback (can't prompt):** stay on `shape="login"` (free, read-only) rather than spend unattended; only auto-confirm a billed block in autonomous mode with an explicit budget signal.
 
+## Running compute work
+
+Once the block is up, run work through `run_shell(shape="compute")`. **Long work is a foreground task, not a detached process.** A command that outruns the sync-wait comes back `phase="running"` with a `task_id` — it was **not** cut; retrieve its result with `poll_task(task_id)` (which returns `running` until it finishes, then `complete` with the full output). The task runs up to the **block walltime** and keeps the block warm the entire time, so it is never idle-released.
+
+**Never background/detach long work** (`setsid`, `nohup … &`, a trailing `&`) to "escape" a timeout — a detached process is *not* a Compute task, so the block idle-releases out from under it and the work dies (issue #21). Run it in the foreground and poll instead. For work that must outlast the block walltime, submit a real batch job (`sbatch`/`qsub`) and watch the scheduler with `run_shell(shape="login")`.
+
+**One task per session.** A `session_id` whose task is still running is busy — issue the next command in a **different `session_id`** (or `poll_task` the running one first); two commands can't share one session's cwd/env at once.
+
 ## Stopping
 
 `stop_endpoint` means **stop spending**, not tear the endpoint down: it cancels the billed compute block over the login endpoint (AMQP, no SSH) via the scheduler's own cancel command (`scancel` on Slurm, `qdel` on PBS) — the behaviour is identical, only the underlying command differs — and **leaves the login-node endpoint online** for reuse. **Read the status, don't assume:** `status="down"` means the cancel was *confirmed* — the block is gone, no more SU accrue. `status="draining"` means the cancel dispatched but the login release channel was cold, so **spend is not confirmed stopped** — the block may still be burning. On `draining`, **call `stop_endpoint` again after a few seconds** (the channel is now warming) until you get `down`; idle-release (~10 min) is only the backstop, not a substitute for confirming. Don't tell the user spending stopped until you've seen `down`. The endpoint stays up either way, so reconnecting later (`connect_facility`/`ensure_endpoint_up`) is **zero-SSH**; a quick `run_shell(shape="login")` after a stop just reuses the still-online endpoint.

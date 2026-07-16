@@ -159,18 +159,28 @@ class NeedsPreauth(Exception):
 
 
 _INTERNAL_HOST_SUFFIXES = (".local", ".internal", ".localdomain")
+# Management-/out-of-band-plane LABELS that mark a `hostname -f` as an internal name not reachable via
+# the alias's external path — matched as whole dot-labels (not substrings), so a legit host like
+# `cms.example.edu` or `mgmtnode` isn't caught. ALCF Aurora's `hostname -f` is
+# `aurora-uan-0009.hostmgmt.cm.aurora.alcf.anl.gov` (seen live) — the routable per-UAN name drops the
+# `hostmgmt.cm` infix, so pinning the raw FQDN breaks teardown/reconnect. Dropping is always SAFE (we
+# fall back to the alias, which the user pins to a specific node in ~/.ssh/config), so we err toward it.
+_INTERNAL_HOST_LABELS = frozenset({"hostmgmt", "cm", "mgmt", "ipmi", "bmc"})
 
 
 def _routable_pin(host: str | None) -> str | None:
     """A login-node FQDN is only useful as a reconnect pin if it's reachable from the client via the
-    SAME external path as the alias. Some facilities' `hostname -f` reports an INTERNAL name (Midway:
-    `beagle3-tbd1.rcc.local`) that isn't routable from the client — pinning it breaks login_shell and
-    teardown (seen live). Drop internal (`.local`/`.internal`/`.localdomain`) or single-label names and
-    keep the alias; a DNS-resolvability check is the follow-up if non-suffix internal names appear."""
+    SAME external path as the alias. Some facilities' `hostname -f` reports an INTERNAL name that isn't
+    routable from the client — Midway's `beagle3-tbd1.rcc.local` (a `.local` suffix) or Aurora's
+    `aurora-uan-0009.hostmgmt.cm.aurora.alcf.anl.gov` (a management-plane infix) — and pinning it breaks
+    login_shell and teardown (both seen live). Drop internal-suffix (`.local`/`.internal`/
+    `.localdomain`), single-label, or management-plane (`hostmgmt`/`cm`/`mgmt`/…) names and keep the
+    alias; the alias, pinned to a specific node in the user's ssh config, is the routable path."""
     if not host:
         return None
     h = host.strip().rstrip(".")
-    if "." not in h or h.lower().endswith(_INTERNAL_HOST_SUFFIXES):
+    labels = {label.lower() for label in h.split(".")}
+    if "." not in h or h.lower().endswith(_INTERNAL_HOST_SUFFIXES) or (labels & _INTERNAL_HOST_LABELS):
         return None
     return h
 
