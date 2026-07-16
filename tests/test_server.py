@@ -71,6 +71,80 @@ async def test_billed_compute_result_surfaces_its_idle_and_task_bounds():
     assert "110" in low or "cap" in low, f"warm compute notice must name the ~110s per-task cap; got {res.notice!r}"
 
 
+def test_pilot_status_cmd_and_summarize():
+    # #32: the read-only pilot query is scheduler-specific and marker-scoped; the summary maps the
+    # scheduler state to a category (a rejected pilot -> "no pilot in the scheduler").
+    from hpc_bridge.server import _pilot_status_cmd, _summarize_pilot
+    assert "qstat -f" in _pilot_status_cmd("pbs", "E") and "uep.E" in _pilot_status_cmd("pbs", "E")
+    slurm_cmd = _pilot_status_cmd("slurm", "E")
+    assert "squeue" in slurm_cmd and "uep.E" in slurm_cmd
+    # awk filters the marker (exits 0 on no-match) — no `grep`, whose non-zero no-match exit could
+    # mask the empty "no pilot -> rejected" result under a pipefail shell.
+    assert "grep" not in slurm_cmd and "index($0" in slurm_cmd
+    from hpc_bridge.server import PROVISION_GRACE_S
+    past = PROVISION_GRACE_S + 5
+    # a VISIBLE pilot is categorized at once, regardless of the grace clock
+    assert _summarize_pilot("R 42.aurora\n", 0)[0] == "starting"
+    assert _summarize_pilot("Q 42.aurora\n", 0)[0] == "queued"
+    assert _summarize_pilot("H 42.aurora\n", 0)[0] == "held"
+    assert _summarize_pilot("PENDING 42\n", 0)[0] == "queued"   # slurm long-form
+    assert _summarize_pilot("RUNNING 42\n", 0)[0] == "starting"
+    # NO pilot: quiet during the cold-start grace (no false alarm), 'rejected' only past it
+    early = _summarize_pilot("", 0)
+    assert early[0] == "starting" and early[1] == ""
+    late = _summarize_pilot("", past)
+    assert late[0] == "rejected" and "REJECTED" in late[1] and "qstat" in late[1]
+
+
+def _split_shape_factory(login_res):
+    """A runner_factory whose COMPUTE runner fails the canary (-> provisioning) while its LOGIN
+    runner is warm and returns `login_res` from run() — so the #32 pilot query has something to read."""
+    def factory(eid, user_endpoint_config=None):
+        if user_endpoint_config and user_endpoint_config.get("compute"):
+            return _FakeRunner(eid, _Res(0, "", ""), canary_result=CanaryResult(ok=False, error="timeout"))
+        return _FakeRunner(eid, login_res)
+    return factory
+
+
+async def test_provisioning_billed_block_surfaces_pilot_rejection():
+    # #32: PAST the cold-start grace, a billed block with NO pilot in the scheduler gets the rejection
+    # hint (not a silent "allocating…"). We pre-age the grace clock to land past the window.
+    import time as _time
+
+    from hpc_bridge.server import PROVISION_GRACE_S
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    app.runner_factory = _split_shape_factory(_Res(0, "", ""))  # empty pilot query -> no pilot
+    _shape_runtime(app, "compute").provisioning_since = _time.monotonic() - (PROVISION_GRACE_S + 10)
+    res = await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
+    assert res.status == "provisioning"
+    assert "REJECTED" in (res.notice or ""), f"expected a rejection hint past grace; got {res.notice!r}"
+
+
+async def test_provisioning_within_grace_does_not_cry_rejection():
+    # #32 (the globus1 false-alarm fix): during the normal cold-start window a not-yet-visible pilot
+    # must NOT be called rejected — the notice stays the plain "allocating…".
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    app.runner_factory = _split_shape_factory(_Res(0, "", ""))  # no pilot visible yet
+    res = await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)  # fresh -> elapsed ~0
+    assert res.status == "provisioning"
+    assert "REJECTED" not in (res.notice or "") and "allocating nodes" in (res.notice or "")
+
+
+async def test_provisioning_notice_reports_queued_pilot():
+    # When the pilot IS queued, the notice says so (an honest wait, not a false rejection).
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    app.runner_factory = _split_shape_factory(_Res(0, "PENDING 8675991\n", ""))
+    res = await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
+    assert res.status == "provisioning"
+    assert "queued" in (res.notice or "") and "8675991" in (res.notice or "")
+
+
 async def test_ensure_endpoint_up_provisioning_when_manager_up_but_worker_cold():
     # The canary gap: manager_online() True but no worker answers -> NOT warm. Without the
     # canary this wrongly reported 'up' and the next run_shell 124'd on a cold start.
