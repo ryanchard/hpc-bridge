@@ -46,6 +46,9 @@ class ShapeRuntime:
     runner: GlobusRunner | None = None
     warm_since: float | None = None
     warm_confirmed_at: float | None = None
+    # When this block first went 'provisioning' (cleared on warm) — the grace clock for the #32
+    # pilot-rejection hint, so a not-yet-visible pilot during normal cold-start isn't cried as rejected.
+    provisioning_since: float | None = None
     spend_accrued: float = 0.0
     last_canary: CanaryResult | None = None
     # Set when user_endpoint_config changed under a live runner (e.g. a new partition): the
@@ -715,25 +718,39 @@ async def _ensure_endpoint_up(
                     "shape='login' for free login-node work."
                 ),
             )
+        billable = _billable(rt)
+        eid = app.state.endpoint_id
+        spend = _total_session_spend(app)
+        provisioning_elapsed = 0.0
         if block == "warm":
             status, notice = "up", _worker_notice(rt.last_canary)
-            if _billable(rt):  # #21: name the block's bounds so a caller runs long work as a task
+            rt.provisioning_since = None  # warm -> the cold-start grace clock resets (#32)
+            if billable:  # #21: name the block's bounds so a caller runs long work as a task
                 bounds = _billed_bounds_note(app, rt)
                 notice = f"{notice}. {bounds}" if notice else bounds
         else:
             status = "provisioning"
+            if rt.provisioning_since is None:  # start the grace clock on the first cold poll
+                rt.provisioning_since = time.monotonic()
+            provisioning_elapsed = time.monotonic() - rt.provisioning_since
             notice = f"allocating nodes on {active_partition!r}…" if active_partition else "allocating nodes…"
         if ignored:
             notice = f"{notice} (login shape has no partition; ignored {partition!r})"
-        return EndpointStatus(
-            status=status,
-            block_state=block,
-            endpoint_id=app.state.endpoint_id,
-            session_spend=_total_session_spend(app),
-            partition=active_partition,
-            account=active_account,
-            notice=notice,
-        )
+    # OUTSIDE the lock (dispatch takes it): for a still-cold BILLED block, ask the scheduler whether
+    # the pilot actually submitted. A rejected/held qsub is otherwise indistinguishable from a normal
+    # queue wait, leaving the caller stuck on "allocating nodes…" forever ([#32]). The grace clock
+    # keeps a not-yet-visible pilot during normal cold-start from being cried as rejected.
+    if status == "provisioning" and billable and eid:
+        notice = await _augment_provisioning_notice(app, eid, notice, provisioning_elapsed)
+    return EndpointStatus(
+        status=status,
+        block_state=block,
+        endpoint_id=eid,
+        session_spend=spend,
+        partition=active_partition,
+        account=active_account,
+        notice=notice,
+    )
 
 
 @mcp.tool()
@@ -1132,6 +1149,89 @@ async def _release_blocks_over_login(app: AppCtx, eid: str) -> tuple[bool, str]:
         if i + 1 < attempts and backoff > 0:
             await asyncio.sleep(backoff)  # let the woken login worker register, then re-confirm
     return False, f"cancel not confirmed ({detail}); idle-release will reclaim it"
+
+
+def _pilot_status_cmd(scheduler: str, eid: str) -> str:
+    """Login-shape one-liner that prints THIS endpoint's pilot block(s) as `STATE JOBID` lines,
+    matched by the same `uep.<eid>` StdOut marker `_release_cmd` uses (so it never reads another
+    endpoint's jobs). Read-only — the diagnostic twin of `_release_cmd`. Empty output ⇒ no pilot is
+    in the scheduler (submission rejected, or not yet registered)."""
+    marker = f"uep.{eid}"
+    if scheduler == "pbs":
+        # Bare `qstat -f` (the -u filter suppresses full-format output on PBS Pro); unwrap the 80-col
+        # line continuations, split on records, and for records carrying the marker print the
+        # job_state letter (R/Q/H) + the job id.
+        return (
+            "qstat -f 2>/dev/null | sed ':a;N;$!ba;s/\\n\\t//g' "
+            f"| awk -v m={shlex.quote(marker)} 'BEGIN{{RS=\"Job Id: \"}} index($0,m){{"
+            's="?"; if (match($0,/job_state = [A-Za-z]/)) s=substr($0,RSTART+12,1); '
+            "print s\" \"$1}'"
+        )
+    return (
+        # Filter by the marker INSIDE awk (not `grep -F | awk`): grep exits non-zero on no-match,
+        # which under a `set -o pipefail` shell would mask an empty result as an error and swallow the
+        # "no pilot -> rejected" signal this exists to surface. awk matches AND exits 0 either way.
+        'squeue -u "$USER" -h -O "State:20,JobID:24,StdOut:1024" 2>/dev/null '
+        f"| awk -v m={shlex.quote(marker)} 'index($0,m){{print $1\" \"$2}}'"
+    )
+
+
+# A just-submitted pilot takes a beat to appear in squeue/qstat, so "no pilot" during the first ~45s
+# of a block's cold-start is NORMAL, not a rejection. Only past this grace do we surface the rejection
+# hint — else every healthy warm-up cries wolf (caught live on globus1, [#32]).
+PROVISION_GRACE_S = 45.0
+
+
+def _summarize_pilot(stdout: str, provisioning_elapsed_s: float) -> tuple[str, str]:
+    """(category, notice-suffix) from `_pilot_status_cmd` output. category ∈ {starting, queued, held,
+    rejected}. A visible pilot (Q/R/H) is reported at once; a MISSING pilot is only called
+    `rejected` once the block has been cold past `PROVISION_GRACE_S` — before that it's a normal
+    cold-start gap (empty suffix ⇒ the caller leaves 'allocating nodes…' unchanged)."""
+    rows = [ln.split() for ln in stdout.splitlines() if ln.strip()]
+    if not rows:
+        if provisioning_elapsed_s < PROVISION_GRACE_S:
+            return "starting", ""  # normal cold-start window — pilot not visible yet, don't cry wolf
+        return "rejected", (
+            f"— but NO pilot job is in the scheduler after ~{int(provisioning_elapsed_s)}s. The block "
+            "submission was likely REJECTED (e.g. inactive allocation, wrong account, or bad queue) "
+            "rather than queued. Check run_shell('qstat -u $USER', shape='login') (squeue on Slurm) "
+            "and the endpoint log."
+        )
+    states = {r[0][:1].upper() for r in rows if r}
+    jid = rows[0][1] if len(rows[0]) > 1 else "?"
+    if "H" in states:
+        return "held", (
+            f"— pilot {jid} is HELD; a held job usually means a bad scheduler directive "
+            "(e.g. filesystems/account) — inspect qstat -f / the #PBS|#SBATCH directives."
+        )
+    if "R" in states:
+        return "starting", f"— pilot {jid} is RUNNING; the worker is starting, retry shortly."
+    return "queued", f"— pilot {jid} is queued (PENDING); waiting on the scheduler."
+
+
+async def _pilot_status_over_login(app: AppCtx, eid: str, elapsed_s: float) -> tuple[str, str] | None:
+    """Ask the scheduler (over the login shape — AMQP, no SSH) what state THIS endpoint's pilot is in.
+    Best-effort: returns None when it can't tell (login worker cold, scheduler unreachable) so the
+    caller leaves its notice unchanged. `elapsed_s` is how long the block has been provisioning — it
+    gates the rejection hint past the cold-start grace."""
+    scheduler = getattr(getattr(app.facility, "profile", None), "scheduler", "slurm")
+    out = await _run_shell(app, _pilot_status_cmd(scheduler, eid), shape="login")
+    if out.phase != "complete" or out.exit_code != 0:
+        return None
+    return _summarize_pilot(out.stdout or "", elapsed_s)
+
+
+async def _augment_provisioning_notice(app: AppCtx, eid: str, notice: str, elapsed_s: float) -> str:
+    """Enrich a still-cold BILLED block's 'allocating nodes…' with the pilot's ACTUAL scheduler state,
+    so a rejected/held submission isn't silently indistinguishable from a queue wait ([#32]). A
+    diagnostic must never break the result it annotates, so any failure — or an empty suffix (the
+    normal cold-start window) — leaves the notice as-is."""
+    try:
+        status = await _pilot_status_over_login(app, eid, elapsed_s)
+    except Exception:  # noqa: BLE001 - the pilot probe is advisory; never fail provisioning on it
+        return notice
+    suffix = status[1] if status else ""
+    return f"{notice} {suffix}" if suffix else notice
 
 
 async def _stop_endpoint(app: AppCtx) -> EndpointStatus:
