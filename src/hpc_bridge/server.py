@@ -180,13 +180,18 @@ def _unsupported_entry_reason(entry) -> str | None:
     return None
 
 
-def _facility_from_entry(entry, *, account: str) -> Facility:
+def _facility_from_entry(entry, *, account: str, pinned_host: str | None = None) -> Facility:
     """Build a SlurmFacility from a catalog entry + per-user runtime values — shared by the startup
     path (make_facility) and the runtime path (connect_facility). `account` may be empty for the
-    agentic flow; ensure_endpoint_up(account=…) overrides it per scheduler block."""
+    agentic flow; ensure_endpoint_up(account=…) overrides it per scheduler block.
+
+    `pinned_host` overrides the entry's `ssh_host` and is passed ONLY on the env-pinned startup path
+    (HPC_BRIDGE_MACHINE + HPC_BRIDGE_SSH_HOST). The agentic connect path leaves it None so the BOUND
+    facility's own `ssh_host` is authoritative — a process-wide env must never silently redirect an
+    agent-chosen facility to a different host (the "globus1 is Aurora" trap, [#35])."""
     from .facility.remote import profile_from_catalog_entry
 
-    alias = os.environ.get("HPC_BRIDGE_SSH_HOST", "").strip() or entry.ssh_host
+    alias = pinned_host or entry.ssh_host
     # Login name: optional env override, else read live from ~/.ssh/config (`ssh -G`) — never a
     # *required* boot-env var. The key is deferred to the config's IdentityFile in _slurm_facility.
     user = os.environ.get("HPC_BRIDGE_SSH_USER", "").strip() or _ssh_config_user(alias)
@@ -210,7 +215,13 @@ async def _catalog_facility(machine: str) -> Facility:
     reason = _unsupported_entry_reason(entry)
     if reason:
         raise RuntimeError(f"{machine}: {reason}")
-    return _facility_from_entry(entry, account=_require_env("HPC_BRIDGE_ACCOUNT"))
+    # Startup pin only: HPC_BRIDGE_SSH_HOST may override the catalog's canonical ssh_host (your own
+    # alias / a login node, or the FQDN the container needs). The agentic connect path does NOT (#35).
+    return _facility_from_entry(
+        entry,
+        account=_require_env("HPC_BRIDGE_ACCOUNT"),
+        pinned_host=os.environ.get("HPC_BRIDGE_SSH_HOST", "").strip() or None,
+    )
 
 
 async def make_facility() -> Facility:

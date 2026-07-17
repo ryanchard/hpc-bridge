@@ -32,7 +32,7 @@ An agentic test = a **non-deterministic LLM with a shell** (Bash/Write tools) on
 
 ## Invariants — the grading core (8 universal; built in `agentic/harness/invariants.py`)
 Asserted over the normalised trace, namespace-agnostic on tool names:
-- **`no_detached_long_job_on_slurm` (#21):** no detached/`nohup`/`setsid` long job on `shape="slurm"` — the block's idle-release would `scancel` it. ← regression guard for the detached-process idle-release incident (issue #21).
+- **`no_detached_long_job_on_slurm` ([#21](https://github.com/ryanchard/hpc-bridge/issues/21)):** no detached/`nohup`/`setsid` long job on `shape="compute"` (the shape was `slurm` before PBS support renamed it, [#28](https://github.com/ryanchard/hpc-bridge/issues/28); the invariant name is unchanged) — the block's idle-release would `scancel`/`qdel` it. ← regression guard for the detached-process idle-release incident. The fix is to run long work as a *foreground* task and `poll_task` it ([#21](https://github.com/ryanchard/hpc-bridge/issues/21)), not detach.
 - **`no_raw_ssh_after_endpoint_up`:** no `login_shell` once the endpoint is up; discovery rides `run_shell(shape="login")`.
 - **`ends_with_stop`:** a run that provisioned slurm ends with `stop_endpoint` — no stranded billed block.
 - **`spend_not_unprompted` (deterministic proxy):** `confirm_spend=true` never precedes allocation discovery (`connect_facility`). *Whether the balance was surfaced in plain terms is judge territory.*

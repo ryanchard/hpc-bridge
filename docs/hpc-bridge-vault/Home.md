@@ -37,6 +37,8 @@ This vault has two halves:
 - [[Globus index discovery channel]] — the catalog resolver + agentic selection + the raw-SSH discover-then-confirm sweep (all built). Remaining: seed-emission / write-back for curation ([#7](https://github.com/ryanchard/hpc-bridge/issues/7))
 - [[Endpoint reuse and MEP integration]] — the zero-SSH ladder: surface the reuse we already do for our own endpoints (Phase 1, [#20](https://github.com/ryanchard/hpc-bridge/issues/20)), then consume facility multi-user MEPs (Phase 2, revisit after Phase 1)
 - [[MFA and interactive SSH auth]] — Duo/MFA + password facilities (NERSC, Midway) without the agent ever handling a secret: pre-open / askpass side-channel + non-secret push relay; ControlMaster makes it once-per-session ([#3](https://github.com/ryanchard/hpc-bridge/issues/3))
+- [[Aurora (PBS + bastion) bring-up]] — the first PBS + bastion/MFA facility: two-hop ProxyJump, the management-hostname pin fix, the discovered `hsn0`/`filesystems=home:flare` config. SSH/PBS path proven live; compute block validated-pending an Aurora allocation
+- [[New-user testing (clean-session)]] — `agentic/clean-session.sh`: a pristine Claude Code session (no `~/.claude` priors, isolated hpc-bridge state) for interactive/MFA testing as a genuine new user — the host-side counterpart to the Docker harness
 
 *(Persistent SSH / ControlMaster shipped — see [[facility-remote]].)*
 
