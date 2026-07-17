@@ -16,7 +16,7 @@ A normal `claude --plugin-dir .` inherits the maintainer's [[Home|auto-memory]],
 | shell env | `env -i` + subscription token | no stray `ANTHROPIC_API_KEY` outranks the token |
 | **nothing forced** | no `HPC_BRIDGE_SSH_HOST` | the agent picks the facility; discovery/caching drive it ([#35](https://github.com/ryanchard/hpc-bridge/issues/35)) |
 
-The ControlMaster is pre-opened in the sandbox (`~/.hpc-bridge-newuser/cm`) so it reuses passcode-free across runs; `HPCB_CLEAN_FRESH=1` wipes the sandbox cache for a genuine first-connect (discovery) test. Auth uses the Claude **subscription** token (`CLAUDE_CODE_OAUTH_TOKEN`), which authenticates a fresh config dir without touching `~/.claude`.
+The ControlMaster is **shared with your normal ssh** (the sandbox's `cm/` is symlinked to `~/.hpc-bridge/cm`) — an SSH master is auth transport, not a hpc-bridge prior — so a master opened by `ssh <host>` or a prior run serves the session passcode-free; only the facility *cache* is isolated. `HPCB_CLEAN_FRESH=1` wipes the sandbox cache for a genuine first-connect (discovery) test. Auth uses the Claude **subscription** token (`CLAUDE_CODE_OAUTH_TOKEN`), which authenticates a fresh config dir without touching `~/.claude`.
 
 > [!note] Distinct from the Docker jail
 > This is the **interactive, MFA-capable** counterpart to the [[Agentic testing - Plan B (runtime sandbox)|Docker harness]] (`run_smoke.sh`): the jail has no `~/.ssh/config` (so it can't do a bastion/MFA two-hop) and runs the agent headless; clean-session runs on the host so the ControlMaster + `~/.ssh/config` work — the only way to drive a facility like [[Aurora (PBS + bastion) bring-up|Aurora]] by hand.
