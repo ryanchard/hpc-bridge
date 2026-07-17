@@ -627,3 +627,17 @@ def test_entry_from_details_endpoint_name_env_override(monkeypatch):
     monkeypatch.delenv("HPC_BRIDGE_ENDPOINT_NAME", raising=False)
     assert _entry_from_details("x", _details(ssh_host="globus1")).compute.endpoint_name == "hpc-bridge-globus1"
 
+
+
+def test_ssh_host_env_is_scoped_to_the_pin_path(monkeypatch):
+    # #35: HPC_BRIDGE_SSH_HOST must NOT override an agent-BOUND facility's ssh_host on the connect
+    # path — that silently redirected globus1's config to Aurora's login node ("globus1 is Aurora").
+    # It overrides ONLY on the env-pinned startup path, via `pinned_host`.
+    from hpc_bridge.server import _facility_from_entry
+    monkeypatch.setenv("HPC_BRIDGE_SSH_HOST", "aurora")
+    monkeypatch.setenv("HPC_BRIDGE_SSH_USER", "u")  # skip the ssh -G user lookup
+    entry = fake_entry(id="globus1", facility_key="lab")  # entry.ssh_host = "globus1.example.edu"
+    # agentic connect path (pinned_host omitted -> None): the bound facility's ssh_host wins
+    assert _facility_from_entry(entry, account="").alias == "globus1.example.edu"
+    # startup-pin path (pinned_host set from the env): the env host overrides the catalog's host
+    assert _facility_from_entry(entry, account="", pinned_host="aurora").alias == "aurora"
