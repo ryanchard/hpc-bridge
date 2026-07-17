@@ -27,7 +27,7 @@ flowchart TD
 - **Pin** — record the login node so the next session reconnects directly ([[state]]).
 
 > [!warning] Login-node pinning
-> The manager lives on ONE login node, but the SSH alias round-robins. `start` (`remote.py:315`) captures the FQDN *in the same SSH connection* that launches the daemon — a separate `hostname -f` could resolve a different node and orphan the manager on teardown. The FQDN is stored by [[state]]'s `LoginNodeStore`; the CLI `rebind`s there next session.
+> The manager lives on ONE login node, but the SSH alias round-robins. `start` (`remote.py:315`) captures the FQDN *in the same SSH connection* that launches the daemon — a separate `hostname -f` could resolve a different node and orphan the manager on teardown. The FQDN is stored by [[state]]'s `LoginNodeStore`; the CLI `rebind`s there next session — **unless `_routable_pin` drops it as non-routable** (an internal `.local`/`.internal` name, or a management-plane name like Aurora's `aurora-uan-0009.hostmgmt.cm.aurora.alcf.anl.gov`), in which case it stays on the alias ([[facility-remote]], [#33](https://github.com/ryanchard/hpc-bridge/pull/33)).
 
 > [!note] Idempotent
 > Bootstrap reuses a running endpoint, seeds credentials only when absent, and re-writes config on every provision so the current profile always applies.

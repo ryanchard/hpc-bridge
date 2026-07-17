@@ -5,7 +5,7 @@
 
 ## The three nets
 
-1. **Idle-release (back end).** The `SlurmProvider` runs `min_blocks=0` with `max_idletime` (default 600 s), so the compute block — the thing that costs allocation — self-releases after the last task (validated live on Anvil). This is the safety net even if nothing else fires.
+1. **Idle-release (back end).** The scheduler provider (`SlurmProvider` **or** `PBSProProvider` — scheduler-neutral) runs `min_blocks=0` with `max_idletime` (default 600 s), so the compute block — the thing that costs allocation — self-releases after the last task (validated live on Anvil). This is the safety net even if nothing else fires.
 2. **The spend clock.** `session_spend` ([[cost]] `estimate_spend` = elapsed × nodes × `charge_factor`) is driven by **true worker presence** (the canary, [[Warmth, the canary & cold-start]]) and **accrued across warm intervals** — banked on each warm→cold transition so it survives idle-release without over-counting the idle gap. It rides every result. `charge_factor` defaults to `0.0` (free local dev).
 3. **The spend floor (front end).** A billed block won't *start* without `confirm_spend=True` — see [[Resource shapes & the spend floor]].
 

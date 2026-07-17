@@ -38,6 +38,7 @@ Classify every auth factor by whether it is a **secret the agent must never see*
 | Facility (example) | Auth | hpc-bridge path | Agent's role |
 |---|---|---|---|
 | globus1, Anvil | key only | `ControlMaster=auto` opens non-interactively | none (works today) |
+| **Aurora (ALCF)** | bastion + **two MFA passcodes** (one per hop) | **pre-opened ControlMaster** — `ProxyJump` via `~/.ssh/config`; **validated live** | instruct the user to pre-open once, then multiplex |
 | NERSC | key + Duo **push** | agent-relayed push **or** pre-open | relay the push option (*non-secret*) |
 | Midway | **password** + Duo | **pre-opened ControlMaster** (secret never touches agent *or* server) | instruct the user to pre-open, then multiplex |
 
@@ -50,7 +51,11 @@ Classify every auth factor by whether it is a **secret the agent must never see*
 - **ControlMaster is the substrate** (shipped): whatever authenticates, it opens the master once and every later `BatchMode` call multiplexes. The interactive step is once per session.
 
 ## Testing — the gap globus1 can close
-No live MFA facility exists in the harness (globus1 is key-only — the auth **red cell** in the generalisation matrix). Two ways to close it:
+
+> [!note] Aurora is now a live MFA facility (partial gap-closure)
+> ALCF [[Aurora (PBS + bastion) bring-up|Aurora]] — a bastion two-hop wanting **two MFA passcodes** — exercised the **pre-open ControlMaster** path *end-to-end live* (2026-07): the user opens the master once (`ssh -fN aurora`, both passcodes in their own terminal), the server's `BatchMode` calls multiplex over it, and the secret never touches the agent. It's **token-based, not Duo push**, so the push-relay tier is still unexercised, and its compute block is allocation-gated — but the *primary secure path* (pre-open) is proven on a real MFA facility, not just globus1's key-only red cell.
+
+The harness itself still has no *automated* MFA facility (globus1 is key-only). Two ways to close that:
 - **Enable Duo/PAM on globus1** (the maintainer admins it via Ansible) → the dedicated auth-gap test facility, on the one cluster we fully control. Strongest, and it makes the relay path CI-testable.
 - **Mock keyboard-interactive** for unit tests: a fake sshd / PTY emitting a Duo challenge → test the challenge parse + push-relay + parked-handshake logic with no real facility.
 - **Midway** is a real password+Duo facility for a manual spot-check of the pre-open path.
