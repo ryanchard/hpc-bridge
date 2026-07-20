@@ -35,6 +35,11 @@ if TYPE_CHECKING:
     from ..catalog.entry import CatalogEntry
 from .base import EndpointHandle
 
+
+# A Globus endpoint UUID — scopes the per-UEP pidfile-cleanup glob to one endpoint, and refuses to
+# build a remote glob from anything that isn't a plain UUID.
+_UUID_RE = re.compile(r"^[0-9a-fA-F-]{36}$")
+
 # ---------------------------------------------------------------- SSH transport
 
 
@@ -401,6 +406,23 @@ class RemoteEndpointCLI:
         # a fresh SSH to a loaded login node is slow — don't let it hold teardown hostage.
         await self._gce("stop", name, timeout=_TEARDOWN_SSH_S)
 
+    async def clean_uep_pidfiles(self, endpoint_id: str) -> None:
+        """Remove stale per-UEP daemon.pid files left by force-killed workers, so a later rebuild's
+        fresh user-endpoints don't hit "Another instance is running. Refusing to start." -> exit 73
+        (#37). Scoped to this endpoint's UEP dirs by its UUID; best-effort (never raises)."""
+        if not _UUID_RE.match(endpoint_id):
+            return  # not a plain UUID -> don't build a remote glob from it
+        # endpoint_id is a validated UUID (no shell metacharacters); the glob expands remotely, and
+        # `rm -f` is silent when it matches nothing (a clean endpoint).
+        try:
+            await ssh_exec(
+                self.target,
+                f'rm -f "$HOME"/.globus_compute/uep.{endpoint_id}.*/daemon.pid',
+                timeout=_TEARDOWN_SSH_S,
+            )
+        except Exception:  # noqa: BLE001 - cleanup must never break teardown
+            pass
+
     async def wipe_storage_db(self) -> None:
         """Remove the seeded credential from the remote host (best-effort)."""
         await ssh_exec(self.target, f'rm -f "{self.remote_dir}/storage.db"')
@@ -701,9 +723,7 @@ class SlurmFacility:
 
         SSH-once: before any SSH, ask the Globus web service whether an endpoint we own is
         already online and reuse it over AMQP — zero SSH, so an MFA facility isn't re-auth'd.
-        Only when none is online do we fall through to the one allowed SSH bootstrap below.
-        (Caveat: a web 'online' that's actually a stale registration is reused as-is; the
-        canary then can't warm it — re-bootstrap-on-stale is a deferred follow-up.)"""
+        Only when none is online do we fall through to the one allowed SSH bootstrap below."""
         reused = await self.find_online_endpoint(self.profile.endpoint_name)
         if reused is not None:
             return EndpointHandle(endpoint_id=reused, name=self.profile.endpoint_name, reused=True)
@@ -736,11 +756,20 @@ class SlurmFacility:
         name = self.profile.endpoint_name
         st = await self.cli.status(name)
         if st == "running":
-            # REUSE: we did NOT launch it, so its node is unknown from a fresh
-            # round-robin probe — leave login_host None and keep any prior record.
+            # REUSE: we did NOT launch it, so its node is unknown from a fresh round-robin probe —
+            # leave login_host None and keep any prior record. We do NOT probe-and-declare-"wedged"
+            # here: a running-but-cold worker and a genuine hang are indistinguishable by a probe, and
+            # a slow facility must be allowed to warm. The canary flow reports 'provisioning' until a
+            # worker answers; a persistent hang is the agent's call to teardown+reconnect (#37).
             return EndpointHandle(endpoint_id=await self.cli.endpoint_id(name), name=name, reused=True)
         if st is None:
             await self.cli.configure(name)
+        else:
+            # A stopped/configured endpoint being re-started may carry stale per-UEP daemon.pid files
+            # from force-killed workers of a prior run; clear them BEFORE the fresh manager forks its
+            # workers, else the worker refuses to start ("Another instance is running.") -> exit 73
+            # (#37). Scoped to this endpoint's UUID. This is the definite bug fix behind "won't warm".
+            await self.cli.clean_uep_pidfiles(await self.cli.endpoint_id(name))
         # config.yaml is the engine-free MANAGER config (amqp_port lives here); the
         # engine goes in the UEP template (v4 manager+template model). Rewrite both so
         # a re-provision always applies the current profile.
@@ -790,13 +819,20 @@ class SlurmFacility:
         return status.get("status") == "online"
 
     async def find_online_endpoint(self, name: str) -> str | None:
-        """UUID of an *online* endpoint we own named `name`, else None — via the Globus web
-        service, NO SSH. This is the SSH-once keystone: a fresh session reuses a still-running
-        endpoint from a prior session over AMQP, instead of re-SSHing the login node (which on
-        an MFA facility could force a re-auth). Bootstrap (the one allowed SSH) is the fallback.
+        """UUID of an *online* endpoint we own named `name`, else None — via the Globus web service,
+        NO SSH. The SSH-once keystone: a fresh session reuses a still-running endpoint from a prior
+        session over AMQP, instead of re-SSHing the login node (which on an MFA facility could force
+        a re-auth). Bootstrap (the one allowed SSH) is the fallback.
 
-        Web errors (e.g. the local Globus identity isn't logged in) are swallowed to None so we
-        fall through to the SSH path, which surfaces the auth problem with a clearer error."""
+        We gate reuse on `manager_online` alone — NOT a liveness probe. A probe cannot distinguish a
+        dead ghost from a just-started endpoint whose worker is still cold-starting, so probe-gating
+        false-rejects a healthy fresh endpoint and forces a re-bootstrap that then trips the manager's
+        own pidfile ("Another instance is running") (#37, regression seen in endpoint_reuse_chain). A
+        genuinely dead 'online' ghost is instead handled gracefully downstream: the robust canary maps
+        its shut-down Executor to not-warm ('provisioning'), which the agent recovers by teardown.
+
+        Web errors (e.g. the local Globus identity isn't logged in) are swallowed to None so we fall
+        through to the SSH path, which surfaces the auth problem with a clearer error."""
         client = self._client_factory()
         try:
             endpoints = await asyncio.to_thread(client.get_endpoints, "owner")
@@ -809,7 +845,7 @@ class SlurmFacility:
             ep_id = ep.get("uuid") or ep.get("endpoint_uuid") or ep.get("id")
             if ep_name != name or not ep_id:
                 continue
-            if await self.manager_online(ep_id):  # confirm it's actually online, not just registered
+            if await self.manager_online(ep_id):  # our endpoint, reported online -> reuse over AMQP
                 return ep_id
         return None
 

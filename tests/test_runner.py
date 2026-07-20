@@ -148,3 +148,25 @@ def test_runner_passes_user_endpoint_config_to_executor():
     assert r.user_endpoint_config == {"provider_type": "LocalProvider"}
     r2 = GlobusRunner("eid-1", executor_factory=factory)
     assert r2.executor() is not None and captured["made"] is True
+
+
+class _ShutdownExecutor:
+    """A cached Executor that has already shut down: .submit() raises, as the SDK does."""
+
+    def submit(self, fn):
+        raise RuntimeError("Executor is shutdown; no new functions may be executed")
+
+    def shutdown(self, wait=True, cancel_futures=False):
+        pass
+
+
+async def test_canary_survives_shutdown_executor():
+    # #37: a shut-down cached Executor raises AT .submit() (not at .result()). The canary must map
+    # that to not-ok, NEVER let it propagate — otherwise it unwinds past _provision and there is no
+    # recovery (the observed "RuntimeError: Executor is shutdown" dead-end). submit is inside the guard.
+    # This is THE #37 fix: a dead 'online' ghost, once reused, degrades to 'provisioning', not a crash.
+    pytest.importorskip("globus_compute_sdk")
+    r = GlobusRunner("eid", executor_factory=lambda: _ShutdownExecutor())
+    res = await r.canary(timeout=0.5)
+    assert res.ok is False
+    assert "shutdown" in (res.error or "").lower()

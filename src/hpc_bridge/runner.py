@@ -43,6 +43,26 @@ def _escape_for_shellfunction(command: str) -> str:
     return command.replace("{", "{{").replace("}", "}}")
 
 
+async def _probe_executor(executor, *, timeout: float, command: str = _CANARY_CMD) -> tuple[bool, str]:
+    """Submit `command` to `executor` and await a result within `timeout`, NEVER raising.
+
+    Returns (True, stdout) if a worker answered, else (False, "<reason>"). The submit itself is
+    INSIDE the guard: a shut-down or broken Executor raises `RuntimeError: Executor is shutdown`
+    at `.submit()`, which we map to (False, …) instead of letting it propagate — every caller
+    (the warmth canary; the reuse liveness gate) treats any failure as 'no live worker' (#37)."""
+    from globus_compute_sdk import ShellFunction
+
+    fn = ShellFunction(_escape_for_shellfunction(command), walltime=max(timeout - 1.0, 2.0))
+    try:
+        fut = executor.submit(fn)
+        res = await asyncio.to_thread(fut.result, timeout)
+    except TimeoutError:
+        return False, "timeout"
+    except Exception as exc:  # noqa: BLE001 - shutdown Executor / broken dispatch path, not a crash
+        return False, f"{type(exc).__name__}: {exc}"[:200]
+    return True, getattr(res, "stdout", "") or ""
+
+
 class GlobusRunner:
     """Dispatches shell commands to a Globus Compute endpoint via a long-lived Executor.
 
@@ -102,20 +122,14 @@ class GlobusRunner:
         """Submit a trivial task and confirm a WORKER answers within `timeout`.
 
         A returned result (any) proves a worker is live — the worker-registration signal
-        `manager_online()` can't give. TimeoutError => no worker yet (block still cold-starting),
-        reported as not-ok rather than raised. Reuses the long-lived Executor, so the same AMQP
-        path real dispatches use is what gets proven (and the submit kicks a cold block)."""
-        from globus_compute_sdk import ShellFunction
-
-        fn = ShellFunction(_escape_for_shellfunction(_CANARY_CMD), walltime=max(timeout - 1.0, 2.0))
-        fut = self.executor().submit(fn)
-        try:
-            res = await asyncio.to_thread(fut.result, timeout)
-        except TimeoutError:
-            return CanaryResult(ok=False, error="timeout")
-        except Exception as exc:  # noqa: BLE001 - worker reachable but the dispatch path is broken
-            return CanaryResult(ok=False, error=f"{type(exc).__name__}: {exc}"[:200])
-        py, dill_v, host = _parse_canary(getattr(res, "stdout", "") or "")
+        `manager_online()` can't give. Not-ok (never raised) => no worker yet (block still
+        cold-starting) OR the dispatch path is broken (e.g. a shut-down Executor). Reuses the
+        long-lived Executor, so the same AMQP path real dispatches use is what gets proven (and
+        the submit kicks a cold block)."""
+        ok, payload = await _probe_executor(self.executor(), timeout=timeout)
+        if not ok:
+            return CanaryResult(ok=False, error=payload)
+        py, dill_v, host = _parse_canary(payload)
         return CanaryResult(ok=True, worker_python=py, worker_dill=dill_v, worker_host=host)
 
     def close(self) -> None:
