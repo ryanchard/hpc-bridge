@@ -264,6 +264,9 @@ class _FakeRemoteCLI:
     async def stop(self, name):
         self.calls.append(("stop", name))
 
+    async def clean_uep_pidfiles(self, endpoint_id):
+        self.calls.append(("clean_uep_pidfiles", endpoint_id))
+
     async def endpoint_id(self, name):
         return "running-eid"
 
@@ -349,7 +352,7 @@ async def test_bootstrap_skips_seed_when_remote_db_present(monkeypatch, tmp_path
     monkeypatch.setattr(remote, "build_minimal_storage_db", lambda **kw: tmp_path / "x.db")
     handle = await fac.bootstrap(Profile(mode="interactive"))
     assert cli.seeded is None  # already had creds -> no reseed
-    assert handle.login_host is None  # reused (already-running) endpoint isn't re-probed
+    assert handle.login_host is None  # reused (already-running) endpoint isn't re-probed for its node
     assert handle.reused is True  # #20: status=running is a reuse
 
 
@@ -371,6 +374,9 @@ async def test_bootstrap_records_login_node_in_store(monkeypatch, tmp_path):
 
 
 async def test_find_online_endpoint_returns_uuid_when_owned_and_online():
+    # Reuse is gated on manager_online ALONE — no liveness probe. A probe can't tell a dead ghost
+    # from a just-started cold worker, so probe-gating false-rejects a fresh endpoint (#37); a dead
+    # 'online' ghost is handled downstream by the robust canary (-> provisioning -> teardown).
     client = _FakeGCClient(
         endpoints=[{"name": "other", "uuid": "x"}, {"name": "hpc-bridge", "uuid": "ours"}],
         statuses={"ours": "online"},
@@ -399,8 +405,8 @@ async def test_find_online_endpoint_swallows_web_error():
 
 
 async def test_bootstrap_reuses_online_endpoint_without_any_ssh():
-    # The SSH-once keystone: a web-online endpoint we own is reused over AMQP and NOT a single
-    # SSH op (status/configure/start/whoami/seed) runs.
+    # The SSH-once keystone: a web-online endpoint we own is reused over AMQP and NOT a single SSH
+    # op (status/configure/start/whoami/seed) runs.
     cli = _BootstrapCLI(status=None, remote_db_present=False)
     client = _FakeGCClient([{"name": "hpc-bridge", "uuid": "reused-eid"}], {"reused-eid": "online"})
     fac = SlurmFacility(_profile(), cli=cli, client_factory=lambda: client)
@@ -433,11 +439,26 @@ async def test_provision_skips_configure_when_already_configured():
 
 
 async def test_provision_reuses_running_endpoint():
+    # A locally-"Running" endpoint is re-adopted WITHOUT a liveness probe: cold-start and a genuine
+    # hang are indistinguishable by a probe (and a slow facility must be allowed to warm), so provision
+    # does not declare "wedged" here — the canary flow reports 'provisioning' until a worker answers (#37).
     cli = _FakeRemoteCLI(status="running")
     handle = await SlurmFacility(_profile(), cli=cli).provision(Profile(mode="interactive"))
     assert handle.endpoint_id == "running-eid"
+    assert handle.reused is True
     assert "configure" not in _kinds(cli) and "start" not in _kinds(cli)  # reuse, don't restart
-    assert "rebind" not in _kinds(cli)  # nothing was (re)started -> stay on the current host
+    assert "stop" not in _kinds(cli) and "rebind" not in _kinds(cli)  # untouched -> stay on the current host
+
+
+async def test_provision_clears_stale_uep_pidfiles_before_restart():
+    # #37 (live 9c056131): a stopped/configured endpoint being re-started may carry stale per-UEP
+    # daemon.pid files from force-killed workers; provision clears them (scoped to the UUID) BEFORE
+    # start so the fresh worker doesn't exit 73 ("Another instance is running"). The real "won't warm" fix.
+    cli = _FakeRemoteCLI(status="configured")
+    await SlurmFacility(_profile(), cli=cli).provision(Profile(mode="interactive"))
+    kinds = _kinds(cli)
+    assert ("clean_uep_pidfiles", "running-eid") in cli.calls  # cleared for THIS endpoint's UUID
+    assert kinds.index("clean_uep_pidfiles") < kinds.index("start")  # BEFORE the fresh start
 
 
 # --- interactive auth (password / MFA): detect, hand off, never handle the secret --------------
@@ -536,6 +557,24 @@ async def test_teardown_cancels_blocks_with_pbs_scheduler():
     cli = _FakeRemoteCLI()
     await SlurmFacility(_pbs_profile(), cli=cli).teardown("eid-123")
     assert ("cancel_blocks", "eid-123", "pbs") in cli.calls
+
+
+async def test_clean_uep_pidfiles_scopes_to_uuid_and_refuses_non_uuid(monkeypatch):
+    # The cleanup globs a remote path built from endpoint_id, so only run it for a real UUID — never
+    # build a shell command from arbitrary text.
+    calls = []
+
+    async def _fake_ssh_exec(target, cmd, **kw):
+        calls.append(cmd)
+        return (0, "", "")
+
+    monkeypatch.setattr(remote, "ssh_exec", _fake_ssh_exec)
+    cli = remote.RemoteEndpointCLI(SshTarget("h", "u", "k"), "env")
+    await cli.clean_uep_pidfiles("a42e6169-55f3-4dc4-be72-8ae2cfda721d")
+    assert len(calls) == 1 and "uep.a42e6169-55f3-4dc4-be72-8ae2cfda721d.*/daemon.pid" in calls[0]
+    calls.clear()
+    await cli.clean_uep_pidfiles("; rm -rf ~ #")  # not a UUID -> refused, no SSH built from it
+    assert calls == []
 
 
 async def test_cancel_blocks_targets_only_this_endpoints_jobs(monkeypatch):
