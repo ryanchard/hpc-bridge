@@ -1,7 +1,7 @@
 # Endpoint reuse and MEP integration
 
 > [!abstract] In one line
-> The zero-SSH ladder: first **surface the reuse hpc-bridge already does silently** for endpoints it stood up, then **consume facility-run multi-user MEPs** so the facility's identity mapping replaces our SSH bootstrap outright — shrinking SSH from "every cold start" toward "never." **Phase 1 (reuse our own) ships first; Phase 2 (facility MEPs) is captured here to revisit once Phase 1 lands.**
+> The zero-SSH ladder: first **surface the reuse hpc-bridge already does silently** for endpoints it stood up, then **consume facility-run multi-user MEPs** so the facility's identity mapping replaces our SSH bootstrap outright — shrinking SSH from "every cold start" toward "never." **Phase 1 (reuse our own) has SHIPPED; Phase 2 (facility MEPs) is now the V1-gating objective** (user, 2026-07-20) — and it doubles as the graceful browser-auth story: a Globus consent replaces the SSH/MFA prompt entirely.
 
 ## The reuse ladder
 
@@ -35,27 +35,40 @@ Because the name is stable and the manager persists on the cluster, a **fresh se
 
 **Verified two ways** (both scenarios green): `endpoint_reuse` (intra-agent — one session, two connects) live, and `endpoint_reuse_chain` (inter-agent — two agent sessions across an MCP-server restart, the true cross-session case) via re-grade of the real trace. The harness gained a `PHASES` chain primitive to run the latter (see [[Agentic testing - Plan B (runtime sandbox)]]).
 
-> [!note] Known sub-gap (deferred, but named): stale-online reuse
-> `find_online_endpoint` trusts the web service's "online" — a **stale registration** (registered-online but dead) is reused as-is and the canary can never warm it (`bootstrap()` docstring caveat). Re-bootstrap-on-stale is the natural Phase 1.5.
+> [!note] Resolved ([#37](https://github.com/ryanchard/hpc-bridge/issues/37) / [PR #38](https://github.com/ryanchard/hpc-bridge/pull/38)): stale-online reuse
+> Reuse **deliberately gates on `manager_online` alone — no liveness probe**: a probe can't distinguish a dead ghost from a cold-starting fresh worker, so a canary-gate *on reuse* false-rejects a healthy fresh endpoint (it was tried, then removed). A genuinely dead "online" ghost is instead handled gracefully **downstream** — the robust [[Warmth, the canary & cold-start|canary]] maps its shut-down Executor to not-warm → `provisioning`, which the agent recovers via `teardown_endpoint` + reconnect. And `provision` clears stale per-UEP `daemon.pid` files at start (the exit-73 fix). Re-bootstrap-on-stale was **rejected** — a compute-first re-bootstrap can't tell a ghost from a cold start.
 
-## Phase 2 — consume facility MEPs (revisit after Phase 1)
+## Phase 2 — consume facility MEPs (the V1 objective)
 
-**The dispatch half is nearly built.** A Globus Compute run is already `Executor(endpoint_id, user_endpoint_config)` (`runner.py:74`) — literally what a facility MEP consumes — and the `HPC_BRIDGE_ENDPOINT_ID=<uuid>` BYO hatch (`endpoint.py:44`) already dispatches to a foreign UUID with **zero provisioning**. What's missing is everything around *choosing* and *configuring* that UUID as a first-class, discovered path.
+**This is the V1 gate** (2026-07-20): a working zero-SSH MEP path before publishing V1. It is *also* the graceful-auth story — a facility MEP authorizes us by a **Globus consent (a browser OAuth)**, the same loopback + paste-back pattern the [Cloudflare MCP](https://developers.cloudflare.com/agent-setup/) uses (`authenticate` → auth URL → approve in browser → return to session). There is no SSH and no Duo to hand off. The two Globus-SDK unknowns that used to size this are now **verified against `globus_compute_sdk` 4.13.0** (inline below).
+
+**The dispatch half is nearly built.** A Globus Compute run is already `Executor(endpoint_id, user_endpoint_config)` (`runner.py:96`) — literally what a facility MEP consumes — and the `HPC_BRIDGE_ENDPOINT_ID=<uuid>` BYO hatch (`server.py:308` `_env_endpoint_id`) already dispatches to a foreign UUID with **zero provisioning**. What's missing is everything around *choosing* and *configuring* that UUID as a first-class, discovered path.
 
 **The information we'd need to gather** (the open question the user flagged — settle this before building):
-1. **The MEP UUID, per facility** — a catalog field (`mep_endpoint_id`) or, better, *discovered*. A new discovery channel layered on [[Discovery channel model]] / [[Globus index discovery channel]] and the ACCESS survey ([#7](https://github.com/ryanchard/hpc-bridge/issues/7)): a facility that *publishes* a MEP is the cleanest provide-vs-discover case.
-2. **The allowed `user_endpoint_config` + its schema** — the facility owns the `user_config_template.yaml.j2` and constrains it with a `user_config_schema`. We fill *its* variables (account / partition / walltime / nodes); we can't send an arbitrary template. Discover the accepted shape → propose → confirm (same discipline as raw-SSH discovery). This is the "template out a compute node" step, done against the facility's template instead of ours.
-3. **Consent** — a Globus Auth consent for that endpoint is the irreducible "access" input the user provides.
+1. **The MEP UUID, per facility** — the catalog field **already exists**: `CatalogEntry.compute_mep_uuid` (`catalog/entry.py:73`, UUID-validated). Today `_unsupported_entry_reason` (`server.py:171`) *rejects* such an entry (*"catalog-driven MEP dispatch is not wired yet — use HPC_BRIDGE_ENDPOINT_ID"*); wiring Phase 2 = replacing that reject with a MEP branch. Discovery of the UUID (a facility that *publishes* a MEP) layers on [[Discovery channel model]] / [[Globus index discovery channel]] / the ACCESS survey ([#7](https://github.com/ryanchard/hpc-bridge/issues/7)).
+2. **The allowed `user_endpoint_config`** — the facility owns the `user_config_template.yaml.j2` + its `user_config_schema`; we fill *its* variables (account / partition / walltime / nodes), never an arbitrary template. **Verified (SDK 4.13.0):** there is **no first-class schema fetch** — `Client.get_endpoint_metadata(uuid)` returns config *values* (best-effort), not a structured `user_config_schema`. But the web service **validates `user_endpoint_config` server-side at submit** — a bad key/value is rejected regardless — so the schema is a *UX nicety* (offer the right partitions up front), not a correctness gate. → **curate the allowed config in the entry; treat `get_endpoint_metadata` as opportunistic; rely on server-side validation as the safety net.**
+3. **Consent — the graceful browser auth.** A Globus Auth consent for the MEP's scope is the irreducible "access" input. It is a **browser OAuth** (authorize URL → approve → return), the *same* UX as the Cloudflare MCP's `authenticate`/`complete_authentication` (loopback + paste-back fallback). Surface it as a new `connect_facility` phase `needs_consent` carrying the authorize URL; reuse the scope machinery (`credentials._missing_scopes` / `login_required`). This is "graceful auth that returns to the terminal," on our real credential — and it *replaces* the SSH bootstrap + storage.db seeding wholesale for MEP facilities.
 4. **Identity mapping** — confirm the facility maps our Globus identity to the intended local account (the SSH replacement); surface a clear failure if it doesn't, rather than a silent wrong-user run.
 
 **Where it touches the code:**
-- `connect_facility` / `ensure_endpoint_up` gain a **MEP branch**: if the facility has a MEP UUID (+ consent), skip `bootstrap()`/SSH entirely, bind a runner to the UUID; "provision the slurm shape" becomes "submit the UEP config to the MEP."
-- A catalog / [[Globus index discovery channel|`FacilityDetails`]] field for the MEP UUID (and, optionally, the discovered schema).
+- A third `Facility` — **`MEPFacility`** (alongside `SlurmFacility` / `LocalFacility`, the [[facility-base|`Facility` protocol]]) — whose `provision()` does **no SSH**: it returns `EndpointHandle(endpoint_id=compute_mep_uuid, reused=True)` after the consent check; `manager_online` is the web check on the UUID; no `bootstrap`, no `config_template` (the *facility* owns the template).
+- `connect_facility` / `ensure_endpoint_up` gain a **MEP branch**: a `compute_mep_uuid` entry builds a `MEPFacility` (replacing the `_unsupported_entry_reason` reject); "provision the compute shape" becomes "submit the UEP config to the MEP." The runner binding — `Executor(uuid, uec)` — is unchanged.
 
-> [!warning] Stop/spend does NOT carry over — don't regress the honesty guarantee
-> On our personal endpoint, `stop_endpoint` `scancel`s the block over the login shape ([[Cost control]], the `stop_is_honest` fix [#24](https://github.com/ryanchard/hpc-bridge/issues/24)). On a facility MEP **we don't own the manager**, so that scancel-over-login path doesn't exist — the MEP owns UEP lifecycle. Tier 1 needs its *own* honest stop (a UEP-scoped release, or honest reliance on the MEP's idle policy), and it must satisfy `stop_is_honest` too: an unconfirmed stop must never report `status="down"`.
+> [!warning] Stop/spend does NOT carry over — the honesty guarantee weakens, honestly
+> On our personal endpoint, `stop_endpoint` `scancel`s the block over the login shape ([[Cost control]], the `stop_is_honest` fix [#24](https://github.com/ryanchard/hpc-bridge/issues/24)). On a facility MEP **we own neither the manager nor a login channel** — that scancel path doesn't exist. **Verified (SDK 4.13.0): there is no honest foreign-endpoint cancel** — `ComputeFuture.cancel()` only works *pre-run* (a still-queued task), and `Client.stop_endpoint` / `delete_endpoint` act on **our own** registration (calling them on a facility MEP is wrong/unauthorized). So MEP `stop_endpoint` is **`draining`-only** — stop submitting, rely on the MEP's `max_idletime` idle-release — and must **never report `status="down"`** (it can't confirm the block is gone). `teardown_endpoint` is a **no-op** (nothing of ours to destroy). This satisfies `stop_is_honest` by reporting `draining`, not by lying `down`.
 
 **Feasibility to settle first:** which target facilities actually run a *targetable* multi-user MEP? NERSC runs a Globus Compute MEP; does our ACCESS target (Anvil) expose one, or is it SSH-bootstrap-only? Can we submit our own `user_endpoint_config`, or only select a named site preset? These answers size Phase 2.
+
+## Phase 2 milestones (build order)
+
+| M | Deliverable | Unlocks |
+|---|---|---|
+| **M1** | `MEPFacility` + wire the `compute_mep_uuid` branch (kill the `_unsupported_entry_reason` reject) | catalog-driven MEP dispatch — the code's own TODO |
+| **M2** | `needs_consent` phase + the browser-OAuth (Globus consent) flow | **the graceful-auth win** — zero SSH, zero Duo |
+| **M3** | Curate the allowed `user_endpoint_config` in the entry; best-effort `get_endpoint_metadata`; lean on server-side validation | correct billed runs |
+| **M4** | Honest MEP stop: `draining`-only (idle-release); `teardown` a no-op | the semantics gap (no foreign cancel API) |
+
+**M1 + M2 is the V1 story:** a catalogued MEP facility, zero SSH, graceful consent.
 
 ## Guiding invariants (must hold across both phases)
 - **Hot path stays token/AMQP — no new SSH channel** ([[Two-channel architecture]]). Reuse and MEP consumption *remove* SSH; neither adds a work channel.
@@ -64,7 +77,7 @@ Because the name is stable and the manager persists on the cluster, a **fresh se
 - **Stop stays honest on every channel** ([#24](https://github.com/ryanchard/hpc-bridge/issues/24)).
 
 ## Deferred
-Phase 2 implementation until Phase 1 ships; identity-mapping edge cases and stale-consent handling; MEP-side allocation/quota reporting; re-bootstrap-on-stale for Tier 2 (Phase 1.5).
+Identity-mapping edge cases and stale-consent handling; MEP-side allocation/quota reporting — without a login channel there's no `mybalance`, so fall to the account-named spend gate (the `entry.allocation is None` path) unless a facility exposes a balance API.
 
 ## See also
 [[MEP & templated endpoints]] · [[Discovery channel model]] · [[Globus index discovery channel]] · [[Standing up the endpoint]] · [[Cost control]] · [[Two-channel architecture]] · [[facility-remote]]

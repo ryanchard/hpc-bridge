@@ -13,6 +13,7 @@
 
 - **returned result** ⇒ a worker is truly live ⇒ `warm`.
 - **timeout** (`CANARY_TIMEOUT_S = 8 s`, `server.py:324`) ⇒ still `provisioning` — and the submit has *kicked* the cold block.
+- **submit/dispatch failure** — e.g. a reused endpoint whose Executor is shut down ⇒ **not-warm** → `provisioning`, never a propagating crash. This is the [#37](https://github.com/ryanchard/hpc-bridge/issues/37) mechanism that lets a stale-"online" reused ghost degrade to `provisioning` (recover by teardown) instead of dead-ending in `RuntimeError: Executor is shutdown`.
 
 A successful canary is trusted for `CANARY_TTL_S = 45 s` (`server.py:321`) so an interactive burst doesn't pay the round-trip every call. (Safe: an idle block needs ≥ `max_idletime`, default 600 s, of silence to release, so a worker seen < 45 s ago can't have vanished.)
 
