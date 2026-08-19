@@ -411,6 +411,34 @@ SYNC_WAIT_S = _env_float("HPC_BRIDGE_SYNC_WAIT_S", 120.0)
 TASK_CEILING_MARGIN_S = 20.0
 
 
+def _supported_shapes(app: AppCtx) -> tuple[str, ...]:
+    """The shapes the bound facility can serve. Default: every shape (a personal endpoint renders
+    our own template, which has both). A facility-run multi-user endpoint declares
+    `supported_shapes=("compute",)` — its schema REJECTS the LocalProvider login shape — and the
+    server derives the rest from that single fact: no login shape ⇒ no free channel for the
+    allocation listing / the pilot query / the scancel release ⇒ stop is draining-only, teardown is
+    a no-op, every shape is billed."""
+    return tuple(getattr(app.facility, "supported_shapes", None) or SHAPES)
+
+
+def _has_login_shape(app: AppCtx) -> bool:
+    return "login" in _supported_shapes(app)
+
+
+def _shape_reject(app: AppCtx, shape: str) -> str | None:
+    """A notice if `shape` isn't served by the bound facility, else None. Checked BEFORE any
+    _shape_runtime(app, shape) so an unsupported shape never gets a ShapeRuntime/runner (a submit
+    with it would be refused server-side and would shut the Executor down — see _confirm_worker)."""
+    if shape in SHAPES and shape not in _supported_shapes(app):
+        return (
+            f"shape {shape!r} isn't available on this facility (a compute-only multi-user endpoint: "
+            "no free login node; its schema refuses a LocalProvider block). Use shape='compute' — a "
+            "block stays warm between calls (init_blocks=1 + the facility's idle-release), so cheap "
+            "follow-up commands don't re-queue."
+        )
+    return None
+
+
 def _shape_runtime(app: AppCtx, shape: str) -> ShapeRuntime:
     """Resolve (and lazily build) the per-shape runtime, seeding its user_endpoint_config
     from facility defaults (SlurmFacility) merged with the shape's template vars."""
@@ -709,6 +737,24 @@ def _apply_account(app: AppCtx, shape: str, rt: ShapeRuntime, account: str | Non
     return None
 
 
+def _needs_confirmation_notice(app: AppCtx, where: str) -> str:
+    """The spend-floor notice. Names the free login shape as the alternative ONLY where one exists —
+    on a compute-only facility every shape is billed, so pointing at shape='login' is a dead-end."""
+    head = (f"scheduler compute block{where} ({app.profile.nodes_per_block} node(s)): spend "
+            "not yet confirmed. ")
+    if _has_login_shape(app):
+        return head + (
+            "Surface the allocation balance (e.g. run_shell('mybalance', shape='login')) and re-call "
+            "ensure_endpoint_up(confirm_spend=True) to proceed — or use shape='login' for free "
+            "login-node work."
+        )
+    return head + (
+        "This facility is compute-only (no free login shape — every command bills a block, which "
+        "then stays warm between calls). Confirm with the user, then re-call "
+        "ensure_endpoint_up(confirm_spend=True)."
+    )
+
+
 async def _ensure_endpoint_up(
     app: AppCtx,
     shape: str = DEFAULT_SHAPE,
@@ -716,6 +762,10 @@ async def _ensure_endpoint_up(
     confirm_spend: bool = False,
     account: str | None = None,
 ) -> EndpointStatus:
+    if reject := _shape_reject(app, shape):  # compute-only facility: never build a login runtime
+        return EndpointStatus(
+            status="down", block_state="cold", endpoint_id=app.state.endpoint_id, notice=reject,
+        )
     if partition is not None and not _VALID_PARTITION.match(partition):
         return EndpointStatus(
             status="down",
@@ -769,12 +819,7 @@ async def _ensure_endpoint_up(
                 endpoint_id=app.state.endpoint_id,
                 partition=active_partition,
                 account=active_account,
-                notice=(
-                    f"scheduler compute block{where} ({app.profile.nodes_per_block} node(s)): spend "
-                    "not yet confirmed. Surface the allocation balance (e.g. run_shell('mybalance', shape='login')) "
-                    "and re-call ensure_endpoint_up(confirm_spend=True) to proceed — or use "
-                    "shape='login' for free login-node work."
-                ),
+                notice=_needs_confirmation_notice(app, where),
             )
         billable = _billable(rt)
         eid = app.state.endpoint_id
@@ -799,7 +844,9 @@ async def _ensure_endpoint_up(
     # the pilot actually submitted. A rejected/held qsub is otherwise indistinguishable from a normal
     # queue wait, leaving the caller stuck on "allocating nodes…" forever ([#32]). The grace clock
     # keeps a not-yet-visible pilot during normal cold-start from being cried as rejected.
-    if status == "provisioning" and billable and eid:
+    # (The query rides the free login shape — a compute-only facility has none, so skip it there; the
+    # #37 failure-signal path for a MEP is the dispatch-error suffix already on the notice.)
+    if status == "provisioning" and billable and eid and _has_login_shape(app):
         notice = await _augment_provisioning_notice(app, eid, notice, provisioning_elapsed)
     return EndpointStatus(
         status=status,
@@ -997,6 +1044,8 @@ async def _connect_facility(
         # The session-shell root follows the bound facility — else run_shell would use the local
         # ~/.hpc-bridge path on the remote node (same resolution as lifespan's).
         app.scratch_root = _resolve_scratch_root(fac)
+        if not _has_login_shape(app):  # a facility-run multi-user endpoint: attach, don't provision
+            return await _connect_mep(app, facility, fac)
         try:
             block = await _provision(app, "login", force_canary=True)
         except Exception as exc:  # noqa: BLE001 - provisioning unavailable (e.g. non-Linux host)
@@ -1038,6 +1087,52 @@ async def _connect_facility(
         reused=reused,
         allocations=allocations,
         notice=reuse_note + "pick an allocation, then ensure_endpoint_up(account=…, partition=…, confirm_spend=True)",
+    )
+
+
+async def _connect_mep(app: AppCtx, facility: str, fac) -> ConnectFacilityResult:
+    """Bind a facility-run multi-user endpoint (MEP). Called under app.lock, after the bind.
+
+    There is nothing to stand up: the facility runs the manager and its identity mapping makes our
+    Globus identity a local account — zero SSH. So we only ATTACH the catalogued UUID (free) and
+    read the manager's status. We deliberately do NOT warm a block here: on a MEP every shape is a
+    billed scheduler block, so warming belongs behind the spend gate (ensure_endpoint_up
+    confirm_spend=True), not inside connect. There is no login node, hence no allocation listing —
+    the account (if the facility needs one) is passed directly."""
+    try:
+        block, app.state = await ensure_warm(app.facility, app.profile, app.state)
+    except Exception as exc:  # noqa: BLE001 - e.g. the SDK can't reach the status API
+        return ConnectFacilityResult(
+            phase="failed", facility=facility,
+            notice=f"hpc-bridge error: {type(exc).__name__}: {exc}"[:500],
+        )
+    if block != "warm":
+        # The manager reported OFFLINE. It isn't ours: no retry on our side brings it up, so don't
+        # say "call again shortly" — name the facility as the owner.
+        return ConnectFacilityResult(
+            phase="failed", facility=facility, reused=True,
+            notice=(
+                f"the facility's multi-user endpoint {app.state.endpoint_id} reports offline. It is "
+                "run by the facility (not by hpc-bridge), so there is nothing to restart here — "
+                "contact the facility / check its status page, then connect_facility again."
+            ),
+        )
+    if getattr(fac, "account_required", True):
+        how = ("pass the account directly: ensure_endpoint_up(account=…, partition=…, "
+               "confirm_spend=True) — no allocation listing exists on a multi-user endpoint.")
+    else:
+        how = ("NO account is needed at this facility — do not look for one. Confirm spend and go: "
+               "ensure_endpoint_up(partition=…, confirm_spend=True).")
+    return ConnectFacilityResult(
+        phase="needs_account",
+        facility=facility,
+        reused=True,  # attached to the facility's always-on endpoint: zero SSH, nothing bootstrapped
+        allocations=[],
+        notice=(
+            "attached to the facility's multi-user endpoint (zero SSH, nothing to bootstrap). This "
+            "facility is COMPUTE-ONLY: there is no free login shape — every command runs on a "
+            "billed scheduler block that stays warm between calls. " + how
+        ),
     )
 
 
@@ -1289,6 +1384,51 @@ async def _augment_provisioning_notice(app: AppCtx, eid: str, notice: str, elaps
     return f"{notice} {suffix}" if suffix else notice
 
 
+async def _drop_compute_shape(app: AppCtx) -> float:
+    """Drop the billed (compute) shape so a later run re-provisions a FRESH block (its runner now
+    points at the released block) and stop its spend clock. Keep the login shape (if any), the
+    manager, the endpoint_id, and the login-node pin — the endpoint stays online and reusable. Done
+    regardless of cancel confirmation: the runner is dead either way, and banking must stop now.
+    Returns the spend the dropped shape had accrued, so the caller can still report it — the shape
+    is gone from app.shapes, so _total_session_spend() no longer sees it (the dropped block's spend
+    must not vanish from the stop report)."""
+    async with app.lock:
+        _drain_shape_tasks(app, DEFAULT_SHAPE)  # the released block's poll handles are now dead
+        compute = app.shapes.pop(DEFAULT_SHAPE, None)
+        if compute is None:
+            return 0.0
+        _bank_warm_interval(compute, app)  # stop the spend clock for the released block
+        if compute.runner is not None:
+            compute.runner.close()
+        return compute.spend_accrued
+
+
+async def _stop_mep(app: AppCtx, eid: str) -> EndpointStatus:
+    """Stop on a facility-run multi-user endpoint: **draining-only, never 'down'**.
+
+    We own neither the manager nor a login channel, and the Globus SDK offers no foreign-endpoint
+    cancel (ComputeFuture.cancel is pre-run only; stop/delete_endpoint act on OUR registration). So
+    the honest thing (#24) is: stop submitting, drop the shape so no further work lands on the
+    block, and rely on the facility template's idle-release (max_idletime) to reclaim it. The block
+    keeps burning for up to that idle window after our last task — we report that tail rather than
+    pretend it's gone. `draining` here is TERMINAL: re-polling stop will never yield `down`."""
+    dropped = await _drop_compute_shape(app)
+    idle = getattr(app.facility, "max_idletime_s", None) or app.profile.max_idletime_s
+    return EndpointStatus(
+        status="draining",
+        block_state="cold",
+        endpoint_id=eid,
+        session_spend=_total_session_spend(app) + dropped,
+        notice=(
+            "stopped submitting; the block is DRAINING. On a facility multi-user endpoint hpc-bridge "
+            "has no cancel channel, so the block cannot be released or confirmed from here — the "
+            f"facility's idle-release reclaims it after ~{int(idle)}s of no tasks (or at walltime). "
+            f"Spend may accrue for up to that tail. 'draining' is FINAL on this facility: do NOT "
+            "re-poll stop_endpoint waiting for 'down'. The endpoint stays available (it's the facility's)."
+        ),
+    )
+
+
 async def _stop_endpoint(app: AppCtx) -> EndpointStatus:
     """Release the compute block over the **login endpoint (AMQP)** and LEAVE the manager online for
     reuse. "Stop" means *stop spending*, not destroy the endpoint: the login-node manager is the
@@ -1298,25 +1438,17 @@ async def _stop_endpoint(app: AppCtx) -> EndpointStatus:
     eid = app.state.endpoint_id
     if eid is None:
         return EndpointStatus(status="down", block_state="cold", notice="no endpoint was up")
+    if not _has_login_shape(app):  # a facility MEP: no release channel exists — drain honestly
+        return await _stop_mep(app, eid)
     # Cancel the scheduler block over the login shape (AMQP) — no SSH.
     confirmed, detail = await _release_blocks_over_login(app, eid)
-    async with app.lock:
-        # Drop the billed (compute) shape so a later run re-provisions a FRESH block (its runner now
-        # points at the cancelled block). Keep the login shape, the manager, the endpoint_id, and
-        # the login-node pin — the endpoint stays online and reusable. We drop it regardless of
-        # confirmation: the runner is dead either way, and the spend clock must stop banking now.
-        _drain_shape_tasks(app, DEFAULT_SHAPE)  # the released block's poll handles are now dead
-        compute = app.shapes.pop(DEFAULT_SHAPE, None)
-        if compute is not None:
-            _bank_warm_interval(compute, app)  # stop the spend clock for the released block
-            if compute.runner is not None:
-                compute.runner.close()
+    dropped = await _drop_compute_shape(app)
     if confirmed:
         return EndpointStatus(
             status="down",  # cancel CONFIRMED: no billed block running (manager stays online for reuse)
             block_state="cold",
             endpoint_id=eid,
-            session_spend=_total_session_spend(app),
+            session_spend=_total_session_spend(app) + dropped,
             notice=f"compute block released over AMQP ({detail}); the login endpoint stays online for "
             "reuse (reconnecting is zero-SSH).",
         )
@@ -1326,7 +1458,7 @@ async def _stop_endpoint(app: AppCtx) -> EndpointStatus:
         status="draining",
         block_state="cold",
         endpoint_id=eid,
-        session_spend=_total_session_spend(app),
+        session_spend=_total_session_spend(app) + dropped,
         notice=f"{detail}. Spend is NOT confirmed stopped — the login release channel was cold. "
         "idle-release (~10 min, min_blocks=0) is the backstop; call stop_endpoint again in a few "
         "seconds (the channel is warming) to confirm the cancel. The login endpoint stays online for reuse.",
@@ -1350,6 +1482,30 @@ async def _teardown_endpoint(app: AppCtx) -> EndpointStatus:
     eid = app.state.endpoint_id
     if eid is None:
         return EndpointStatus(status="down", block_state="cold", notice="no endpoint was up")
+    if not _has_login_shape(app):
+        # A facility MEP is NOT ours to destroy (and there's no release channel): detach — drop our
+        # shapes/state so nothing of ours lingers — and say exactly that. The facility's endpoint
+        # stays online; a block we left is reclaimed by its idle-release (see _stop_mep).
+        dropped = await _drop_compute_shape(app)
+        async with app.lock:
+            app.tasks.clear()
+            for rt in app.shapes.values():
+                if rt.runner is not None:
+                    rt.runner.close()
+            app.shapes.clear()
+            app.state = EndpointState()
+        return EndpointStatus(
+            status="down",  # OUR state is fully cleared (nothing of ours remains); the facility's endpoint is untouched
+            block_state="cold",
+            endpoint_id=eid,
+            session_spend=_total_session_spend(app) + dropped,
+            notice=(
+                "detached from the facility's multi-user endpoint (nothing of ours to tear down — the "
+                "facility runs it). Any block still draining is reclaimed by the facility's idle-release; "
+                "it cannot be cancelled from here. Do NOT call run_shell now (it would re-attach); "
+                "connect_facility re-attaches with zero SSH."
+            ),
+        )
     await _release_blocks_over_login(app, eid)  # halt spend first (a confirmed stop is stop_endpoint's job)
     notice = "endpoint fully torn down (block released; manager gce-stopped + deleted)"
     teardown = getattr(app.facility, "teardown", None)
@@ -1388,6 +1544,13 @@ async def teardown_endpoint(ctx: Context) -> EndpointStatus:
 async def _login_shell(app: AppCtx, command: str) -> LoginShellResult:
     # No lock: read-only login-node command, independent of the provision/runner state machine.
     login_exec = getattr(app.facility, "login_exec", None)
+    if login_exec is None and not _has_login_shape(app):
+        return LoginShellResult(
+            exit_code=1,
+            notice="This facility is a compute-only multi-user endpoint: there is no SSH and no login "
+            "node to shell into (the facility maps your Globus identity to a local account over "
+            "AMQP). Use run_shell(shape='compute') — the block stays warm between calls.",
+        )
     if login_exec is None:
         return LoginShellResult(
             exit_code=1,
@@ -1439,17 +1602,20 @@ def _cold_outcome(block: str, canary: CanaryResult | None = None) -> ShellOutcom
     )
 
 
-def _needs_confirmation_outcome() -> ShellOutcome:
+def _needs_confirmation_outcome(app: AppCtx | None = None) -> ShellOutcome:
     """A billed shape whose spend wasn't acknowledged: the command is NOT dispatched and no
     block is started. The agent must run the budget gate and confirm via ensure_endpoint_up."""
+    if app is not None and not _has_login_shape(app):
+        tail = ("this facility is compute-only (no free login shape). Confirm with the user and call "
+                "ensure_endpoint_up(confirm_spend=True) before running work.")
+    else:
+        tail = ("Surface the allocation balance (run_shell('mybalance', shape='login')) and call "
+                "ensure_endpoint_up(confirm_spend=True) before running work — or use shape='login' "
+                "for free login-node work.")
     return ShellOutcome(
         phase="needs_confirmation",
         block_state="cold",
-        notice=(
-            "scheduler compute shape: spend not confirmed, so nothing ran. Surface the allocation "
-            "balance (run_shell('mybalance', shape='login')) and call ensure_endpoint_up(confirm_spend=True) "
-            "before running work — or use shape='login' for free login-node work."
-        ),
+        notice="scheduler compute shape: spend not confirmed, so nothing ran. " + tail,
     )
 
 
@@ -1546,9 +1712,15 @@ def _resolve_task(app: AppCtx, task_id: str) -> ShellOutcome | None:
     return _with_spend(app, out)
 
 
+def _shape_reject_outcome(notice: str) -> ShellOutcome:
+    return ShellOutcome(phase="failed", block_state="cold", exit_code=None, notice=notice)
+
+
 async def _run_shell(
     app: AppCtx, command: str, session_id: str = "default", shape: str = DEFAULT_SHAPE
 ) -> ShellOutcome:
+    if reject := _shape_reject(app, shape):
+        return _shape_reject_outcome(reject)
     session = Session(session_id, app.scratch_root)  # validates session_id before provisioning
     busy = None
     async with app.lock:  # provision + bind the runner atomically (no race with a concurrent stop)
@@ -1557,7 +1729,7 @@ async def _run_shell(
         if not_warm is None:
             busy = _busy_session(app, shape, session_id)
     if not_warm == "needs_confirmation":  # billed shape, spend not acknowledged -> don't dispatch
-        return _needs_confirmation_outcome()
+        return _needs_confirmation_outcome(app)
     if not_warm is not None:
         return _cold_outcome(not_warm, _shape_runtime(app, shape).last_canary)
     if busy is not None:  # a live task owns this session's cwd/env -> don't dispatch a second command
@@ -1584,6 +1756,8 @@ async def _run_shell(
 async def _reset_session(
     app: AppCtx, session_id: str = "default", shape: str = DEFAULT_SHAPE
 ) -> ShellOutcome:
+    if reject := _shape_reject(app, shape):
+        return _shape_reject_outcome(reject)
     session = Session(session_id, app.scratch_root)  # validates session_id before provisioning
     busy = None
     async with app.lock:
@@ -1592,7 +1766,7 @@ async def _reset_session(
         if not_warm is None:
             busy = _busy_session(app, shape, session_id)
     if not_warm == "needs_confirmation":  # billed shape, spend not acknowledged -> don't dispatch
-        return _needs_confirmation_outcome()
+        return _needs_confirmation_outcome(app)
     if not_warm is not None:
         return _cold_outcome(not_warm, _shape_runtime(app, shape).last_canary)
     if busy is not None:  # don't clear a session's cwd/env while a task is still using it
