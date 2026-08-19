@@ -29,12 +29,21 @@ class MEPFacility:
       aren't authorized for — degrades to ``True`` rather than falsely stranding us as 'provisioning'.
     """
 
+    # Capabilities the server reads via getattr (the same style as `bootstrap`/`teardown`/
+    # `scratch_root` on other facilities). No login shape exists on a MEP, and the server DERIVES the
+    # rest from that one fact: no login shape ⇒ no scancel-over-login release channel ⇒ stop is
+    # draining-only, teardown is a no-op, and every shape is billed.
+    supported_shapes: tuple[str, ...] = ("compute",)
+
     def __init__(
         self,
         endpoint_id: str,
         name: str,
         user_opts: dict,
         *,
+        scratch_root: str = "$HOME/.hpc-bridge",
+        account_required: bool = False,
+        max_idletime_s: int | None = None,
         client_factory=None,
     ) -> None:
         self.endpoint_id = endpoint_id
@@ -43,8 +52,43 @@ class MEPFacility:
         # passed through verbatim — a MEP runs it as the *mapped* local user, so it must be shell-
         # resolvable there (``$HOME``/``$USER``), never client-side ``{user}``/``{venv}`` templating,
         # which we can't resolve (the local account is the facility's identity-mapping secret).
-        self._user_opts = dict(user_opts)
+        # Empty/None values are dropped: the manager json.dumps's every string, so an ``account: ""``
+        # arrives as the two-char string ``""`` — truthy in the template — and sbatch rejects an
+        # empty --account.
+        self._user_opts = {k: v for k, v in user_opts.items() if v not in (None, "")}
+        # Session-shell root: worker-side form ($HOME/…), expanded by the mapped user's shell.
+        self.scratch_root = scratch_root
+        self.account_required = account_required
+        self.max_idletime_s = max_idletime_s  # the FACILITY's idle-release (its template), if known
         self._client_factory = client_factory or self._default_client
+
+    @classmethod
+    def from_entry(cls, entry, *, client_factory=None) -> "MEPFacility":
+        """Build from a catalog entry that carries `compute_mep_uuid`.
+
+        The entry's `compute`/`defaults` split maps straight onto the MEP's schema: pinned
+        invariants (`interface`, `env_setup` → `worker_init`) + per-run tunables (`defaults.*`,
+        including `init_blocks`, the warm-block knob). `account` is NOT seeded here — it is per-user
+        (ensure_endpoint_up(account=…)); `compute: True` is added by shape_config('compute')."""
+        c, d = entry.compute, entry.defaults
+        opts = {
+            "interface": c.interface,
+            "worker_init": c.env_setup,
+            "partition": d.partition,
+            "walltime": d.walltime,
+            "max_workers_per_node": d.max_workers_per_node,
+            "nodes_per_block": d.nodes_per_block,
+            "init_blocks": d.init_blocks,
+            "max_blocks": d.max_blocks,
+        }
+        return cls(
+            endpoint_id=entry.compute_mep_uuid,
+            name=c.endpoint_name or entry.id,
+            user_opts=opts,
+            scratch_root=c.scratch_root,
+            account_required=entry.account_required,
+            client_factory=client_factory,
+        )
 
     @staticmethod
     def _default_client():

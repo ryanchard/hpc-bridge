@@ -79,6 +79,10 @@ class CatalogEntry(BaseModel):
     auth_method: Literal["ssh-key", "mfa-otp", "sfapi"] = "ssh-key"  # only ssh-key wired in v1
 
     allocation: Allocation | None = None  # a facility may have no auto-listable allocation tool
+    # Whether a scheduler block needs an --account to charge. False for an unmetered machine whose
+    # scheduler doesn't enforce accounting (e.g. the lab cluster) — then the agent must NOT be sent
+    # hunting for an allocation; it may confirm spend and proceed without one.
+    account_required: bool = True
     compute: Compute
     defaults: Defaults
 

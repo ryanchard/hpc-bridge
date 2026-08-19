@@ -169,26 +169,41 @@ def _slurm_facility(profile, *, alias: str, user: str) -> Facility:
 
 
 def _unsupported_entry_reason(entry) -> str | None:
-    """Why this catalog entry can't drive a stand-up yet (v1: SSH-bootstrap Slurm/PBS only), or None."""
+    """Why this catalog entry can't drive a stand-up, or None.
+
+    A `compute_mep_uuid` entry is a facility-run multi-user endpoint: consumed with zero SSH, and
+    with NO login shape — so an allocation LISTING (which runs over the free login node) has no
+    channel on it. Such an entry must omit `allocation`; the account (if any) is supplied directly."""
     if entry.compute_mep_uuid:
-        return (
-            "entry has a compute_mep_uuid (BYO multi-user endpoint); catalog-driven MEP dispatch "
-            "is not wired yet — use HPC_BRIDGE_ENDPOINT_ID"
-        )
+        if entry.allocation is not None:
+            return (
+                "a multi-user-endpoint entry cannot list allocations (no login-node channel on a "
+                "MEP) — drop `allocation` and let ensure_endpoint_up(account=…) take the account"
+            )
+        return None
     if entry.compute.scheduler not in ("slurm", "pbs"):
         return f"scheduler {entry.compute.scheduler!r} not supported yet (slurm/pbs only)"
     return None
 
 
 def _facility_from_entry(entry, *, account: str, pinned_host: str | None = None) -> Facility:
-    """Build a SlurmFacility from a catalog entry + per-user runtime values — shared by the startup
+    """Build the facility for a catalog entry + per-user runtime values — shared by the startup
     path (make_facility) and the runtime path (connect_facility). `account` may be empty for the
     agentic flow; ensure_endpoint_up(account=…) overrides it per scheduler block.
+
+    A `compute_mep_uuid` entry builds a **MEPFacility** (zero SSH: no login name, no key, no host —
+    the facility's identity mapping is the access) and MEP wins if an entry somehow carries both
+    reaches. Otherwise a SlurmFacility over SSH.
 
     `pinned_host` overrides the entry's `ssh_host` and is passed ONLY on the env-pinned startup path
     (HPC_BRIDGE_MACHINE + HPC_BRIDGE_SSH_HOST). The agentic connect path leaves it None so the BOUND
     facility's own `ssh_host` is authoritative — a process-wide env must never silently redirect an
     agent-chosen facility to a different host (the "globus1 is Aurora" trap, [#35])."""
+    if entry.compute_mep_uuid:
+        from .facility.mep import MEPFacility
+
+        return MEPFacility.from_entry(entry)
+
     from .facility.remote import profile_from_catalog_entry
 
     alias = pinned_host or entry.ssh_host
@@ -215,6 +230,20 @@ async def _catalog_facility(machine: str) -> Facility:
     reason = _unsupported_entry_reason(entry)
     if reason:
         raise RuntimeError(f"{machine}: {reason}")
+    if entry.compute_mep_uuid:
+        # A MEP entry IS the endpoint: a stray HPC_BRIDGE_ENDPOINT_ID (the BYO-UUID hatch this entry
+        # supersedes) would otherwise seed app.state and silently win over the entry's UUID while
+        # the entry's UEC defaults were applied to it. Refuse the ambiguity rather than guess.
+        env_eid = _env_endpoint_id()
+        if env_eid and env_eid != entry.compute_mep_uuid:
+            raise RuntimeError(
+                f"{machine}: HPC_BRIDGE_ENDPOINT_ID={env_eid} conflicts with the entry's "
+                f"compute_mep_uuid={entry.compute_mep_uuid}; unset it (the entry is the endpoint)"
+            )
+        account = os.environ.get("HPC_BRIDGE_ACCOUNT", "").strip()
+        if entry.account_required and not account:
+            account = _require_env("HPC_BRIDGE_ACCOUNT")  # raises with the standard message
+        return _facility_from_entry(entry, account=account)
     # Startup pin only: HPC_BRIDGE_SSH_HOST may override the catalog's canonical ssh_host (your own
     # alias / a login node, or the FQDN the container needs). The agentic connect path does NOT (#35).
     return _facility_from_entry(
