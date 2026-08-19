@@ -11,9 +11,11 @@ teardown between. Phase 1 stands the endpoint up FRESH; phase 2's cold server mu
 and reattach. Both phases run on the same container/cluster, so the endpoint persists between them;
 the harness tears down once, after phase 2.
 
-STATUS: expected GREEN once #20's `reused` signal is live (it is) — the spec is that phase 1 reports
-`reused=False` (genuine fresh bootstrap) and phase 2 reports `reused=True` (reattached). Login-shape
-only, no billed block: ~6 min for the pair.
+STATUS: GREEN with #20's `reused` signal live — the spec is that phase 1 reports `reused=False`
+(genuine fresh bootstrap) and phase 2 reports `reused=True` (reattached). Graded per phase via
+`ToolCall.phase` (see `reuse_across_restart`); phase 1's own first up-connect reading `reused=True` is
+the #39 registration-lag retry, tolerated there and reported by `first_details_connect_succeeds`.
+Login-shape only, no billed block: ~6 min for the pair.
 """
 from invariants import Result, Trace, _UP_PHASES
 
@@ -46,33 +48,48 @@ TAGS = ["reuse", "zero-ssh", "inter-agent", "chain"]
 INTERPHASE_DELAY_S = 30  # let phase 1's endpoint register 'online' before phase 2 tries to reattach
 
 
+def _phase_of(c) -> str:
+    return str((c.result or {}).get("phase"))
+
+
 def reuse_across_restart(t: Trace) -> Result:
-    """The chain spec, over the combined two-phase trace (phase 2's calls come LAST): a fresh
-    bring-up happened THIS run (some connect is `reused=False`) AND the last successful connect —
-    phase 2's cold server — REATTACHED (`reused=True`).
+    """The chain spec, keyed on `ToolCall.phase` (run.py `_combine` stamps each session's calls;
+    phase 0 = the bring-up session, phase 1 = the restarted one):
 
-    We check "some connect was fresh" rather than "the FIRST up-phase connect was fresh": a fresh
-    bootstrap can surface as a `proposed`/`failed` connect (registration lag) followed by connects
-    that already read `reused=True` (find_online located the just-started endpoint). Anchoring on
-    the first up-phase connect is therefore a false negative — seen live (run 1783608805: phase-1's
-    first up-phase connect was already `reused=True`, yet phase 2 genuinely reattached). Per-run
-    unique facility ids + TEARDOWN=delete already rule out a leftover endpoint, so a `reused=False`
-    connect anywhere is sufficient proof the endpoint was built by this chain.
+    - phase 1 BUILT the endpoint: some phase-1 connect is `reused=False` (a genuine fresh bring-up)
+      and some phase-1 connect reached the endpoint (an `_UP_PHASES` result);
+    - phase 2 REATTACHED CLEANLY: its FIRST connect that reaches the endpoint reads `reused=True`
+      (the FIELD — a "reuse" substring in the notice is not evidence), with NO non-up connect
+      (`failed` / `proposed_facility_details` / `needs_facility_details` …) before it within phase
+      2 — a cold server that re-probes or trips #39 before finding the endpoint did not reattach.
 
-    KNOWN GAP: the combined trace has no phase boundary, so a phase-2 that runs clean but never
-    connects (leaving phase-1's chatty reuse as the last connect) could slip through; the completion
-    gate catches a phase-2 *crash*, and phase-index attribution is the follow-up hardening."""
-    connects = t.named("connect_facility")
-    ups = [(i, c) for i, c in connects if str((c.result or {}).get("phase")) in _UP_PHASES]
-    if len(ups) < 2:
+    Phase 1 is judged loosely on purpose: its first UP-phase connect routinely ALREADY reads
+    `reused=True` — issue #39's registration-lag race fails the first `connect(details=…)` and the
+    retry finds the just-registered endpoint online — so "first up-connect was fresh" is a false
+    negative (seen live, run 1783608805). `reused=False` on the probe/failed connect is sufficient
+    proof the endpoint was built by this chain (per-run unique facility ids + TEARDOWN=delete rule
+    out a leftover). Phase 2 gets the strict form: the reattach must be the first thing that works.
+    Pre-phase-attribution this grader keyed on the LAST connect, which passed on phase 1's #39 retry
+    alone even when phase 2 never connected (coverage audit)."""
+    if t.n_phases < 2:
         return Result("reuse_across_restart", False,
-                      f"needs a successful connect in each phase; saw {len(ups)}")
-    last = ups[-1][1].result or {}
-    reattached = bool(last.get("reused")) or "reus" in str(last.get("notice", "")).lower()
-    built_fresh = any(not bool((c.result or {}).get("reused")) for _, c in connects)
-    ok = reattached and built_fresh
-    detail = ("ok: fresh bring-up, then reattached across the restart" if ok else
-              f"reattached={reattached} (want True), built_fresh={built_fresh} (want True)")
+                      f"needs a two-phase chain trace; saw {t.n_phases} phase(s)")
+    p1 = t.named("connect_facility", phase=0)
+    built_fresh = any(not bool((c.result or {}).get("reused")) for _, c in p1)
+    p1_up = any(_phase_of(c) in _UP_PHASES for _, c in p1)
+    p2 = t.named("connect_facility", phase=1)
+    p2_ups = [(i, c) for i, c in p2 if _phase_of(c) in _UP_PHASES]
+    if not p2_ups:
+        return Result("reuse_across_restart", False,
+                      f"phase 2 never reached the endpoint ({len(p2)} connect(s), none up-phase)")
+    first_i, first = p2_ups[0]
+    reattached = bool((first.result or {}).get("reused"))
+    dirty = [(i, _phase_of(c)) for i, c in p2 if i < first_i]   # non-up connects before the reattach
+    ok = built_fresh and p1_up and reattached and not dirty
+    detail = ("ok: phase 1 built fresh, phase 2's first connect reattached cleanly" if ok else
+              f"built_fresh={built_fresh} p1_up={p1_up} (want True); phase-2 first up-connect "
+              f"(call {first_i}) reused={reattached} (want True); pre-reattach connects in phase 2: "
+              f"{dirty} (want none)")
     return Result("reuse_across_restart", ok, detail)
 
 

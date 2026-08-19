@@ -50,8 +50,15 @@ def _endpoint_name(facility: str) -> str:
 def _combine(results: list[RunResult]) -> RunResult:
     """Merge a chain's per-phase RunResults into one for grading: concatenated calls / messages /
     dialogue, and a `final` that surfaces the FIRST errored phase — so an early-phase failure
-    can't hide behind a healthy last phase's result."""
-    calls = [c for r in results for c in r.trace.calls]
+    can't hide behind a healthy last phase's result. Each call is stamped with its 0-based
+    phase index (`ToolCall.phase`) so chain graders can key on "phase 2's first connect" rather
+    than infer the boundary from call order (`trace_adapter.trace_from_bundle` recovers the same
+    stamp offline from the per-session `init` messages)."""
+    calls = []
+    for k, r in enumerate(results):
+        for c in r.trace.calls:
+            c.phase = k
+            calls.append(c)
     messages = [m for r in results for m in r.messages]
     dialogue = [d for r in results for d in (r.dialogue or [])]
     errored = [r for r in results if r.final is None or getattr(r.final, "is_error", False)]

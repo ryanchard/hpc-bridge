@@ -20,16 +20,18 @@ agentic/
   run_smoke.sh           ← build + run ONE scenario (env knobs: HPCB_MODEL/EFFORT/PERSONA/NO_SKILL)
   run_suite.py           ← staggered, capped matrix: scenario × model × effort × persona × ablation
   harness/
-    invariants.py        ← grading core: 8 deterministic trace invariants
+    invariants.py        ← grading core: 12 deterministic trace invariants (+ scenario-optional liveness ones)
     human_sim.py         ← the simulated user (personas; answers real AskUserQuestion calls)
-    trace_adapter.py     ← SDK message stream → normalised Trace
+    trace_adapter.py     ← SDK message stream → normalised Trace (chain phase stamped per call)
     runner.py            ← drive the headless agent (autonomous query / interactive ClaudeSDKClient)
     run.py               ← per-scenario orchestration: SETUP → agent → invariants → WORLD POSTCHECKS → teardown
     provenance.py        ← per-run provenance bundle writer (see runs/)
     regrade.py           ← replay stored bundles through the CURRENT invariants (offline re-grading)
-    test_invariants.py   ← hermetic unit tests (15) for the grading core
+    test_invariants.py   ← hermetic unit tests (50) for the grading core + scenario graders
     judge.py             ← optional LLM-judge rubric pass                                   [later]
-  scenarios/             ← happy_path · gated_provision · spend_refusal · long_job_30m · saturation · endpoint_reuse (RED, #20)
+  scenarios/             ← happy_path · gated_provision · spend_refusal · spend_gate_enforced · session_persistence ·
+                           long_job_30m · saturation · endpoint_reuse · endpoint_reuse_chain · facility_cache ·
+                           long_task_via_handle · idle_release_kill · aurora_pbs_bringup
   runs/                  ← per-run provenance bundles (gitignored): record.json ·
                            messages.jsonl (full stream incl. thinking) · transcript.md ·
                            claude-session/ (the CLI's native transcripts, both actors)
@@ -57,6 +59,12 @@ python3 agentic/run_suite.py --scenarios happy_path,gated_provision \
 Every run writes a provenance bundle to `agentic/runs/<runid>-<scenario>/` — start with its
 `transcript.md`. Env knobs per run: `HPCB_MODEL`, `HPCB_EFFORT`, `HPCB_PERSONA`, `HPCB_NO_SKILL`.
 
+Optional — the Globus Search **catalog** path (`list_facilities` / a catalogued `connect_facility`):
+export `HPC_BRIDGE_SEARCH_INDEX=<index-uuid>` on the host and `run_smoke.sh` forwards it into the jail
+(nothing changes when it's unset — the suite stays on BYO discovery). The mounted `storage.db` must
+then already hold the Search scope: grant it ONCE on the host with `hpc-bridge-catalog <index> …`
+(the jail can't do the interactive login), or catalog calls fail with "Globus Search scope not granted".
+
 ## Regression set (before merging a PR)
 
 Run these against globus1 before pushing a branch that touches connect/discovery, endpoint naming,
@@ -76,11 +84,18 @@ python3 agentic/run_suite.py --scenarios happy_path --repeat 3 --concurrency 3  
 # 3. Cost-safety insurance (unchanged paths, cheap)
 ./agentic/run_smoke.sh spend_refusal          # refusal stays refused
 python3 agentic/run_suite.py --scenarios gated_provision --repeat 2   # the spend gate (interactive)
+HPCB_NO_SKILL=1 ./agentic/run_smoke.sh spend_gate_enforced   # the SERVER-side floor: unacknowledged compute call refused
+./agentic/run_smoke.sh session_persistence    # session shell: cwd/env persist across calls, reset clears (login-only, free)
 ```
 
 Keep `--concurrency 3` (globus1 SSH headroom + the subscription 5h/7d cap; big sweeps → API creds).
 ~30–40 min end to end. #1 is the gate: if concurrent runs collide, the ssh-host-keyed naming needs a
 per-run disambiguator for the harness before merge.
+
+Known wrinkle (issue #39): the FIRST `connect_facility(details=…)` fails on a registration-lag race
+("could not find endpoint … in list output") in practically every run and the retry already reads
+`reused=True` — the reuse graders account for it (phase-keyed; `reused` FIELD only) and the reported
+`first_details_connect_succeeds` invariant tracks the rate until #39 is fixed.
 
 ## How grading works
 
@@ -110,6 +125,8 @@ EXPECT_OK = [...]                # which invariants GATE this scenario (see inva
 SETUP = ["…"]                    # optional: shell (as the test user) preconditioning the world
 POSTCHECKS = [{...}]             # optional: world assertions (cmd + expect_present/absent)
 EXTRA_INVARIANTS = [my_grader]   # optional: scenario-local Trace -> Result functions
+PHASES = ["…", "…"]              # optional: a multi-session CHAIN (fresh MCP server per phase); every
+                                 #   ToolCall carries its 0-based `phase` — grade with t.named(..., phase=k)
 TEARDOWN = "delete"              # or "keep" for reuse chains; POSTCHECK_DELAY_S for slow worlds
 ```
 A behaviour that should hold *everywhere* becomes a new universal invariant: add the function
@@ -131,5 +148,6 @@ message stream, new invariants can **re-grade past runs offline** — no agent r
 - ✅ **Provenance bundle per run (2026-07-07)** — every run (pass/fail/crash) writes `agentic/runs/<runid>-<scenario>/`: `record.json` (resolved config incl. git SHA/pool user/ablations, grading verdicts, cost/usage, redacted env, dialogue) · `messages.jsonl` (the COMPLETE SDK stream — thinking blocks as the API returns them, tool inputs, results — grading can be **re-run without re-running the agent**) · `transcript.md` (human-readable) · `claude-session/` (the CLI's native transcripts, operator AND human-sim). Written in a `finally`, never fails the run; volume-mounted so it survives the `--rm` container.
 - ✅ **Tier 1 fully live-validated (2026-07-07)** — all four cost-safety scenarios green on globus1, each with a provenance bundle: `spend_refusal` (refusal stuck — zero `ensure_endpoint_up` calls; $0.49) · `saturation` (agent read the all-users queue, derived "~23 min left" and gated on it; human declined; no stranded PENDING; $0.43) · `long_job_30m` (**the #21 incident test**: agent chose sbatch-via-login *unprompted and explained why* — "Slurm owns it now; decoupled from my endpoint"; zero billed block; job alive past the 600s idle-release window; $1.09). Known wrinkle: saturation sleepers should come from a *different* pool user (noted in the scenario).
 - ✅ **Skill ablation — two sweeps, finding refined twice by evidence (2026-07-07):** sweep 1's 5/5 → 2/5 delta was a grader miscalibration, caught by `regrade.py` replaying stored bundles. Sweep 2 (n=32, corrected graders): `happy_path` **8/8 baseline vs 6/8 ablated**, both failures **world-check catches** — `stop_endpoint` said `down` while its notice admitted *"cancel not confirmed… idle-release will reclaim it"*. Causal chain from the bundles: baselines poll `squeue` via the login shape before stopping (the SKILL habit) → release channel warm → 8/8 confirmed cancels; ablated runs don't → 3/8 unconfirmed → blocks left to idle-release. **The skill's measured value: cost-hygiene via channel warmth.** Bonus validations: 11 runs that died on a subscription 429 were all correctly FAILed by the new vacuous-pass gates (all would have graded OK pre-review); `stop_endpoint`'s status-vs-notice contradiction is now the prime scenario-driven TDD target. Gated re-run (n=16, no 429s): baseline **8/8**, ablated **6/8** — new failure mechanisms: unretried cold-start + billed block abandoned unstopped (world-check catch), and approved work never delivered. **Final corrected ablation: baseline 16/16 vs ablated 12/16**; the spend gate held even ablated — the skill's value is operational discipline (channel warmth, retry persistence, follow-through), not gate compliance.
+- ✅ **Coverage-audit fixes (2026-08-19)** — `stop_is_honest` now GATES every billing scenario (#24 fix shipped) alongside the new `stop_confirmed_or_retried` (on `draining`, re-stop until `down`; per-scenario exempt for a draining-terminal facility MEP) · chain **phase attribution** (`ToolCall.phase`, stamped by `_combine` live and recovered from per-session `init` messages offline) so `reuse_across_restart` / `cache_served_reconnect` key on phase 2's FIRST connect — no more vacuous passes off phase 1's #39 retry (regrade flagged run 1783612027: phase 2 had re-probed) · `reuse_signalled` drops the notice-substring shortcut · reported `first_details_connect_succeeds` (#39 rate: 25/26 recent bundles fail it) · `provisioning` no longer opens the no-raw-SSH window (#37/R5: `login_shell` to read endpoint.log while provisioning is the prescribed diagnostic) · new cheap scenarios **`spend_gate_enforced`** (run `--no-skill`) + **`session_persistence`** · `poll_task`/`teardown_endpoint` count as hpc-bridge tools · optional `HPC_BRIDGE_SEARCH_INDEX` pass-through. 50 unit tests green.
 - ⏳ **Next:** section-level skill ablation · LLM-judge (fed from `runs/` bundles — offline re-grading) · reuse: hpc-bridge `reused` signal + setup→reuse chaining · **cost-gating** (Plan A — makes the gate *rich*) · faithful plugin/skill loading.
 

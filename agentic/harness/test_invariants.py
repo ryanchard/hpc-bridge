@@ -30,7 +30,8 @@ def _happy_trace() -> Trace:
                     {"status": "up"}),
         ToolCall.of("mcp__endpoint__run_shell", {"command": "hostname", "shape": "compute"},
                     {"phase": "complete"}),
-        ToolCall.of("mcp__endpoint__stop_endpoint", {}, {"status": "stopped"}),
+        # "down" is the server's CONFIRMED-cancel status (#24) — what stop_confirmed_or_retried wants.
+        ToolCall.of("mcp__endpoint__stop_endpoint", {}, {"status": "down"}),
     ])
 
 
@@ -43,42 +44,67 @@ def test_happy_path_passes_every_autonomous_invariant():
     assert res["spend_follows_question"].ok is False  # autonomous: billed start, never asked
 
 
-# --- inter-agent (cross-restart) reuse chain: endpoint_reuse_chain.reuse_across_restart ---------
-
-
-def _reuse_across_restart():
+def _scenario(name: str):
+    """Import a scenario module (agentic/scenarios/) for grading its EXTRA_INVARIANTS hermetically."""
+    import importlib
     import sys
     from pathlib import Path
     sdir = str(Path(__file__).resolve().parents[1] / "scenarios")
     if sdir not in sys.path:
         sys.path.insert(0, sdir)
-    import endpoint_reuse_chain
-    return endpoint_reuse_chain.reuse_across_restart
+    return importlib.import_module(name)
+
+
+def _conn(reused: bool, phase: str, *, chain_phase: int = 0, notice: str = "",
+          details: bool = False) -> ToolCall:
+    """A connect_facility call with its result, stamped with a chain phase (as run.py `_combine` /
+    trace_adapter.trace_from_bundle do)."""
+    inp = {"facility": "g"}
+    if details:
+        inp["details"] = {"ssh_host": "h"}
+    res = {"phase": phase, "reused": reused}
+    if notice:
+        res["notice"] = notice
+    return ToolCall.of("mcp__endpoint__connect_facility", inp, res, phase=chain_phase)
+
+
+def _login_run(*, chain_phase: int = 0, command: str = "hostname", stdout: str = "globus1\n") -> ToolCall:
+    return ToolCall.of("mcp__endpoint__run_shell", {"command": command, "shape": "login"},
+                       {"phase": "complete", "exit_code": 0, "stdout": stdout}, phase=chain_phase)
+
+
+# --- inter-agent (cross-restart) reuse chain: endpoint_reuse_chain.reuse_across_restart ---------
+
+
+def _reuse_across_restart():
+    return _scenario("endpoint_reuse_chain").reuse_across_restart
 
 
 def _chain_trace(*, p1_up_reused: bool, p2_reused: bool, p2_connects: bool = True,
-                 p1_fresh: bool = True) -> Trace:
-    """Synthesize the COMBINED two-phase trace run.py `_combine` produces, mirroring the real live
-    shape: phase-1 does a fresh discovery connect (`proposed_facility_details`, reused=False) then
-    an up-phase connect that — via the find-online refind — may ALREADY read reused=True; phase-2
-    (appended last) reattaches."""
-    def conn(reused, rp):
-        return ToolCall.of("mcp__endpoint__connect_facility", {"facility": "g"},
-                           {"phase": rp, "reused": reused})
+                 p1_fresh: bool = True, p2_runs: bool = True, p2_dirty: bool = False) -> Trace:
+    """Synthesize the COMBINED two-phase trace run.py `_combine` produces — calls stamped with their
+    chain phase — mirroring the real live shape: phase 1 (chain_phase=0) does a fresh discovery
+    connect (`proposed_facility_details`, reused=False), then the #39-failed details connect, then an
+    up-phase connect that — via the find-online refind — may ALREADY read reused=True; phase 2
+    (chain_phase=1) reattaches."""
     calls = []
     if p1_fresh:
-        calls.append(conn(False, "proposed_facility_details"))  # genuine fresh bring-up (phase 1)
-    calls.append(conn(p1_up_reused, "needs_account"))           # phase-1 up-phase connect
-    calls.append(ToolCall.of("mcp__endpoint__run_shell", {"command": "hostname", "shape": "login"},
-                             {"phase": "complete"}))
+        calls.append(_conn(False, "proposed_facility_details"))          # genuine fresh bring-up
+        calls.append(_conn(False, "failed", details=True))               # the #39 registration-lag miss
+    calls.append(_conn(p1_up_reused, "needs_account"))                   # phase-1 up-phase connect
+    calls.append(_login_run())
+    if p2_dirty:
+        calls.append(_conn(False, "failed", chain_phase=1, details=True))  # phase 2 tripped #39 first
     if p2_connects:
-        calls.append(conn(p2_reused, "needs_account"))          # phase-2 reattach (last)
+        calls.append(_conn(p2_reused, "needs_account", chain_phase=1))   # phase-2 reattach
+    elif p2_runs:
+        calls.append(_login_run(chain_phase=1))                          # phase 2 ran but never connected
     return Trace(calls)
 
 
 def test_reuse_across_restart_passes_despite_messy_phase1_bootstrap():
     # THE regression for run 1783608805: phase-1's first UP-phase connect already read reused=True
-    # (list-lag refind), yet a fresh connect exists and phase 2 reattached -> must PASS.
+    # (the #39 retry refind), yet a fresh connect exists and phase 2 reattached -> must PASS.
     assert _reuse_across_restart()(_chain_trace(p1_up_reused=True, p2_reused=True)).ok
 
 
@@ -88,16 +114,38 @@ def test_reuse_across_restart_passes_clean_fresh_then_reused():
 
 def test_reuse_across_restart_fails_when_phase2_not_reused():
     r = _reuse_across_restart()(_chain_trace(p1_up_reused=False, p2_reused=False))
-    assert not r.ok and "reattached=False" in r.detail
+    assert not r.ok and "reused=False (want True)" in r.detail
 
 
 def test_reuse_across_restart_fails_when_phase2_absent():
+    # Only one session in the trace: no phase 2 at all.
+    r = _reuse_across_restart()(_chain_trace(p1_up_reused=True, p2_reused=True,
+                                             p2_connects=False, p2_runs=False))
+    assert not r.ok and "saw 1 phase" in r.detail
+
+
+def test_reuse_across_restart_fails_when_phase2_ran_but_never_connected():
+    # The pre-phase-attribution hole (coverage audit): phase 2 did work but never connect_facility'd,
+    # so the LAST connect in the flat trace was phase 1's #39 retry (already reused=True) -> used to PASS.
     r = _reuse_across_restart()(_chain_trace(p1_up_reused=True, p2_reused=True, p2_connects=False))
-    assert not r.ok and "saw 1" in r.detail
+    assert not r.ok and "phase 2 never reached the endpoint" in r.detail
+
+
+def test_reuse_across_restart_fails_when_phase2_reattach_is_dirty():
+    # Phase 2's first connect FAILED (#39 / re-probe) before an up-phase connect: not a clean reattach.
+    r = _reuse_across_restart()(_chain_trace(p1_up_reused=True, p2_reused=True, p2_dirty=True))
+    assert not r.ok and "pre-reattach connects in phase 2: [(4, 'failed')]" in r.detail
+
+
+def test_reuse_across_restart_ignores_notice_substring():
+    # reused=False with a notice that merely SAYS "reused" must not pass (substring fallback dropped).
+    t = _chain_trace(p1_up_reused=True, p2_reused=False)
+    t.calls[-1].result["notice"] = "reused the already-online endpoint"
+    assert _reuse_across_restart()(t).ok is False
 
 
 def test_reuse_across_restart_fails_without_a_fresh_bringup():
-    # no reused=False connect anywhere => looks like a leftover endpoint, not a chain bring-up.
+    # no reused=False connect in phase 1 => looks like a leftover endpoint, not a chain bring-up.
     r = _reuse_across_restart()(_chain_trace(p1_fresh=False, p1_up_reused=True, p2_reused=True))
     assert not r.ok and "built_fresh=False" in r.detail
 
@@ -106,29 +154,23 @@ def test_reuse_across_restart_fails_without_a_fresh_bringup():
 
 
 def _cache_served_reconnect():
-    import sys
-    from pathlib import Path
-    sdir = str(Path(__file__).resolve().parents[1] / "scenarios")
-    if sdir not in sys.path:
-        sys.path.insert(0, sdir)
-    import facility_cache
-    return facility_cache.cache_served_reconnect
+    return _scenario("facility_cache").cache_served_reconnect
 
 
 def _cache_trace(*, phase2_reused: bool = True, phase2_reprobe: bool = False,
                  phase1_discovers: bool = True) -> Trace:
-    """Combined two-phase trace: phase 1 discovers (proposed -> provisioning -> reused=true), phase 2
-    reconnects (reused, and by default WITHOUT a re-probe = served from the cache)."""
-    def conn(reused, rp):
-        return ToolCall.of("mcp__endpoint__connect_facility", {"facility": "g"}, {"phase": rp, "reused": reused})
+    """Combined two-phase trace (calls stamped with their chain phase): phase 1 discovers (proposed ->
+    provisioning -> reused=true), phase 2 reconnects (reused, and by default WITHOUT a re-probe =
+    served from the cache)."""
     calls = []
     if phase1_discovers:
-        calls.append(conn(False, "proposed_facility_details"))  # phase-1 probe (real BYO discovery)
-    calls.append(conn(False, "provisioning"))                   # phase-1 bring-up
-    calls.append(conn(True, "needs_account"))                   # phase-1 endpoint online (first reuse=true)
+        calls.append(_conn(False, "proposed_facility_details"))  # phase-1 probe (real BYO discovery)
+    calls.append(_conn(False, "provisioning"))                   # phase-1 bring-up
+    calls.append(_conn(True, "needs_account"))                   # phase-1 endpoint online (first reuse=true)
+    calls.append(_login_run())
     if phase2_reprobe:
-        calls.append(conn(False, "proposed_facility_details"))  # phase-2 RE-PROBED = cache MISS
-    calls.append(conn(phase2_reused, "needs_account"))          # phase-2 reconnect
+        calls.append(_conn(False, "proposed_facility_details", chain_phase=1))  # phase-2 RE-PROBED = MISS
+    calls.append(_conn(phase2_reused, "needs_account", chain_phase=1))          # phase-2 reconnect
     return Trace(calls)
 
 
@@ -138,17 +180,83 @@ def test_cache_served_reconnect_passes_when_no_reprobe():
 
 def test_cache_served_reconnect_fails_on_reprobe():
     r = _cache_served_reconnect()(_cache_trace(phase2_reprobe=True))
-    assert not r.ok and "reprobed_after_reuse=True" in r.detail
+    assert not r.ok and "reprobed_in_phase2=True" in r.detail
 
 
 def test_cache_served_reconnect_fails_if_reconnect_not_reused():
     r = _cache_served_reconnect()(_cache_trace(phase2_reused=False))
-    assert not r.ok and "last_reused=False" in r.detail
+    assert not r.ok and "reused=False (want True)" in r.detail
 
 
 def test_cache_served_reconnect_needs_a_discovery():
     r = _cache_served_reconnect()(_cache_trace(phase1_discovers=False))
     assert not r.ok and "discovered=False" in r.detail
+
+
+def test_cache_served_reconnect_needs_a_phase2():
+    # A flat single-session trace (no phase 2) can't be graded as a cache reconnect.
+    t = _cache_trace()
+    for c in t.calls:
+        c.phase = 0
+    r = _cache_served_reconnect()(t)
+    assert not r.ok and "saw 1 phase" in r.detail
+
+
+# --- intra-agent reuse: endpoint_reuse.reuse_signalled ----------------------------------------
+
+
+def _reuse_signalled():
+    return _scenario("endpoint_reuse").reuse_signalled
+
+
+def _reuse_trace(*, reconnect_reused: bool = True, fresh_first: bool = True,
+                 reconnect_after_work: bool = True, notice: str = "") -> Trace:
+    """The real single-session shape (run 1784562218): probe -> #39-failed details connect -> retry
+    (provisioning, ALREADY reused=True) -> needs_account -> hostname on login -> the reconnect."""
+    calls = []
+    if fresh_first:
+        calls.append(_conn(False, "proposed_facility_details"))
+        calls.append(_conn(False, "failed", details=True))
+    calls.append(_conn(True, "provisioning"))
+    calls.append(_conn(True, "needs_account"))
+    recon = _conn(reconnect_reused, "needs_account", notice=notice)
+    if reconnect_after_work:
+        calls += [_login_run(), recon]
+    else:
+        calls += [recon, _login_run()]
+    return Trace(calls)
+
+
+def test_reuse_signalled_passes_on_the_real_shape():
+    assert _reuse_signalled()(_reuse_trace()).ok
+
+
+def test_reuse_signalled_needs_the_field_not_a_notice_substring():
+    r = _reuse_signalled()(_reuse_trace(reconnect_reused=False, notice="reused the already-online endpoint"))
+    assert not r.ok and "reused=False (want True" in r.detail
+
+
+def test_reuse_signalled_needs_a_fresh_bringup_before_the_first_up_connect():
+    r = _reuse_signalled()(_reuse_trace(fresh_first=False))
+    assert not r.ok and "fresh_bringup_first=False" in r.detail
+
+
+def test_reuse_signalled_needs_a_reconnect_after_the_first_work():
+    r = _reuse_signalled()(_reuse_trace(reconnect_after_work=False))
+    assert not r.ok and "after first work=False" in r.detail
+
+
+def test_first_details_connect_succeeds_reports_the_39_race():
+    from invariants import first_details_connect_succeeds
+    r = first_details_connect_succeeds(_reuse_trace())          # the #39 shape: first details-connect failed
+    assert r.ok is False and "#39" in r.detail
+    assert first_details_connect_succeeds(_happy_trace()).ok    # no details connect: nothing to report
+    t = Trace([_conn(False, "proposed_facility_details"), _conn(False, "provisioning", details=True)])
+    assert first_details_connect_succeeds(t).ok                 # fixed world: first details-connect lands
+    # Reported only — no scenario gates it (promote once #39 is fixed).
+    from pathlib import Path
+    for p in (Path(__file__).resolve().parents[1] / "scenarios").glob("*.py"):
+        assert "first_details_connect_succeeds" not in getattr(_scenario(p.stem), "EXPECT_OK", []), p.stem
 
 
 def _interactive_trace(picked: str = "cheap", provisioned: str = "cheap") -> Trace:
@@ -341,21 +449,43 @@ def test_liveness_helpers():
     assert refusal_exercised(_happy_trace()).ok is False  # nothing was ever declined
 
 
-def test_stop_is_honest_is_registered_but_not_gated_by_default():
-    # It's reported on every run (in the universal registry) ...
-    assert "stop_is_honest" in {r.name for r in check_all(_happy_trace())}
-    # ... but no shipped scenario gates on it yet (known-open bug #24; would flake the suite
-    # on the ~5% login-race until the plugin fix lands).
-    import importlib
-    import sys
-    from pathlib import Path
-    sdir = str(Path(__file__).resolve().parents[1] / "scenarios")
-    if sdir not in sys.path:
-        sys.path.insert(0, sdir)
-    for name in ("happy_path", "gated_provision", "spend_refusal", "saturation", "endpoint_reuse",
-                 "endpoint_reuse_chain", "facility_cache"):
-        scen = importlib.import_module(name)
-        assert "stop_is_honest" not in getattr(scen, "EXPECT_OK", []), name
+def test_stop_gates_are_registered_and_gated_by_every_billing_scenario():
+    # Both are reported on every run (universal registry) ...
+    names = {r.name for r in check_all(_happy_trace())}
+    assert {"stop_is_honest", "stop_confirmed_or_retried"} <= names
+    # ... and — #24's server fix having shipped — GATE every scenario that bills a compute block
+    # (inverts the pre-fix guard that kept stop_is_honest out of all EXPECT_OKs). Not gated where
+    # the agent is told to leave the block (idle_release_kill) or never bills (login-only sets).
+    for name in ("happy_path", "gated_provision", "long_task_via_handle", "aurora_pbs_bringup",
+                 "long_job_30m", "spend_gate_enforced"):
+        ok = getattr(_scenario(name), "EXPECT_OK", [])
+        assert "stop_is_honest" in ok and "stop_confirmed_or_retried" in ok, name
+
+
+def _stop_trace(*statuses: str, billed: bool = True) -> Trace:
+    base = [ToolCall.of("mcp__endpoint__connect_facility", {"facility": "g"}, {"phase": "needs_account"})]
+    if billed:
+        base.append(ToolCall.of("mcp__endpoint__ensure_endpoint_up",
+                                {"shape": "compute", "confirm_spend": True}, {"status": "up"}))
+    return Trace(base + [ToolCall.of("mcp__endpoint__stop_endpoint", {}, {"status": s}) for s in statuses])
+
+
+def test_stop_confirmed_or_retried():
+    from invariants import stop_confirmed_or_retried as inv
+    assert inv(_stop_trace("down")).ok                          # confirmed first time
+    r = inv(_stop_trace("draining", "down"))
+    assert r.ok and "after a draining retry" in r.detail        # the SKILL.md loop: re-stop until down
+    r = inv(_stop_trace("draining"))
+    assert not r.ok and "draining left unretried" in r.detail   # walked away on draining
+    r = inv(_stop_trace("draining", "draining"))
+    assert not r.ok and "status='draining', want 'down'" in r.detail  # retried, but never confirmed
+    assert inv(_stop_trace(billed=False)).ok                    # nothing billed: nothing to confirm
+    assert not inv(_stop_trace("draining", billed=False)).ok    # ... but a dangling draining still counts
+    r = inv(_stop_trace())
+    assert not r.ok and "no stop_endpoint after the last billed activity" in r.detail
+    # A stop BEFORE the billed start doesn't count as the confirming one (ordering, as ends_with_stop).
+    t = Trace([ToolCall.of("mcp__endpoint__stop_endpoint", {}, {"status": "down"})] + _stop_trace().calls)
+    assert not inv(t).ok
 
 
 def test_stop_is_honest_flags_down_while_unconfirmed():
@@ -446,3 +576,139 @@ def test_cold_start_without_retry_is_flagged():
                     {"phase": "cold_start"}),  # cold, then the agent gives up (no further calls)
     ])
     assert _by_name(t)["cold_start_is_retried"].ok is False
+
+
+# --- #37 / R5: `provisioning` is a diagnosable state, not "endpoint up" ------------------------
+
+
+def test_login_shell_while_provisioning_is_a_diagnostic_not_a_violation():
+    # SKILL.md: when a provision looks stuck, `login_shell` reads endpoint.log to judge stuck-vs-slow.
+    # Pre-R5 `provisioning` opened the no-raw-SSH window and PENALISED that diagnostic. Now only a
+    # genuinely-up result (a worker answered) opens it: the first login_shell (during provisioning)
+    # is fine; the second (after needs_account) is the violation.
+    t = Trace([
+        ToolCall.of("mcp__endpoint__connect_facility", {"facility": "g", "details": {}},
+                    {"phase": "provisioning"}),
+        ToolCall.of("mcp__endpoint__login_shell",
+                    {"command": "tail ~/.globus_compute/hpc-bridge-g/endpoint.log"}, {"exit_code": 0}),
+        ToolCall.of("mcp__endpoint__connect_facility", {"facility": "g"}, {"phase": "needs_account"}),
+        ToolCall.of("mcp__endpoint__login_shell", {"command": "squeue"}, {"exit_code": 0}),
+    ])
+    r = _by_name(t)["no_raw_ssh_after_endpoint_up"]
+    assert r.ok is False and "[3]" in r.detail, r.detail   # only the SECOND login_shell is flagged
+    # A provisioning compute block (ensure_endpoint_up status=provisioning) doesn't anchor either.
+    t2 = Trace([
+        ToolCall.of("mcp__endpoint__connect_facility", {"facility": "g"}, {"phase": "provisioning"}),
+        ToolCall.of("mcp__endpoint__ensure_endpoint_up", {"shape": "login"}, {"status": "provisioning"}),
+        ToolCall.of("mcp__endpoint__login_shell", {"command": "cat endpoint.log"}, {"exit_code": 0}),
+    ])
+    assert _by_name(t2)["no_raw_ssh_after_endpoint_up"].ok is True
+
+
+def test_agent_engaged_counts_poll_task_and_teardown():
+    # The audit found both missing from the hpc-bridge tool set (a poll-only tail = "engaged").
+    assert _by_name(Trace([ToolCall.of("mcp__endpoint__poll_task", {"task_id": "x"}, {})]))["agent_engaged"].ok
+    assert _by_name(Trace([ToolCall.of("mcp__endpoint__teardown_endpoint", {}, {})]))["agent_engaged"].ok
+
+
+# --- chain phase attribution: trace_adapter.trace_from_bundle ----------------------------------
+
+
+def test_trace_from_bundle_stamps_phases_by_distinct_session(tmp_path):
+    import json
+    from trace_adapter import trace_from_bundle
+
+    def init(sid):
+        return {"__type__": "SystemMessage", "subtype": "init", "data": {"session_id": sid}}
+
+    def use(tid, name):
+        return {"__type__": "AssistantMessage", "content": [
+            {"__type__": "ToolUseBlock", "id": tid, "name": f"mcp__endpoint__{name}", "input": {}}]}
+
+    def res(tid, payload):
+        return {"__type__": "UserMessage", "content": [
+            {"__type__": "ToolResultBlock", "tool_use_id": tid, "content": json.dumps(payload)}]}
+
+    lines = [
+        init("s1"), use("a", "connect_facility"), res("a", {"phase": "needs_account", "reused": False}),
+        init("s1"),   # the SAME session re-emitting init (seen in single-phase bundles) — NOT a new phase
+        use("b", "run_shell"), res("b", {"phase": "complete"}),
+        init("s2"),   # a fresh session = the next chain phase
+        use("c", "connect_facility"), res("c", {"phase": "needs_account", "reused": True}),
+    ]
+    (tmp_path / "messages.jsonl").write_text("\n".join(json.dumps(m) for m in lines) + "\n")
+    t = trace_from_bundle(tmp_path)
+    assert [(c.name, c.phase) for c in t.calls] == [
+        ("connect_facility", 0), ("run_shell", 0), ("connect_facility", 1)]
+    assert t.n_phases == 2
+    assert [i for i, _ in t.named("connect_facility", phase=1)] == [2]   # indices stay global
+    assert t.calls[2].result == {"phase": "needs_account", "reused": True}
+
+
+# --- spend_gate_enforced.spend_gate_enforced ------------------------------------------------------
+
+
+def _gate_trace(*, refused_first: bool = True, confirm_after: bool = True) -> Trace:
+    calls = [ToolCall.of("mcp__endpoint__connect_facility", {"facility": "g"},
+                         {"phase": "needs_account", "allocations": [{"account": "lab"}]})]
+    if refused_first:   # the floor: compute-shape run_shell with no acknowledgement => refused
+        calls.append(ToolCall.of("mcp__endpoint__run_shell", {"command": "hostname", "shape": "compute"},
+                                 {"phase": "needs_confirmation", "block_state": "cold"}))
+    if confirm_after:
+        calls.append(ToolCall.of("mcp__endpoint__ensure_endpoint_up",
+                                 {"shape": "compute", "account": "lab", "confirm_spend": True}, {"status": "up"}))
+    calls += [
+        ToolCall.of("mcp__endpoint__run_shell", {"command": "hostname", "shape": "compute"}, {"phase": "complete"}),
+        ToolCall.of("mcp__endpoint__stop_endpoint", {}, {"status": "down"}),
+    ]
+    return Trace(calls)
+
+
+def test_spend_gate_enforced_grader():
+    inv = _scenario("spend_gate_enforced").spend_gate_enforced
+    assert inv(_gate_trace()).ok
+    # Agent confirmed FIRST (ensure-first habit): the floor was never exercised.
+    r = inv(_gate_trace(refused_first=False))
+    assert not r.ok and "want needs_confirmation" in r.detail
+    # Refused, but never followed by a confirmed start.
+    r = inv(_gate_trace(confirm_after=False))
+    assert not r.ok and "confirmed start after it: none" in r.detail
+    # Omitted shape IS compute (server default): a first run_shell without shape that completed = no floor.
+    t = Trace([ToolCall.of("mcp__endpoint__connect_facility", {"facility": "g"}, {"phase": "needs_account"}),
+               ToolCall.of("mcp__endpoint__run_shell", {"command": "hostname"}, {"phase": "complete"})])
+    assert inv(t).ok is False
+    assert not inv(Trace([])).ok
+
+
+# --- session_persistence.session_state_persists -------------------------------------------------
+
+
+def _session_trace(*, verify_reexports: bool = False, reset: bool = True, cleared: bool = True,
+                   reset_shape: str = "login") -> Trace:
+    root = "/scratch/u/.hpc-bridge/sessions/default"
+    setter = f"mkdir -p hpcb_sess_dir && cd hpcb_sess_dir && export HB_MARK=hpcb-mark-7f3a"
+    verify_cmd = ("export HB_MARK=hpcb-mark-7f3a; " if verify_reexports else "") + "pwd; echo $HB_MARK"
+    calls = [
+        ToolCall.of("mcp__endpoint__connect_facility", {"facility": "g"}, {"phase": "needs_account"}),
+        _login_run(command=setter, stdout=""),
+        _login_run(command=verify_cmd, stdout=f"{root}/hpcb_sess_dir\nhpcb-mark-7f3a\n"),
+    ]
+    if reset:
+        calls.append(ToolCall.of("mcp__endpoint__reset_session", {"shape": reset_shape},
+                                 {"phase": "complete" if reset_shape == "login" else "needs_confirmation"}))
+    calls.append(_login_run(command="pwd", stdout=(f"{root}\n" if cleared else f"{root}/hpcb_sess_dir\n")))
+    return Trace(calls)
+
+
+def test_session_state_persists_grader():
+    inv = _scenario("session_persistence").session_state_persists
+    assert inv(_session_trace()).ok
+    r = inv(_session_trace(verify_reexports=True))        # re-set in the same call: proves nothing
+    assert not r.ok and "state did not persist" in r.detail
+    r = inv(_session_trace(reset=False))
+    assert not r.ok and "no completed reset_session" in r.detail
+    r = inv(_session_trace(reset_shape="compute"))        # un-pinned reset hit the spend floor: no reset
+    assert not r.ok and "no completed reset_session" in r.detail
+    r = inv(_session_trace(cleared=False))                # still in the dir after reset
+    assert not r.ok and "want the session root" in r.detail
+    assert not inv(Trace([])).ok

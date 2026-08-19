@@ -107,6 +107,9 @@ EXPECT_OK = [
     "ran_on_compute",                 # work executed end-to-end on Aurora
     "no_raw_ssh_after_endpoint_up",   # stayed on the AMQP hot path (no fresh SSH mid-run)
     "ends_with_stop",                 # released the billed block after
+    "stop_is_honest",                 # #24: qdel over the login shape — no false 'down'
+    "stop_confirmed_or_retried",      # re-stop on draining until down (Aurora has a login shape,
+                                      # so draining is NOT terminal here — unlike a facility MEP)
 ]
 
 POSTCHECK_DELAY_S = 15

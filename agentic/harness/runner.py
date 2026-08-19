@@ -41,13 +41,18 @@ HPC_BRIDGE_TOOLS = (
     "connect_facility",
     "ensure_endpoint_up",
     "run_shell",
+    "poll_task",          # the #21 item-2 handle path (long_task_via_handle)
     "reset_session",
     "stop_endpoint",
+    "teardown_endpoint",  # the rare full pull-down (SKILL.md: only on an explicit ask / a real wedge)
     "login_shell",
 )
 
 # Scoped creds the harness injects into the MCP server's env. The first three are
 # required (fail fast if the container didn't inject them); the rest are optional.
+# HPC_BRIDGE_SEARCH_INDEX is the Globus Search catalog: passed through ONLY when the host sets it
+# (run_smoke.sh forwards it) — the mounted storage.db must then already hold the search scope
+# (granted once via `hpc-bridge-catalog`); unset, the suite stays on the BYO/discovery path.
 _REQUIRED_ENV = ("HPC_BRIDGE_USER_DIR", "HPC_BRIDGE_SSH_USER", "HPC_BRIDGE_SSH_KEY")
 _OPTIONAL_ENV = ("HPC_BRIDGE_SSH_HOST", "HPC_BRIDGE_MACHINE", "HPC_BRIDGE_SEARCH_INDEX")
 

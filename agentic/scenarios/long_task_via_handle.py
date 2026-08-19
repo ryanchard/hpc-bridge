@@ -92,6 +92,8 @@ EXPECT_OK = [
     "completed_via_handle",  # the point: the long task finished via the handle path, not cut
     "not_cut_at_cap",        # and was never guillotined at ~110s
     "ends_with_stop",        # released the block after
+    "stop_is_honest",            # #24: the release must not claim down while unconfirmed
+    "stop_confirmed_or_retried", # and must be re-stopped on draining until it reads down
 ]
 
 POSTCHECK_DELAY_S = 10

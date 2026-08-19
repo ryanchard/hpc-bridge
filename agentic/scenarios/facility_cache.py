@@ -47,26 +47,36 @@ TAGS = ["reuse", "cache", "local-discovery", "inter-agent", "chain"]
 INTERPHASE_DELAY_S = 30  # let phase 1's endpoint register 'online' before phase 2 reconnects
 
 
+# connect_facility phases that mean the cache did NOT serve the config: the server either probed the
+# login node again (proposed) or asked for details outright (needs_facility_details).
+_DISCOVERY_PHASES = {"proposed_facility_details", "needs_facility_details"}
+
+
 def cache_served_reconnect(t: Trace) -> Result:
-    """The cache spec, over the combined two-phase trace: phase 1 DISCOVERS the BYO facility (a
-    `proposed_facility_details` probe), and phase 2's fresh server RECONNECTS from the local cache —
-    `reused=true` with NO re-probe. The tell that the cache (not a re-probe) served phase 2: once the
-    endpoint is up (first `reused=true`), there is NO further `proposed_facility_details` — a re-probe
-    there would mean a cache miss (phase 2 re-discovered instead of reading the cache)."""
-    connects = t.named("connect_facility")
-    phases = [str((c.result or {}).get("phase")) for _, c in connects]
-    reused = [bool((c.result or {}).get("reused")) for _, c in connects]
-    discovered = "proposed_facility_details" in phases  # phase 1 probed — a real BYO discovery
-    ups = [(i, c) for i, c in connects if str((c.result or {}).get("phase")) in _UP_PHASES]
-    if not discovered or not ups:
+    """The cache spec, keyed on `ToolCall.phase` (phase 0 = the discovering session, phase 1 = the
+    restarted one): phase 1 DISCOVERS the BYO facility (a `proposed_facility_details` probe in phase
+    0), and phase 2's fresh server RECONNECTS from the local cache — its FIRST connect that reaches
+    the endpoint reads `reused=True` (the field) and NO phase-2 connect is a discovery phase. A
+    probe / details request in phase 2 means a cache MISS (it re-discovered instead of reading
+    `facilities.json`). Pre-phase-attribution this keyed on "no probe after the first reused=True"
+    over the flat trace, which phase 1's own #39 retry could satisfy without phase 2 connecting."""
+    if t.n_phases < 2:
         return Result("cache_served_reconnect", False,
-                      f"needs a discovery then a reconnect (discovered={discovered}, up-connects={len(ups)})")
-    last_reused = bool((ups[-1][1].result or {}).get("reused"))
-    first_reuse = reused.index(True) if True in reused else len(phases)
-    reprobed = any(p == "proposed_facility_details" for p in phases[first_reuse + 1:])
-    ok = last_reused and not reprobed
-    detail = ("ok: reconnect served from the local cache (no re-probe), endpoint reused" if ok else
-              f"last_reused={last_reused} (want True), reprobed_after_reuse={reprobed} (want False)")
+                      f"needs a two-phase chain trace; saw {t.n_phases} phase(s)")
+    p1 = t.named("connect_facility", phase=0)
+    discovered = any(str((c.result or {}).get("phase")) == "proposed_facility_details" for _, c in p1)
+    p2 = t.named("connect_facility", phase=1)
+    p2_ups = [(i, c) for i, c in p2 if str((c.result or {}).get("phase")) in _UP_PHASES]
+    if not discovered or not p2_ups:
+        return Result("cache_served_reconnect", False,
+                      f"needs a phase-1 discovery then a phase-2 reconnect "
+                      f"(discovered={discovered}, phase-2 up-connects={len(p2_ups)})")
+    reattached = bool((p2_ups[0][1].result or {}).get("reused"))
+    reprobed = [i for i, c in p2 if str((c.result or {}).get("phase")) in _DISCOVERY_PHASES]
+    ok = reattached and not reprobed
+    detail = ("ok: phase-2 reconnect served from the local cache (no re-probe), endpoint reused" if ok else
+              f"phase-2 first up-connect reused={reattached} (want True), "
+              f"reprobed_in_phase2={bool(reprobed)} (want False; calls {reprobed})")
     return Result("cache_served_reconnect", ok, detail)
 
 

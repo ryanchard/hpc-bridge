@@ -80,6 +80,14 @@ if [ -n "$GLOBUS_DB" ]; then
 else
   echo "WARN: HPCB_TEST_GLOBUS_DB unset — endpoint registration/dispatch will fail without a Globus login."
 fi
+# OPTIONAL: the Globus Search catalog (list_facilities / catalogued connect). Forwarded only when the
+# host sets it — nothing changes when unset (the suite stays on BYO discovery). The mounted storage.db
+# must then already carry the Search scope (grant it ONCE on the host: `hpc-bridge-catalog <index> …`),
+# or catalog calls fail with "Globus Search scope not granted" inside the jail.
+if [ -n "${HPC_BRIDGE_SEARCH_INDEX:-}" ]; then
+  echo "catalog: forwarding HPC_BRIDGE_SEARCH_INDEX=$HPC_BRIDGE_SEARCH_INDEX (storage.db needs the Search scope)"
+  ARGS+=( -e HPC_BRIDGE_SEARCH_INDEX )
+fi
 
 RUN_ARGS=("$SCENARIO")
 [ -n "${HPCB_MODEL:-}" ]   && RUN_ARGS+=(--model "$HPCB_MODEL")      # pin an Anthropic model version

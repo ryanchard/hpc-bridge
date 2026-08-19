@@ -42,6 +42,8 @@ EXPECT_OK = [
     "no_raw_ssh_after_endpoint_up",
     "no_detached_long_job_on_slurm",
     "ends_with_stop",
+    "stop_is_honest",               # #24: no false 'down' on the approved block's stop
+    "stop_confirmed_or_retried",    # re-stop on draining until down
 ]
 
 TEARDOWN = "delete"
