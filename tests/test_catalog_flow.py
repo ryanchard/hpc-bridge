@@ -280,6 +280,26 @@ async def test_connect_facility_moves_scratch_root_to_the_facility(monkeypatch):
     assert app.scratch_root == "/anvil/scratch/me/.hpc-bridge"
 
 
+def test_resolve_scratch_root_expands_home_only_for_local(monkeypatch):
+    # A remote facility's `~/…` root must stay VERBATIM — expanding it client-side would bake this
+    # machine's home (/Users/…) into a command that runs as another user on another host. The worker
+    # expands it (Session.quoted_state_dir). A LocalFacility's worker IS this machine, so expand.
+    from pathlib import Path
+
+    from hpc_bridge import server
+    from hpc_bridge.facility.local import LocalFacility
+
+    monkeypatch.delenv("HPC_BRIDGE_SCRATCH", raising=False)
+    remote = FakeFacility()  # no scratch_root attr -> the "~/.hpc-bridge" default
+    assert server._resolve_scratch_root(remote) == "~/.hpc-bridge"
+    remote.scratch_root = "$HOME/.hpc-bridge"  # a MEP-style home-relative root: untouched
+    assert server._resolve_scratch_root(remote) == "$HOME/.hpc-bridge"
+    local = LocalFacility(cli=None)
+    assert server._resolve_scratch_root(local) == str(Path.home() / ".hpc-bridge")
+    monkeypatch.setenv("HPC_BRIDGE_SCRATCH", "/explicit/root")  # env wins on either kind
+    assert server._resolve_scratch_root(remote) == "/explicit/root"
+
+
 # --- agentic fallback: connect_facility elicits an un-indexed facility (session-local) -----------
 
 

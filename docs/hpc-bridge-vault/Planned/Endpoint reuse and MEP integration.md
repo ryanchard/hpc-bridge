@@ -42,6 +42,12 @@ Because the name is stable and the manager persists on the cluster, a **fresh se
 
 **This is the V1 gate** (2026-07-20): a working zero-SSH MEP path before publishing V1. It is *also* the graceful-auth story — a facility MEP authorizes us by a **Globus consent (a browser OAuth)**, the same loopback + paste-back pattern the [Cloudflare MCP](https://developers.cloudflare.com/agent-setup/) uses (`authenticate` → auth URL → approve in browser → return to session). There is no SSH and no Duo to hand off. The two Globus-SDK unknowns that used to size this are now **verified against `globus_compute_sdk` 4.13.0** (inline below).
 
+> [!success] M1 target acquired — `globus-cluster-mep` is live on globus1 (2026-08-18)
+> The globus-cluster admin agent stood up a true multi-user, identity-mapped MEP and verified it end-to-end (dispatch → mapped to `glabs` → Slurm job on `main`). **UUID `da3df250-4013-4d69-942c-eef1568f860c`** → the `compute_mep_uuid` for a globus1 catalog entry. Full spec + gotchas: [[globus-cluster-mep-testbed]] (memory) · cluster vault Reference/08c + D-034. Three findings shape M1:
+> 1. **Consent-free here.** The Bearer token flowed straight through to submission validation — no consent-required 401. So **globus1 cannot exercise M2's `needs_consent` flow**; on this facility **M1 alone is the complete zero-SSH path**. M2 still stands for facilities that *do* gate on consent — it just needs a different testbed to validate.
+> 2. **The login shape (`compute:false` / `LocalProvider`) is REJECTED by the MEP schema.** Forked user endpoints run in `system.slice` with no memory cgroup, so an unbounded LocalProvider task on globus1 (which is *also* the Slurm controller + NFS server) is refused outright — not silently rerouted. ⟹ **`MEPFacility` is compute-only**: no free login-node exec; map any "login" op to a warm Slurm block (`init_blocks: 1` + short walltime keeps it warm for `max_idletime`=600 s, so only the first call pays the queue). This **reinforces** the draining-only stop below — one shape, one channel.
+> 3. **Version pin is the client's job.** Endpoint + workers must match; theirs is `globus-compute-endpoint==4.15.0`. The catalog entry's `env_setup` → `worker_init` must install it **unconditionally** — a `command -v … || install` guard silently keeps a wrong-version venv → cryptic `process_worker_pool.py: -P/--port` job failures. Account is **not required** (`AccountingStorageEnforce=none`); pass `""` and it's stripped.
+
 **The dispatch half is nearly built.** A Globus Compute run is already `Executor(endpoint_id, user_endpoint_config)` (`runner.py:96`) — literally what a facility MEP consumes — and the `HPC_BRIDGE_ENDPOINT_ID=<uuid>` BYO hatch (`server.py:308` `_env_endpoint_id`) already dispatches to a foreign UUID with **zero provisioning**. What's missing is everything around *choosing* and *configuring* that UUID as a first-class, discovered path.
 
 **The information we'd need to gather** (the open question the user flagged — settle this before building):
@@ -63,12 +69,12 @@ Because the name is stable and the manager persists on the cluster, a **fresh se
 
 | M | Deliverable | Unlocks |
 |---|---|---|
-| **M1** | `MEPFacility` + wire the `compute_mep_uuid` branch (kill the `_unsupported_entry_reason` reject) | catalog-driven MEP dispatch — the code's own TODO |
-| **M2** | `needs_consent` phase + the browser-OAuth (Globus consent) flow | **the graceful-auth win** — zero SSH, zero Duo |
+| **M1** | model tweaks (`ssh_host` optional, add `init_blocks`) + `MEPFacility` (**compute-only** — no login shape) + a globus1 MEP seed entry (UUID + `env_setup`/`worker_init` pinned `==4.15.0` + verified UEC defaults) **ingested into the Search index** + wire the `compute_mep_uuid` branch (kill the `_unsupported_entry_reason` reject) | catalog-driven MEP dispatch — **target live** (see the M1-target callout above) |
+| **M2** | `needs_consent` phase + the browser-OAuth (Globus consent) flow | **the graceful-auth win** — zero SSH, zero Duo. NB: globus1 is consent-free, so validate against a **consent-gating** facility |
 | **M3** | Curate the allowed `user_endpoint_config` in the entry; best-effort `get_endpoint_metadata`; lean on server-side validation | correct billed runs |
 | **M4** | Honest MEP stop: `draining`-only (idle-release); `teardown` a no-op | the semantics gap (no foreign cancel API) |
 
-**M1 + M2 is the V1 story:** a catalogued MEP facility, zero SSH, graceful consent.
+**M1 + M2 is the V1 story:** a catalogued MEP facility, zero SSH, graceful consent. On the **globus1 testbed specifically, M1 alone** already delivers zero-SSH (it's consent-free); M2 is proven against a consent-gating facility.
 
 ## Guiding invariants (must hold across both phases)
 - **Hot path stays token/AMQP — no new SSH channel** ([[Two-channel architecture]]). Reuse and MEP consumption *remove* SSH; neither adds a work channel.

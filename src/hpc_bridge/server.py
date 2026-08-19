@@ -240,6 +240,20 @@ async def make_facility() -> Facility:
     return LocalFacility(EndpointCLI(user_dir=user_dir))
 
 
+def _resolve_scratch_root(facility) -> str:
+    """The session-shell root for `facility`: explicit env wins, else the facility's shared-FS
+    scratch (e.g. Anvil $SCRATCH), else a home-relative default.
+
+    `~` is expanded CLIENT-side only for a LocalFacility, whose worker IS this machine. A remote
+    facility's root is kept verbatim: expanding `~/.hpc-bridge` here would bake the CLIENT's home
+    (e.g. /Users/me/.hpc-bridge) into a command that runs as a different user on a different host —
+    the exact bug a bound facility's scratch is meant to avoid. A `~/`/`$HOME/` root is instead
+    expanded on the WORKER by `Session.quoted_state_dir()`, which is also what lets a multi-user
+    endpoint (whose local username we can't know client-side) use a `$HOME`-relative scratch."""
+    root = os.environ.get("HPC_BRIDGE_SCRATCH") or getattr(facility, "scratch_root", None) or "~/.hpc-bridge"
+    return os.path.expanduser(root) if isinstance(facility, LocalFacility) else root
+
+
 def _make_search_client():
     """Build a Globus SearchClient that reuses the Compute SDK's GlobusApp identity.
 
@@ -330,11 +344,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppCtx]:
         )
         user_dir = Path(os.environ.get("HPC_BRIDGE_USER_DIR", str(Path.home() / ".globus_compute")))
         facility = LocalFacility(EndpointCLI(user_dir=user_dir))
-    # Session-shell root: explicit env wins, else the facility's shared-FS scratch
-    # (e.g. Anvil $SCRATCH), else a local default.
-    scratch = os.path.expanduser(
-        os.environ.get("HPC_BRIDGE_SCRATCH") or getattr(facility, "scratch_root", None) or "~/.hpc-bridge"
-    )
+    scratch = _resolve_scratch_root(facility)
     app = AppCtx(
         facility=facility,
         profile=Profile(mode=_env_mode()),  # type: ignore[arg-type]
@@ -477,11 +487,19 @@ async def _confirm_worker(app: AppCtx, shape: str, *, force: bool) -> str:
     if not force and rt.warm_confirmed_at is not None and now - rt.warm_confirmed_at < CANARY_TTL_S:
         return "warm"
     result = await runner.canary(timeout=CANARY_TIMEOUT_S)
+    rt.last_canary = result  # keep failures too: the error text is the diagnosis the caller needs
     if result.ok:
         rt.warm_confirmed_at = now
-        rt.last_canary = result
         return "warm"
     rt.warm_confirmed_at = None
+    if result.error and result.error != "timeout":
+        # A NON-timeout failure means the dispatch path itself broke — e.g. the web service rejected
+        # the submit (a user_endpoint_config the endpoint's schema refuses, a bad partition), after
+        # which the SDK Executor shuts ITSELF down and every later submit raises `Executor is
+        # shutdown`. Left alone, the runner is bricked while the caller sees "allocating nodes…"
+        # forever (the #37 dead-end in a new guise). Rebuild it on the next call; the failure text
+        # rides `last_canary` into the provisioning notice so the cause is visible, not buried.
+        rt.runner_stale = True
     return "provisioning"
 
 
@@ -745,6 +763,7 @@ async def _ensure_endpoint_up(
                 rt.provisioning_since = time.monotonic()
             provisioning_elapsed = time.monotonic() - rt.provisioning_since
             notice = f"allocating nodes on {active_partition!r}…" if active_partition else "allocating nodes…"
+            notice += _dispatch_error_suffix(rt.last_canary)
         if ignored:
             notice = f"{notice} (login shape has no partition; ignored {partition!r})"
     # OUTSIDE the lock (dispatch takes it): for a still-cold BILLED block, ask the scheduler whether
@@ -947,12 +966,8 @@ async def _connect_facility(
         app.facility = fac
         app.machine = facility
         # The session-shell root follows the bound facility — else run_shell would use the local
-        # ~/.hpc-bridge path on the remote node (mirrors lifespan's scratch resolution).
-        app.scratch_root = os.path.expanduser(
-            os.environ.get("HPC_BRIDGE_SCRATCH")
-            or getattr(fac, "scratch_root", None)
-            or "~/.hpc-bridge"
-        )
+        # ~/.hpc-bridge path on the remote node (same resolution as lifespan's).
+        app.scratch_root = _resolve_scratch_root(fac)
         try:
             block = await _provision(app, "login", force_canary=True)
         except Exception as exc:  # noqa: BLE001 - provisioning unavailable (e.g. non-Linux host)
@@ -1377,12 +1392,21 @@ async def login_shell(command: str, ctx: Context) -> LoginShellResult:
     return await _login_shell(ctx.request_context.lifespan_context, command)
 
 
-def _cold_outcome(block: str) -> ShellOutcome:
+def _dispatch_error_suffix(canary: CanaryResult | None) -> str:
+    """A suffix naming a NON-timeout canary failure, else ''. A timeout is the normal cold-start wait
+    and stays silent ('allocating nodes…'); anything else means a submit was refused or the dispatch
+    path broke — the caller must see WHY rather than keep waiting on a block that will never come."""
+    if canary is None or canary.ok or not canary.error or canary.error == "timeout":
+        return ""
+    return f" — last dispatch failed: {canary.error}. Not a queue wait: fix the config/partition and retry"
+
+
+def _cold_outcome(block: str, canary: CanaryResult | None = None) -> ShellOutcome:
     return ShellOutcome(
         phase="cold_start",
         block_state=block,
         est_wait_s=60,
-        notice="allocating nodes…",
+        notice="allocating nodes…" + _dispatch_error_suffix(canary),
     )
 
 
@@ -1506,7 +1530,7 @@ async def _run_shell(
     if not_warm == "needs_confirmation":  # billed shape, spend not acknowledged -> don't dispatch
         return _needs_confirmation_outcome()
     if not_warm is not None:
-        return _cold_outcome(not_warm)
+        return _cold_outcome(not_warm, _shape_runtime(app, shape).last_canary)
     if busy is not None:  # a live task owns this session's cwd/env -> don't dispatch a second command
         return _busy_session_outcome(busy, shape, session_id)
     wrapped = session_shell.wrap(command, session)
@@ -1541,7 +1565,7 @@ async def _reset_session(
     if not_warm == "needs_confirmation":  # billed shape, spend not acknowledged -> don't dispatch
         return _needs_confirmation_outcome()
     if not_warm is not None:
-        return _cold_outcome(not_warm)
+        return _cold_outcome(not_warm, _shape_runtime(app, shape).last_canary)
     if busy is not None:  # don't clear a session's cwd/env while a task is still using it
         return _busy_session_outcome(busy, shape, session_id)
     cmd = session_shell.reset_command(session)
