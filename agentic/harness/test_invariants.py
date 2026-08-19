@@ -712,3 +712,66 @@ def test_session_state_persists_grader():
     r = inv(_session_trace(cleared=False))                # still in the dir after reset
     assert not r.ok and "want the session root" in r.detail
     assert not inv(Trace([])).ok
+
+
+# --- mep_compute_only: the facility-MEP path (zero SSH, compute-only, draining-only stop) ---------
+
+
+def _mep_trace(*, reused=True, login_try=None, stop_status="draining", whoami="glabs", extra_stop=False) -> Trace:
+    calls = [
+        ToolCall.of("mcp__endpoint__connect_facility", {"facility": "globus1"},
+                    {"phase": "needs_account", "reused": reused, "allocations": [],
+                     "notice": "attached to the facility's multi-user endpoint … COMPUTE-ONLY … NO account is needed"}),
+    ]
+    if login_try is not None:  # the agent tried the login shape; login_try = the server's response
+        calls.append(ToolCall.of("mcp__endpoint__run_shell", {"command": "sinfo", "shape": "login"}, login_try))
+    calls += [
+        ToolCall.of("mcp__endpoint__ensure_endpoint_up",
+                    {"shape": "compute", "partition": "main", "confirm_spend": True}, {"status": "provisioning"}),
+        ToolCall.of("mcp__endpoint__ensure_endpoint_up",
+                    {"shape": "compute", "partition": "main", "confirm_spend": True}, {"status": "up"}),
+        ToolCall.of("mcp__endpoint__run_shell", {"command": "hostname; whoami", "shape": "compute"},
+                    {"phase": "complete", "exit_code": 0, "stdout": f"globus2\n{whoami}\n"}),
+        ToolCall.of("mcp__endpoint__stop_endpoint", {}, {"status": stop_status}),
+    ]
+    if extra_stop:
+        calls.append(ToolCall.of("mcp__endpoint__stop_endpoint", {}, {"status": stop_status}))
+    return Trace(calls)
+
+
+def test_mep_compute_only_gates_pass_on_the_intended_trace():
+    scen = _scenario("mep_compute_only")
+    t = _mep_trace()
+    res = {r.name: r for r in check_all(t) + [inv(t) for inv in scen.EXTRA_INVARIANTS]}
+    failed = {k: v.detail for k in scen.EXPECT_OK if not res[k].ok for v in [res[k]]}
+    assert not failed, failed
+    # stop_confirmed_or_retried is deliberately NOT gated here: draining is terminal on a MEP
+    assert "stop_confirmed_or_retried" not in scen.EXPECT_OK
+    assert res["stop_confirmed_or_retried"].ok is False  # …and it would indeed fail (no 'down' ever)
+
+
+def test_mep_compute_only_catches_the_failure_modes():
+    scen = _scenario("mep_compute_only")
+
+    def graded(t):
+        return {r.name: r for r in check_all(t) + [inv(t) for inv in scen.EXTRA_INVARIANTS]}
+
+    # 1. the server DISPATCHED the login shape at a MEP (didn't refuse) -> no_login_shape_submit fails
+    r = graded(_mep_trace(login_try={"phase": "complete", "exit_code": 0, "stdout": "x"}))
+    assert r["mep_no_login_shape_submit"].ok is False
+    # …but a structured refusal is fine
+    r = graded(_mep_trace(login_try={"phase": "failed", "notice": "shape 'login' isn't available … compute-only"}))
+    assert r["mep_no_login_shape_submit"].ok is True
+    # 2. the server lied 'down' (it cannot confirm a cancel on a MEP)
+    r = graded(_mep_trace(stop_status="down"))
+    assert r["mep_stop_is_draining_only"].ok is False
+    # 3. a fresh bootstrap happened (reused=False) — that's not the MEP path
+    r = graded(_mep_trace(reused=False))
+    assert r["mep_zero_ssh"].ok is False
+    # 4. the run executed as someone other than the mapped account
+    r = graded(_mep_trace(whoami="hpcbridge-test-03"))
+    assert r["mep_identity_mapped"].ok is False
+    # 5. any login_shell (raw SSH) is a violation, even before the attach
+    t = _mep_trace()
+    t = Trace([ToolCall.of("mcp__endpoint__login_shell", {"command": "hostname"}, {"exit_code": 0})] + list(t.calls))
+    assert graded(t)["mep_zero_ssh"].ok is False
