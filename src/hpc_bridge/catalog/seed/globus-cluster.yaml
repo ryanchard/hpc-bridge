@@ -1,0 +1,38 @@
+# src/hpc_bridge/catalog/seed/globus-cluster.yaml
+# Curated globus1 (Globus Labs cluster) config via its facility-run MULTI-USER endpoint
+# (`globus-cluster-mep`, deployed 2026-08-18; cluster vault Reference/08c, decision D-034).
+#
+# This is a MEP entry: NO ssh_host, NO allocation listing. hpc-bridge never SSHes here — the
+# facility's identity mapping (Globus identity -> local account) is the access, and every command
+# is dispatched over AMQP to the MEP UUID. There is NO login shape (the MEP schema rejects
+# LocalProvider / compute:false); low-latency comes from a warm Slurm block (init_blocks: 1).
+- id: globus1
+  facility_key: globus
+  facility: "Globus Labs cluster"
+  description: "lab DGX Spark cluster (3x GB10, ARM, Slurm `main`, 2-day walltime) via its multi-user endpoint — zero SSH"
+  display_name: "HPC-Bridge globus1 (MEP)"
+  aliases: [globus-cluster-mep, globus1-mep]
+  compute_mep_uuid: da3df250-4013-4d69-942c-eef1568f860c
+  ssh_host: null                    # MEP entry: dispatch-only, no SSH reach
+  auth_method: ssh-key              # unused on a MEP (no SSH); kept for the v1 schema literal
+  allocation: null                  # no login-node channel on a MEP -> no allocation listing
+  account_required: false           # AccountingStorageEnforce=none: --account optional (`lab` exists)
+  compute:
+    scheduler: slurm
+    interface: enP7s7               # every node; IPv4-only (no IPv6 route)
+    # worker_init runs on the compute node AS THE MAPPED USER. Must be self-contained and must pin
+    # the endpoint's exact globus-compute-endpoint version UNCONDITIONALLY: the MEP runs 4.15.0 and
+    # a version-skewed worker fails every job with a cryptic `process_worker_pool.py: -P/--port`
+    # error. (No `command -v … ||` guard — that silently keeps a wrong-version venv.)
+    env_setup: "[ -d $HOME/hpc-bridge/gce-venv ] || uv venv $HOME/hpc-bridge/gce-venv; . $HOME/hpc-bridge/gce-venv/bin/activate; uv pip install -q globus-compute-endpoint==4.15.0"
+    scratch_root: "$HOME/.hpc-bridge"   # worker-side form: we can't know the mapped local user client-side
+    endpoint_name: globus-cluster-mep
+  defaults:
+    partition: main
+    walltime: "02:00:00"            # the warm-block "login replacement": long enough to stay warm; unmetered
+    max_workers_per_node: 2
+    nodes_per_block: 1
+    init_blocks: 1                  # pre-spawn one block so the first call doesn't pay the queue
+    max_blocks: 1
+  provenance: curated
+  last_validated: 2026-08-18
