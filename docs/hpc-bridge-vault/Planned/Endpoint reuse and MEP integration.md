@@ -69,10 +69,10 @@ Because the name is stable and the manager persists on the cluster, a **fresh se
 
 | M | Deliverable | Unlocks |
 |---|---|---|
-| **M1** | model tweaks (`ssh_host` optional, add `init_blocks`) + `MEPFacility` (**compute-only** — no login shape) + a globus1 MEP seed entry (UUID + `env_setup`/`worker_init` pinned `==4.15.0` + verified UEC defaults) **ingested into the Search index** + wire the `compute_mep_uuid` branch (kill the `_unsupported_entry_reason` reject) | catalog-driven MEP dispatch — **target live** (see the M1-target callout above) |
+| **M1** | **CODE BUILT** (branch `feat/mep-m1`, 2026-08-19): model tweaks (`ssh_host` optional, `init_blocks`, `account_required`, the `_reachable` + no-client-templating validators) · `MEPFacility` (compute-only, `supported_shapes=("compute",)`) · `_facility_from_entry` dispatches on `compute_mep_uuid` first · `_shape_reject` at every shape entry point · `_connect_mep` (attach, no block, MEP-specific `needs_account`) · `_stop_mep` draining-only + teardown-as-detach (**M4 folded in**) · the `globus-cluster.yaml` seed + skill/command guidance. **Remaining:** ingest the seed into the Search index (curator runs `hpc-bridge-catalog`) + the live `mep_compute_only` agentic scenario | catalog-driven MEP dispatch — **target live** (see the M1-target callout above) |
 | **M2** | `needs_consent` phase + the browser-OAuth (Globus consent) flow | **the graceful-auth win** — zero SSH, zero Duo. NB: globus1 is consent-free, so validate against a **consent-gating** facility |
 | **M3** | Curate the allowed `user_endpoint_config` in the entry; best-effort `get_endpoint_metadata`; lean on server-side validation | correct billed runs |
-| **M4** | Honest MEP stop: `draining`-only (idle-release); `teardown` a no-op | the semantics gap (no foreign cancel API) |
+| **M4** | Honest MEP stop: `draining`-only (idle-release); `teardown` a no-op — **built as part of M1** (`_stop_mep`: draining is FINAL on a MEP, the notice names the idle-release tail and says don't re-poll; teardown detaches) | the semantics gap (no foreign cancel API) |
 
 **M1 + M2 is the V1 story:** a catalogued MEP facility, zero SSH, graceful consent. On the **globus1 testbed specifically, M1 alone** already delivers zero-SSH (it's consent-free); M2 is proven against a consent-gating facility.
 
