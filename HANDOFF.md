@@ -9,6 +9,20 @@ _For a week-long handoff to a co-dev. Design rationale lives in `docs/hpc-bridge
 
 What's left before merge: a **general code review** of the branch, a **clean agentic regression re-run** on a quiet cluster (a couple of wave-2 scenarios were only blocked by real cluster contention, not by our code), and two small **follow-ups** (below).
 
+## Building project context — start with the vault
+
+**If you're coming to this project cold — a new dev, or a fresh AI/agent session building context — read the vault first: `docs/hpc-bridge-vault/`.** It's the maintainer's map of how hpc-bridge actually works, kept in step with the code. It ships in this repo (plain markdown — you don't need Obsidian; wikilinks `[[X]]` just mean the file `X.md` somewhere in the vault).
+
+**Entry point: [`docs/hpc-bridge-vault/Home.md`](docs/hpc-bridge-vault/Home.md)** — it's the index and has its own reading order. The short path:
+
+1. **`Home.md`** — the one-paragraph "what this is" + the map of everything below.
+2. **`Happy path.md`** — the end-to-end flow (select facility → stand up/reuse endpoint → gate spend → run on a compute block), the fastest way to see the whole system at once.
+3. **Concepts**, in order: `Concepts/Two-channel architecture.md` (SSH control plane vs the AMQP hot path — the central idea) → `Concepts/Standing up the endpoint.md` → `Concepts/MEP & templated endpoints.md`. Then `Concepts/Facility catalog.md` and `Concepts/Resource shapes & the spend floor.md`.
+4. **For the current work (M1/MEP):** `Planned/Endpoint reuse and MEP integration.md` is the plan of record.
+5. **To understand a specific source file:** `Modules/` has a note per `src/hpc_bridge/` module (`Modules/server.md`, `Modules/facility-remote.md`, …) — read the module note beside the code.
+
+The vault holds the *why* (design rationale, decisions, the reading order); this `HANDOFF.md` holds the *now* (live state, how to run, what's next). Read the vault to understand the system; read on here for where it stands today. (Contributing to the vault itself? `docs/hpc-bridge-vault/Vault style guide.md` first.)
+
 ## What M1 added (the branch)
 
 Read the commits in order — each is a self-contained step with a full message:
