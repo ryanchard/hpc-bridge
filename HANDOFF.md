@@ -59,7 +59,36 @@ HPC_BRIDGE_SEARCH_INDEX=6ff95fb8-1113-42be-a811-3d1cb5a67bd5 \
 
 The pre-merge regression set + costs (~30–40 min, ~$7–10 for a full pass; subscription-billed) are in **`agentic/README.md`** — read it before a live run.
 
+## The agentic testing framework (`agentic/`)
+
+This repo ships a **live-agent regression harness** — its own test tier, separate from the unit tests. It drives a **headless Claude Code agent** against the real **globus1** cluster, once per scenario, inside a **disposable Docker container** holding only scoped (non-admin) credentials, and **grades the agent's behaviour from its tool-call trace** rather than from return values. It's what proves the *product* works end-to-end (an agent can actually drive HPC through hpc-bridge), which unit tests can't. `agentic/README.md` is the authoritative guide; this is the orientation.
+
+**Two things it is not:** it is **not** collected by `python -m pytest -q` (that's the hermetic tier), and it is **not** free — each scenario runs a real agent against a real cluster and bills your Claude subscription. Run it nightly / on demand / before merging anything that touches connect, discovery, endpoint naming, the local-discovery cache, or stop.
+
+**How one run works** (`harness/run.py`): `SETUP` (optional cluster prep) → drive the agent on the scenario's `PROMPT` (a `human_sim.py` persona answers any `AskUserQuestion`) → grade the trace against **invariants** (`harness/invariants.py`, deterministic checks like "no raw SSH after the endpoint is up", "spend was confirmed before a billed block", "stop was honest") → **world postchecks** over SSH (did a block actually get left running?) → teardown. Every run writes a **provenance bundle** to `agentic/runs/<id>/` (`record.json` with the grading, `messages.jsonl`, `transcript.md`) — gitignored, but they're how you debug a failure after the fact, and `harness/regrade.py` can replay a stored bundle through the *current* invariants offline.
+
+**A scenario** is one file in `agentic/scenarios/` declaring a `PROMPT`, a persona, `EXTRA_INVARIANTS`, `EXPECT_OK` (which invariants gate the verdict), and optional `SETUP`/`POSTCHECKS`. To add coverage you add a scenario + (usually) a grader, and a hermetic unit test for the grader in `harness/test_invariants.py` — that last part is the discipline that lets a green run be trusted. `mep_compute_only.py` is the newest and a good template for the MEP path; `happy_path.py` for the SSH path.
+
+**Running it:**
+```bash
+# Grading core — hermetic, fast, no cluster (run this whenever you touch a grader):
+python -m pytest agentic/harness/test_invariants.py -q            # 52 passed
+
+# One live scenario (needs Docker + globus1 + agentic/.env):
+./agentic/run_smoke.sh happy_path
+HPCB_NO_SKILL=1 ./agentic/run_smoke.sh spend_gate_enforced        # ablation: withhold SKILL.md
+HPC_BRIDGE_SEARCH_INDEX=6ff95fb8-1113-42be-a811-3d1cb5a67bd5 \
+  ./agentic/run_smoke.sh mep_compute_only                         # the MEP path (needs the catalog index)
+
+# A matrix / repeats, staggered + capped (globus1 SSH + subscription-rate headroom):
+python3 agentic/run_suite.py --scenarios happy_path --repeat 3 --concurrency 3
+```
+**Prerequisites** (one-time, in `agentic/.env` — gitignored): `CLAUDE_CODE_OAUTH_TOKEN` (subscription, from `claude setup-token` — **not** an API key), `HPCB_TEST_GLOBUS_DB` (a Globus `storage.db` whose identity the target facility maps — for the MEP that means `gusellerm@uchicago.edu`; check with `python agentic/whoami_globus.py`), and the scoped SSH test user/key (`HPCB_TEST_SSH_*`, default user `hpcbridge-test`). Full setup + the pre-merge regression set are in `agentic/README.md`; the design rationale is `docs/hpc-bridge-vault/Planned/Agentic testing - Plan B (runtime sandbox).md`.
+
 ## Where things are
+
+> The **vault (`docs/hpc-bridge-vault/`) is committed in THIS repo** — not a submodule, not a separate remote. It ships with the code (same `ryanchard/hpc-bridge` remote, already in PR #41). It's an Obsidian vault (has `.obsidian/`), so open that folder in Obsidian for the wikilinks/graph — but every file is plain markdown you can read anywhere.
+
 
 - `src/hpc_bridge/server.py` — the FastMCP tools + all the orchestration seams (`_connect_facility`, `_connect_mep`, `_ensure_endpoint_up`, `_run_shell`, `_stop_endpoint`/`_stop_mep`, `_shape_reject`).
 - `src/hpc_bridge/facility/` — `remote.py` (SSH `SlurmFacility`), `local.py`, **`mep.py`** (new), `base.py` (the `Facility` protocol + `EndpointHandle`).
