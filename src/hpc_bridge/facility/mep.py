@@ -63,13 +63,15 @@ class MEPFacility:
         self._client_factory = client_factory or self._default_client
 
     @classmethod
-    def from_entry(cls, entry, *, client_factory=None) -> "MEPFacility":
+    def from_entry(cls, entry, *, account: str | None = None, client_factory=None) -> "MEPFacility":
         """Build from a catalog entry that carries `compute_mep_uuid`.
 
         The entry's `compute`/`defaults` split maps straight onto the MEP's schema: pinned
         invariants (`interface`, `env_setup` → `worker_init`) + per-run tunables (`defaults.*`,
-        including `init_blocks`, the warm-block knob). `account` is NOT seeded here — it is per-user
-        (ensure_endpoint_up(account=…)); `compute: True` is added by shape_config('compute')."""
+        including `init_blocks`, the warm-block knob). `account` is seeded only when given — the
+        startup-pin path's HPC_BRIDGE_ACCOUNT (an env the server *demanded* must not be silently
+        dropped); the agentic path supplies it per-user via ensure_endpoint_up(account=…). An empty
+        one is removed by the constructor's filter. `compute: True` is added by shape_config('compute')."""
         c, d = entry.compute, entry.defaults
         opts = {
             "interface": c.interface,
@@ -80,6 +82,7 @@ class MEPFacility:
             "nodes_per_block": d.nodes_per_block,
             "init_blocks": d.init_blocks,
             "max_blocks": d.max_blocks,
+            "account": account,
         }
         return cls(
             endpoint_id=entry.compute_mep_uuid,
@@ -103,8 +106,9 @@ class MEPFacility:
 
     async def manager_online(self, endpoint_id: str) -> bool:
         try:
+            # The whole call — SDK Client construction (token-storage I/O) included — off the loop.
             status = await asyncio.to_thread(
-                self._client_factory().get_endpoint_status, endpoint_id
+                lambda: self._client_factory().get_endpoint_status(endpoint_id)
             )
         except Exception:
             # Best-effort: the MEP is administered infrastructure and the dispatch canary is the real

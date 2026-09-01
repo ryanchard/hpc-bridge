@@ -202,7 +202,7 @@ def _facility_from_entry(entry, *, account: str, pinned_host: str | None = None)
     if entry.compute_mep_uuid:
         from .facility.mep import MEPFacility
 
-        return MEPFacility.from_entry(entry)
+        return MEPFacility.from_entry(entry, account=account or None)
 
     from .facility.remote import profile_from_catalog_entry
 
@@ -497,9 +497,12 @@ def _live_task_handles(app: AppCtx, shape: str) -> list[tuple[str, TaskHandle]]:
 
 
 def _drain_shape_tasks(app: AppCtx, shape: str) -> None:
-    """Drop a shape's task handles — its block is going away (endpoint swap/stop/connect/teardown), so
-    the futures are moot. poll_task on a drained id reports it ended rather than polling a dead future."""
-    for tid in [tid for tid, h in app.tasks.items() if h.shape == shape]:
+    """Drop a shape's still-RUNNING task handles — its block is going away (endpoint swap/stop/
+    connect/teardown), so those futures are moot; poll_task on a drained id reports it ended rather
+    than polling a dead future. A FINISHED task's handle is kept: its result is already delivered and
+    stays retrievable via poll_task whatever happens to the Executor — dropping it would lose a
+    completed result the agent simply hadn't polled yet."""
+    for tid in [tid for tid, h in app.tasks.items() if h.shape == shape and not h.future.done()]:
         app.tasks.pop(tid, None)
 
 
@@ -837,6 +840,17 @@ async def _ensure_endpoint_up(
                 rt.provisioning_since = time.monotonic()
             provisioning_elapsed = time.monotonic() - rt.provisioning_since
             notice = f"allocating nodes on {active_partition!r}…" if active_partition else "allocating nodes…"
+            if not _has_login_shape(app) and rt.last_canary is None:
+                # On a MEP a canary runs on EVERY poll whose manager gate passes (and is recorded even
+                # when it fails), so "provisioning with no canary ever recorded" means the manager
+                # itself reported OFFLINE — a facility outage, not a queue wait. "allocating nodes…"
+                # would have the agent wait on a queue that doesn't exist (the #32 pilot query that
+                # normally disambiguates rides the login shape, which a MEP hasn't got).
+                notice = (
+                    f"the facility's multi-user endpoint {eid} reports OFFLINE — not a queue wait. It is run "
+                    "by the facility (not hpc-bridge), so nothing here restarts it: contact the facility / "
+                    "check its status page, then try again."
+                )
             notice += _dispatch_error_suffix(rt.last_canary)
         if ignored:
             notice = f"{notice} (login shape has no partition; ignored {partition!r})"
@@ -1412,6 +1426,27 @@ async def _stop_mep(app: AppCtx, eid: str) -> EndpointStatus:
     block, and rely on the facility template's idle-release (max_idletime) to reclaim it. The block
     keeps burning for up to that idle window after our last task — we report that tail rather than
     pretend it's gone. `draining` here is TERMINAL: re-polling stop will never yield `down`."""
+    live = _live_task_handles(app, DEFAULT_SHAPE)
+    if live:
+        # A running task is exactly what "stop" cannot touch here: there is no cancel channel, so
+        # the block stays BUSY (billing) until the task ends — not idle-releasing in ~600s. Refuse,
+        # like _apply_partition does for a live task, rather than drain the handles (which would
+        # make the result unretrievable) while claiming the block is idle.
+        rt = app.shapes[DEFAULT_SHAPE]
+        ceiling = int(_task_ceiling_s(rt.user_endpoint_config))
+        ids = ", ".join(tid for tid, _ in live)
+        return EndpointStatus(
+            status="up",
+            block_state="warm",
+            endpoint_id=eid,
+            session_spend=_total_session_spend(app),
+            notice=(
+                f"can't stop yet: task(s) {ids} are still running on the block, and on a facility "
+                "multi-user endpoint hpc-bridge has NO cancel channel — nothing here can end them. The "
+                f"block stays busy (billing) until they finish, at most ~{ceiling}s more. poll_task them "
+                "to completion (their results stay retrievable), then call stop_endpoint."
+            ),
+        )
     dropped = await _drop_compute_shape(app)
     idle = getattr(app.facility, "max_idletime_s", None) or app.profile.max_idletime_s
     return EndpointStatus(
@@ -1517,15 +1552,17 @@ async def _teardown_endpoint(app: AppCtx) -> EndpointStatus:
     async with app.lock:  # clear everything so a stray run_shell can't silently revive a stale endpoint
         app.tasks.clear()  # every block is gone -> drop all poll handles
         for rt in app.shapes.values():
+            _bank_warm_interval(rt, app)  # fold any running warm interval in BEFORE the shapes vanish
             if rt.runner is not None:
                 rt.runner.close()
+        spent = _total_session_spend(app)  # the session's total, captured before clear() zeroes the sum
         app.shapes.clear()
         app.state = EndpointState()
     return EndpointStatus(
         status="down",
         block_state="cold",
         endpoint_id=eid,
-        session_spend=_total_session_spend(app),
+        session_spend=spent,
         notice=notice + ". It will NOT be reused — a fresh connect_facility re-bootstraps over SSH. "
         "Do NOT call run_shell now (it would provision a new endpoint).",
     )

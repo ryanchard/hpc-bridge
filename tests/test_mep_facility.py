@@ -82,3 +82,12 @@ async def test_ensure_warm_attaches_without_provisioning_work():
 async def test_probe_provisioning_when_manager_reports_offline():
     f = _fac(client_factory=lambda: _Client("offline"))
     assert await probe(f, EndpointState(endpoint_id=UUID)) == "provisioning"
+
+
+def test_from_entry_threads_a_given_account_and_drops_an_empty_one():
+    # review finding: the startup-pin path demanded HPC_BRIDGE_ACCOUNT, then from_entry dropped it
+    from tests.fakes import fake_mep_entry
+    e = fake_mep_entry(account_required=True)
+    assert MEPFacility.from_entry(e, account="lab").config_template(Profile())[1]["account"] == "lab"
+    for empty in (None, ""):
+        assert "account" not in MEPFacility.from_entry(e, account=empty).config_template(Profile())[1]

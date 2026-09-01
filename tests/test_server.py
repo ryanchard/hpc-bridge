@@ -1376,3 +1376,34 @@ async def test_running_task_short_circuits_the_canary():
     res = await _ensure_endpoint_up(app, confirm_spend=True)
     assert res.status == "up" and res.block_state == "warm"
     assert runner.canaries == canaries  # no extra canary behind the busy worker
+
+
+async def test_drain_keeps_finished_handles_drops_running():
+    # review nit: a stale-runner rebuild / stop dropped DONE-but-unpolled handles too, losing a delivered
+    # result. Only still-running futures are moot when the block goes away.
+    from hpc_bridge import server as srv
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    done_id = srv._register_task(app, "compute", "s1", "echo", _DoneFuture(_Res(0, "out", "")), 100.0)
+    live_id = srv._register_task(app, "compute", "s2", "sleep", _PendingFuture(), 100.0)
+    srv._drain_shape_tasks(app, "compute")
+    assert done_id in app.tasks and live_id not in app.tasks
+
+
+async def test_ssh_teardown_reports_the_spend_it_ended(monkeypatch):
+    # review nit: teardown cleared app.shapes and THEN summed session spend -> always 0.0
+    from hpc_bridge import server as srv
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, "", ""))
+    await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
+    _shape_runtime(app, "compute").spend_accrued = 3.5
+
+    async def _released(app_, eid):
+        return True, "released"
+
+    monkeypatch.setattr(srv, "_release_blocks_over_login", _released)
+    res = await srv._teardown_endpoint(app)
+    assert res.status == "down" and res.session_spend >= 3.5

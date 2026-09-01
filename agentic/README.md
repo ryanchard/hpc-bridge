@@ -27,7 +27,7 @@ agentic/
     run.py               ← per-scenario orchestration: SETUP → agent → invariants → WORLD POSTCHECKS → teardown
     provenance.py        ← per-run provenance bundle writer (see runs/)
     regrade.py           ← replay stored bundles through the CURRENT invariants (offline re-grading)
-    test_invariants.py   ← hermetic unit tests (50) for the grading core + scenario graders
+    test_invariants.py   ← hermetic unit tests (52) for the grading core + scenario graders
     judge.py             ← optional LLM-judge rubric pass                                   [later]
   scenarios/             ← happy_path · gated_provision · spend_refusal · spend_gate_enforced · session_persistence · mep_compute_only ·
                            long_job_30m · saturation · endpoint_reuse · endpoint_reuse_chain · facility_cache ·

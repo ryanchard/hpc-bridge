@@ -74,7 +74,10 @@ __hb_snap() {
     printf '%s=%s\n' "$__hb_k" "$(printf %s "${!__hb_k}" | base64 | tr -d '\n')"
   done
 }
-__hb_base="@@SD@@/.env.base.$$"
+# No outer quotes: @@SD@@ may carry MIXED quoting ("$HOME"'/rest'), which double quotes would turn
+# literal (breaking the baseline path -> the whole ambient env gets persisted). An assignment RHS
+# doesn't word-split, so the bare form is safe for every quoting shlex/quoted_state_dir emits.
+__hb_base=@@SD@@/.env.base.$$
 __hb_snap > "$__hb_base"
 [ -f @@SD@@/.env ] && . @@SD@@/.env 2>/dev/null
 eval "$(printf %s @@B64@@ | base64 -d)"

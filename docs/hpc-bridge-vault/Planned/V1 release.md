@@ -12,8 +12,8 @@
 ## The tiers (work backwards from "published")
 
 **Tier 1 — merge PR #41 (`feat/mep-m1`)** *(in progress)*
-- [ ] General code review of the branch diff (multi-agent, high effort)
-- [ ] Clean green regression re-run on a quiet cluster: `gated_provision`, `spend_gate_enforced`, `long_task_via_handle` (wave-2's contention casualties; wave 1 was 3/3 green)
+- [x] General code review of the branch diff — done 2026-08-21 (independent reviewer on `src/` + maintainer pass on harness/docs): no merge-blockers; 4 should-fix (MEP account dropped on the startup-pin path; `$USER`-remainder scratch roots broke the session-shell env fingerprint; an offline MEP read as "allocating nodes…"; `stop_mep` drained a *running* task's handle) + 4 nits, **all fixed with tests** (commit `fix(review)`)
+- [ ] Clean green regression re-run on a quiet cluster: `spend_gate_enforced` ✅ (2026-08-21); `gated_provision` + `long_task_via_handle` still owed — the cluster was saturated by other users all day (a waiter fires when a node frees). Wave 1 was 3/3 green.
 - [ ] Address review findings → un-draft → squash-merge #41
 
 **Tier 2 — V1 quality**

@@ -134,3 +134,17 @@ def test_profile_kwargs_maps_every_machineprofile_field():
     assert "worker_init" not in kw
     assert kw["interface"] == "ib0"
     assert kw["name"] == "anvil"
+
+
+def test_mep_only_scratch_root_must_expand_on_the_worker():
+    # only a LEADING $HOME (or ${HOME}/, ~/) expands in the session wrapper; $USER or any other $VAR
+    # would be quoted literal (a directory literally named '$USER') — reject at validation
+    for sr in ("$HOME/.hpc-bridge", "${HOME}/x/.hpc-bridge", "~/.hpc-bridge", "/scratch/shared/.hpc-bridge"):
+        CatalogEntry.model_validate(_entry(ssh_host=None, compute_mep_uuid=VALID_UUID,
+                                           compute={**_MEP_COMPUTE, "scratch_root": sr}))
+    for sr in ("/scratch/$USER/.hpc-bridge", "$HOME/scratch/$USER/.hpc-bridge", "$SCRATCH/.hpc-bridge", "rel/.hpc-bridge"):
+        with pytest.raises(ValidationError, match="scratch_root"):
+            CatalogEntry.model_validate(_entry(ssh_host=None, compute_mep_uuid=VALID_UUID,
+                                               compute={**_MEP_COMPUTE, "scratch_root": sr}))
+    # an SSH entry keeps {user} templating (resolved client-side from the login name) — unchanged
+    CatalogEntry.model_validate(_entry(compute={**_MEP_COMPUTE, "scratch_root": "/scratch/{user}/.hpc-bridge"}))

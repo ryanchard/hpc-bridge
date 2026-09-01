@@ -121,8 +121,22 @@ class CatalogEntry(BaseModel):
                 if "{user}" in val or "{venv}" in val:
                     raise ValueError(
                         f"compute.{field} uses client-side templating ({{user}}/{{venv}}) but this is a "
-                        "MEP-only entry (no ssh_host): nothing can resolve it — use $HOME/$USER instead"
+                        "MEP-only entry (no ssh_host): nothing can resolve it — use worker-side forms "
+                        "($HOME for scratch_root; $HOME/$USER in env_setup)"
                     )
+            # scratch_root is spliced into the session-shell wrapper by `Session.quoted_state_dir`,
+            # which expands ONLY a leading $HOME/ (or ${HOME}/, ~/); any other `$VAR` — `$USER`
+            # included — is shell-quoted LITERAL, so `/scratch/$USER/…` would create a directory
+            # literally named `$USER`. Catch it at validation, not at the first run_shell.
+            sr = self.compute.scratch_root
+            home_rel = any(sr.startswith(p) for p in ("$HOME/", "${HOME}/", "~/"))
+            rest = sr.split("/", 1)[1] if home_rel and "/" in sr else sr
+            if not ((home_rel and "$" not in rest) or (sr.startswith("/") and "$" not in sr)):
+                raise ValueError(
+                    f"compute.scratch_root {sr!r} on a MEP-only entry must be $HOME/… (or an absolute "
+                    "path with no $VAR): only a leading $HOME expands on the worker — $USER or any "
+                    "other variable would be quoted literal by the session shell"
+                )
         return self
 
     @property

@@ -180,3 +180,46 @@ def test_default_facility_has_every_shape():
     app = AppCtx(facility=FakeFacility(), profile=Profile())
     assert server._supported_shapes(app) == ("login", "compute")
     assert server._shape_reject(app, "login") is None
+
+
+# --- final-review fixes -------------------------------------------------------------------------------
+
+
+def test_startup_pin_account_reaches_the_uec():
+    # _catalog_facility demanded HPC_BRIDGE_ACCOUNT for an account-required MEP, then from_entry dropped
+    # it — the UEC went out with no account and sbatch rejected the pilot. Now threaded through.
+    fac = server._facility_from_entry(fake_mep_entry(account_required=True), account="proj123")
+    assert fac.config_template(Profile())[1]["account"] == "proj123"
+    assert "account" not in server._facility_from_entry(fake_mep_entry(), account="").config_template(Profile())[1]
+
+
+async def test_offline_mep_reads_offline_not_allocating(monkeypatch):
+    # with the manager OFFLINE, probe short-circuits before any canary; the generic "allocating nodes…"
+    # told the agent to wait on a queue that doesn't exist (no login shape -> no #32 pilot query).
+    app = _app(_mep(status="offline"))
+    app.state = server.EndpointState(endpoint_id=MEP_UUID, reused=True)  # startup-pinned: no connect ran
+    res = await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
+    assert res.status == "provisioning"
+    assert "OFFLINE" in res.notice and "facility" in res.notice and "allocating nodes" not in res.notice
+    # manager online + block merely cold -> the normal wording
+    app2 = _app()
+    await _connect(app2, monkeypatch)
+    app2.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(
+        eid, _Res(0, "", ""), canary_result=CanaryResult(ok=False, error="timeout"))
+    res2 = await _ensure_endpoint_up(app2, shape="compute", confirm_spend=True)
+    assert res2.status == "provisioning" and "allocating nodes" in res2.notice and "OFFLINE" not in res2.notice
+
+
+async def test_stop_mep_refuses_while_a_task_runs_and_keeps_its_handle(monkeypatch):
+    # no cancel channel on a MEP: a running task keeps the block BUSY (billing) to its ceiling. Draining
+    # its handle would lose the result while claiming "idle-release in ~600s". Refuse instead.
+    app = _app()
+    await _connect(app, monkeypatch)
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, "", ""), pending=True)
+    await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
+    out = await _run_shell(app, "sleep 3000", shape="compute")
+    assert out.phase == "running" and out.task_id
+    res = await _stop_endpoint(app)
+    assert res.status == "up" and "can't stop" in res.notice and out.task_id in res.notice
+    assert "poll_task" in res.notice and "no cancel channel" in res.notice.lower()
+    assert out.task_id in app.tasks and "compute" in app.shapes  # handle + shape survive; result retrievable

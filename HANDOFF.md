@@ -1,6 +1,6 @@
 # hpc-bridge — handoff (state of the repo)
 
-_Snapshot: 2026-08-21. Branch: `feat/mep-m1` (9 commits ahead of `main`, draft PR open)._
+_Snapshot: 2026-08-21. Branch: `feat/mep-m1` (draft PR #41 open)._
 _For a week-long handoff to a co-dev. Design rationale lives in `docs/hpc-bridge-vault/`; this file is the live state + how-to-run + gotchas on top._
 
 ## TL;DR

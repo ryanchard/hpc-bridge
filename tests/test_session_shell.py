@@ -176,3 +176,23 @@ def test_reset_command_removes_state_files():
     assert "/scratch/.hpc-bridge/sessions/abc/.cwd" in r
     assert "/scratch/.hpc-bridge/sessions/abc/.env" in r
     assert "/scratch/.hpc-bridge/sessions/abc/.env.base.*" in r  # sweep leaked snapshots
+
+
+@bash_only
+def test_behaviour_home_root_with_quoted_remainder_keeps_env_fingerprint_intact(tmp_path):
+    # Review finding: a $HOME-root whose REMAINDER needs shell quoting ("$HOME"'/sub dir/…') was spliced
+    # into `__hb_base="…"` — the single quotes went literal inside the double quotes, the baseline
+    # snapshot path broke, and EVERY ambient var got persisted (91 lines seen live). The bare assignment
+    # form fixes it: only the command's own export lands in .env, and nothing hits stderr.
+    sess = Session("default", "$HOME/sub dir/.hpc-bridge")
+    script = wrap("export HB_ONLY=1; echo HB_OK", sess)
+    assert '__hb_base="$HOME"' in script and '__hb_base=""' not in script
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                       env={**os.environ, "HOME": str(tmp_path)})
+    assert r.returncode == 0 and "HB_OK" in r.stdout
+    assert r.stderr.strip() == "", r.stderr
+    env_file = tmp_path / "sub dir" / ".hpc-bridge" / "sessions" / "default" / ".env"
+    lines = [l for l in env_file.read_text().splitlines() if l.strip()]
+    assert "export HB_ONLY=1" in lines
+    assert not any(l.startswith(("export PATH=", "export HOME=")) for l in lines), lines  # no ambient replay
+    assert len(lines) < 5, lines
