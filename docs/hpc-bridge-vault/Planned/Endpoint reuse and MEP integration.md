@@ -76,6 +76,9 @@ Because the name is stable and the manager persists on the cluster, a **fresh se
 
 **M1 + M2 is the V1 story:** a catalogued MEP facility, zero SSH, graceful consent. On the **globus1 testbed specifically, M1 alone** already delivers zero-SSH (it's consent-free); M2 is proven against a consent-gating facility.
 
+> [!important] Superseded (2026-08-21): V1 ships on M1 alone — M2 is deferred to V1.x
+> The scope decision in [[V1 release]]: V1 supports zero-SSH MEP dispatch **for consent-free facilities** (validated live) plus the SSH path; the consent flow (M2) waits for a facility that can actually exercise it. Gating V1 on M2 meant gating it on infrastructure we don't have.
+
 ## Guiding invariants (must hold across both phases)
 - **Hot path stays token/AMQP — no new SSH channel** ([[Two-channel architecture]]). Reuse and MEP consumption *remove* SSH; neither adds a work channel.
 - **hpc-bridge still only ever *creates* personal endpoints** — `--multi-user false` stays for anything we stand up ([[MEP & templated endpoints]]). Phase 2 *consumes* a facility MEP; it never makes hpc-bridge run one.

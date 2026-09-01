@@ -117,6 +117,8 @@ python3 agentic/run_suite.py --scenarios happy_path --repeat 3 --concurrency 3
 
 ## Next steps (priority order)
 
+> **2026-08-21 — the V1 sprint is ON.** Scope, decisions, and the full tiered punch-list live in **`docs/hpc-bridge-vault/Planned/V1 release.md`** (the plan of record — reorient there if a task runs long). Headlines: V1 = SSH path + consent-free MEP + BYO (M2 deferred); the long-task block-thrashing bug gets **fixed** before V1; distribution = a Claude Code plugin **marketplace**. Items 1–2 below are its Tier 1.
+
 1. **General code review of the branch** (the M1 diff), then merge the draft PR. _(Not yet done — the last planned step before merge.)_
 2. **Clean regression re-run** of `gated_provision`, `long_task_via_handle`, `spend_gate_enforced` when globus1 is quiet (`sinfo -N` to check; another user was saturating it 08-19→08-21).
 3. **Follow-up A — long-task block-thrashing** (pre-existing, SSH path, `#21` area): under load a compute block was CANCELLED at 24–142 s repeatedly before a 180 s task finished, orphaning the `poll_task` handle (the agent then polls forever). See `docs/hpc-bridge-vault/` (`detached-process-idle-release`). Worth its own investigation; not M1-specific.
