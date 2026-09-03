@@ -7,7 +7,7 @@ compute (cost-gated), and run commands on a compute node, interactively, right i
 Globus Compute is the engine; hpc-bridge is the agent-facing packaging, the bootstrap, and the
 runtime that makes a batch supercomputer feel like a REPL.
 
-> **Not published yet.** Install locally with `claude --plugin-dir .` (see [Try it](#try-it)). New here? Start with the **[user guide](docs/user/README.md)**.
+> **Install from Claude Code:** `/plugin marketplace add ryanchard/hpc-bridge` then `/plugin install hpc-bridge@hpc-bridge` — the repository is its own marketplace. Pre-release. New here? Start with the **[user guide](docs/user/README.md)**.
 
 ## Why
 
@@ -67,10 +67,12 @@ happens **in the terminal**: the first connect opens your browser, you approve o
 carries on (the [user guide](docs/user/login.md) explains it).
 
 ```bash
-uv sync --extra dev
-uv run pytest -q          # unit tests (hermetic — no cluster needed)
-claude --plugin-dir .     # load hpc-bridge into Claude Code
+/plugin marketplace add ryanchard/hpc-bridge     # inside Claude Code: the repo is its own marketplace
+/plugin install hpc-bridge@hpc-bridge
 ```
+
+Working from a clone instead? `claude --plugin-dir .` loads the checkout as the plugin, and
+`uv sync --extra dev && uv run pytest -q` runs the hermetic unit tests.
 
 Then just ask, in Claude Code:
 

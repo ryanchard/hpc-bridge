@@ -2,5 +2,16 @@
   "name": "hpc-bridge",
   "description": "Extend an AI agent onto real HPC via a personal Globus Compute endpoint, managed as an interactive REPL.",
   "version": "0.1.0",
-  "author": { "name": "hpc-bridge" }
+  "author": {
+    "name": "hpc-bridge"
+  },
+  "homepage": "https://github.com/ryanchard/hpc-bridge",
+  "repository": "https://github.com/ryanchard/hpc-bridge",
+  "keywords": [
+    "hpc",
+    "slurm",
+    "pbs",
+    "globus",
+    "globus-compute"
+  ]
 }

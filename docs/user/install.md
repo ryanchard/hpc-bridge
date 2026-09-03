@@ -13,19 +13,35 @@
 - For **facility-run endpoints** (e.g. `globus1`): an account at the facility with your Globus
   identity mapped to it. Nothing to install on the machine.
 
-## Load the plugin
+## Install from Claude Code
 
-hpc-bridge is not on a marketplace yet. Clone the repository and load it as a plugin:
+The repository is its own plugin marketplace, so installing is two commands inside Claude Code:
+
+```
+/plugin marketplace add ryanchard/hpc-bridge
+/plugin install hpc-bridge@hpc-bridge
+```
+
+The same works from a shell with `claude plugin marketplace add ryanchard/hpc-bridge` and
+`claude plugin install hpc-bridge@hpc-bridge`. By default the plugin is installed for you across all
+projects; add `--scope project` to share it with a repository's collaborators. Claude Code keeps a
+versioned copy under its plugin cache and starts the plugin's server with `uv run`, which resolves
+the server's Python dependencies on first start.
+
+Adding a marketplace is a trust decision: a plugin runs with your privileges. This one is the
+repository you can read.
+
+The plugin adds a slash command, `/hpc-bridge:hpc-connect`, and a skill the agent follows on its own,
+so plain requests work too. To pick up a new release later, run `/plugin marketplace update hpc-bridge`
+followed by `/plugin update hpc-bridge@hpc-bridge`, then `/reload-plugins`.
+
+### From a clone (developers)
 
 ```bash
 git clone https://github.com/ryanchard/hpc-bridge.git
 cd hpc-bridge
-uv sync --extra integration      # one-time: the server's dependencies
-claude --plugin-dir .            # start Claude Code with hpc-bridge loaded
+claude --plugin-dir .            # start Claude Code with this checkout loaded as the plugin
 ```
-
-You can start Claude Code from any directory with `claude --plugin-dir /path/to/hpc-bridge`. The
-plugin adds a slash command, `/hpc-bridge:hpc-connect`, and a skill the agent follows automatically.
 
 ## Check it works
 
@@ -35,7 +51,9 @@ In the session, ask:
 
 The agent lists the registered facilities and what each one needs. No login, no configuration, no
 SSH is involved in that first answer. If the agent says it has no hpc-bridge tools, the server did
-not start — see [Troubleshooting](troubleshooting.md#the-agent-has-no-hpc-bridge-tools).
+not start: check `/plugin` and its **Errors** tab, and see
+[Troubleshooting](troubleshooting.md#the-agent-has-no-hpc-bridge-tools). The usual cause is `uv`
+missing from the `PATH` of the shell that started Claude Code.
 
 ## Where things live on your machine
 
