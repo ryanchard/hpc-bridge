@@ -1,6 +1,6 @@
 # hpc-bridge — handoff (state of the repo)
 
-_Snapshot: 2026-08-21. Branch: `feat/mep-m1` (draft PR #41 open)._
+_Snapshot: 2026-09-03. M1 is MERGED (`main` @ `45547b6`, PR #41). Tier 1 of the V1 sprint is done; Tier 2 is next._
 _For a week-long handoff to a co-dev. Design rationale lives in `docs/hpc-bridge-vault/`; this file is the live state + how-to-run + gotchas on top._
 
 ## TL;DR

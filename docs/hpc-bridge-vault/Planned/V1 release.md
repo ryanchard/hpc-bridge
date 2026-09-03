@@ -11,10 +11,10 @@
 
 ## The tiers (work backwards from "published")
 
-**Tier 1 — merge PR #41 (`feat/mep-m1`)** *(in progress)*
+**Tier 1 — merge PR #41 (`feat/mep-m1`)** ✅ *(done 2026-09-03)*
 - [x] General code review of the branch diff — done 2026-08-21 (independent reviewer on `src/` + maintainer pass on harness/docs): no merge-blockers; 4 should-fix (MEP account dropped on the startup-pin path; `$USER`-remainder scratch roots broke the session-shell env fingerprint; an offline MEP read as "allocating nodes…"; `stop_mep` drained a *running* task's handle) + 4 nits, **all fixed with tests** (commit `fix(review)`)
 - [x] Clean green regression re-run on a quiet cluster — **all green**: wave 1 3/3 (`mep_compute_only`, `happy_path`, `endpoint_reuse_chain`, 2026-08-19); `endpoint_reuse`, `facility_cache`, `session_persistence` (08-19); `spend_gate_enforced`, `gated_provision`, `long_task_via_handle` (2026-09-01, once a node freed). The only red left in wave 2 was the `spend_refusal` grader gap (Tier 2).
-- [ ] Address review findings → un-draft → squash-merge #41
+- [x] Address review findings → un-draft → squash-merge #41 — **merged 2026-09-03** (`main` @ `45547b6`, branch deleted). **Tier 1 complete.**
 
 **Tier 2 — V1 quality**
 - [ ] **Fix the long-task block-thrashing bug** (own branch; root-cause first; `long_task_via_handle` + `long_job_30m` are the validation). **Evidence so far (2026-09-01):** the 08-19 blocks were `CANCELLED by <the pool user's own uid>` — the endpoint cancelled its own blocks (24 s, 28 s, 142 s; two at the same instant) — and it did **not** reproduce on a quiet node (the same scenario passed: one block, task ran to completion, stop released it). Ruled out: Parsl idle scale-in (needs `active_tasks == 0` *and* > `max_idletime` 600 s), the HTEX `MISSING` rewrite (a post-mortem label on already-ended jobs, not a cause), and our manager config (no `idle_heartbeats` override — UEP idle is the Globus default). The cancel is issued when the **manager signals a UEP shutdown** (`endpoint_manager … Signaling shutdown of user endpoint` → SIGTERM → the interchange's Parsl provider `scancel`s its blocks). **Next:** (1) make the harness capture the UEP + manager `endpoint.log`s into the provenance bundle at teardown (the 08-19 logs were deleted before anyone read them — the harness key *can* read the pool user's `~/.globus_compute`); (2) reproduce under load (saturated cluster / slow `worker_init`) and read *why* the manager shut the UEP down.
