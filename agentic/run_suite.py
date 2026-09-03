@@ -63,6 +63,17 @@ async def _build_once() -> bool:
     return True
 
 
+def _is_serial(scenario: str) -> bool:
+    """Ask the scenario module (via harness/scenario_knobs.py, importable on the host) whether it is SERIAL."""
+    import subprocess
+    try:
+        out = subprocess.run([sys.executable, str(REPO / "agentic" / "harness" / "scenario_knobs.py"), scenario],
+                             capture_output=True, text=True, timeout=30).stdout
+    except Exception:  # noqa: BLE001 - unknown scenario / import error: run.py reports it; not serial
+        return False
+    return "HPCB_KNOB_SERIAL=1" in out
+
+
 def _short_model(m: str) -> str:
     parts = m.split("-")
     return parts[1] if len(parts) > 1 else m
@@ -153,9 +164,21 @@ async def _main(args) -> int:
     sem = asyncio.Semaphore(slots)
     stagger = Stagger(args.stagger)
     halt = asyncio.Event()
+    # SERIAL scenarios (one Globus identity per cell — mep_no_account, stranger_mep_walk) run one at a
+    # time: two cells at once make the web service answer the second with RESOURCE_CONFLICT (first sweep).
+    serial_locks = {s: asyncio.Lock() for s in scenarios if _is_serial(s)}
+    if serial_locks:
+        print(f"serial scenarios (one cell at a time): {sorted(serial_locks)}", flush=True)
+
+    async def gated(s, m, e, pe, ab):
+        lock = serial_locks.get(s)
+        if lock is None:
+            return await _run_job(s, m, e, pe, ab, claims, sem, stagger, halt)
+        async with lock:
+            return await _run_job(s, m, e, pe, ab, claims, sem, stagger, halt)
+
     try:
-        results = await asyncio.gather(
-            *[_run_job(s, m, e, pe, ab, claims, sem, stagger, halt) for s, m, e, pe, ab in jobs])
+        results = await asyncio.gather(*[gated(s, m, e, pe, ab) for s, m, e, pe, ab in jobs])
     finally:
         claims.release_all()
 

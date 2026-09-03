@@ -147,10 +147,11 @@ in once as an identity globus1 does not map (e.g. a personal Google identity) vi
 
 ```bash
 # The model sweep (subscription-billed; the cheap tier fits one 5-h window)
-# 1. cheap tier — every model, 2 repeats, 3 pool users, staggered against 429s
+# 1. cheap tier — every model, 2 repeats, 3 pool users, staggered against 429s. SERIAL scenarios
+#    (mep_no_account, stranger_mep_walk — one Globus identity each) are serialised by run_suite itself.
 python3 agentic/run_suite.py --scenarios zero_config_list,needs_login_paste,mep_no_account,no_ssh_access,registry_over_cache \
   --models claude-opus-5,claude-sonnet-5,claude-haiku-4-5-20251001 --repeat 2 --concurrency 3 --stagger 20
-# 2. block tier, SERIAL — every MEP run maps to glabs; two at once would share one user endpoint
+# 2. block tier — every MEP run maps to glabs; SERIAL keeps them one at a time
 python3 agentic/run_suite.py --scenarios stranger_mep_walk --models claude-opus-5,claude-sonnet-5,claude-haiku-4-5-20251001 --repeat 2 --concurrency 1
 # 3. the SSH-path classics on the weaker models (3 pool users)
 python3 agentic/run_suite.py --scenarios happy_path,gated_provision --models claude-sonnet-5,claude-haiku-4-5-20251001 --repeat 2 --concurrency 3 --stagger 20

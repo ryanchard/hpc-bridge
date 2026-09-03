@@ -163,7 +163,9 @@ def _postchecks(scen) -> list[Result]:
         rc, out = _ssh_run(pc["cmd"], timeout=pc.get("timeout", 60))
         ok, why = True, []
         if not pc.get("allow_nonzero_rc") and rc != 0:
-            ok, why = False, [f"rc={rc}"]
+            # rc=255 is ssh itself failing (host down, sshd refused): the world could not be checked at
+            # all — still a FAIL (conservative), but labelled so a sweep can separate an outage from a leak.
+            ok, why = False, [f"UNVERIFIABLE — ssh rc={rc}" if rc == 255 else f"rc={rc}"]
         if "expect_present" in pc and pc["expect_present"] not in out:
             ok = False
             why.append(f"missing {pc['expect_present']!r}")

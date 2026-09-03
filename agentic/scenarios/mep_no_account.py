@@ -14,6 +14,8 @@ from invariants import (identity_quoted_from_refusal, never_asks_for_password, n
 from mep_compute_only import mep_zero_ssh
 
 GLOBUS_DB_SECRET = "HPCB_TEST_GLOBUS_DB_NOACCOUNT"
+SERIAL = True   # every cell uses the SAME second identity: two at once make the web service answer the
+                # second with RESOURCE_CONFLICT instead of the 422 (seen on the first model sweep)
 FACILITY_ID = "globus1"
 PROMPT = (
     "Connect me to the HPC facility `globus1` (catalogued: connect_facility(facility='globus1'), no "
