@@ -88,7 +88,7 @@ def _server_env() -> dict[str, str]:
     return env
 
 
-def _mcp_servers(repo_root: Path) -> dict:
+def _mcp_servers(repo_root: Path, extra_env: dict[str, str] | None = None) -> dict:
     # Direct registration (not as a plugin) — matches the .mcp.json launch command
     # (the trailing "hpc-bridge" is the console script, unchanged by the server rename).
     return {
@@ -96,7 +96,9 @@ def _mcp_servers(repo_root: Path) -> dict:
             "type": "stdio",
             "command": "uv",
             "args": ["run", "--directory", str(repo_root), "--extra", "integration", "hpc-bridge"],
-            "env": _server_env(),
+            # extra_env: per-scenario overrides for the SERVER only (e.g. a bogus SSH login name to
+            # play a stranger) — the harness process keeps its own pool credentials for postchecks/teardown.
+            "env": {**_server_env(), **(extra_env or {})},
         }
     }
 
@@ -151,6 +153,7 @@ async def run_scenario(
     ablate_skill: bool = False,
     max_turns: int = 40,
     max_budget_usd: float = 2.0,
+    extra_env: dict[str, str] | None = None,
 ) -> RunResult:
     """Run one scripted scenario end-to-end and return the captured Trace + result.
 
@@ -167,7 +170,7 @@ async def run_scenario(
     opts: dict[str, Any] = dict(
         model=model,
         allowed_tools=[f"mcp__endpoint__{t}" for t in HPC_BRIDGE_TOOLS] + ["Bash", "Read", "Write"],
-        mcp_servers=_mcp_servers(repo_root),
+        mcp_servers=_mcp_servers(repo_root, extra_env),
         system_prompt=_system_prompt(repo_root, interactive, include_skill=not ablate_skill),
         setting_sources=[],  # SDK isolation: ignore host ~/.claude + project settings
         cwd=str(repo_root),

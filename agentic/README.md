@@ -110,7 +110,7 @@ python3 agentic/run_suite.py --scenarios happy_path --repeat 3 --concurrency 3  
 python3 agentic/run_suite.py --scenarios gated_provision --repeat 2   # the spend gate (interactive)
 HPCB_NO_SKILL=1 ./agentic/run_smoke.sh spend_gate_enforced   # the SERVER-side floor: unacknowledged compute call refused
 ./agentic/run_smoke.sh session_persistence    # session shell: cwd/env persist across calls, reset clears (login-only, free)
-HPC_BRIDGE_SEARCH_INDEX=6ff95fb8-1113-42be-a811-3d1cb5a67bd5 ./agentic/run_smoke.sh mep_compute_only   # facility MEP: zero-SSH attach, compute-only run as glabs, draining-only stop (needs the Search-scoped storage.db; ~3 min + 11 min settle)
+./agentic/run_smoke.sh mep_compute_only     # facility MEP: zero-SSH attach, compute-only run as glabs, draining-only stop (the registry id is built in — no index env needed)
 ```
 
 Keep `--concurrency 3` (globus1 SSH headroom + the subscription 5h/7d cap; big sweeps → API creds).
@@ -121,6 +121,40 @@ Known wrinkle (issue #39): the FIRST `connect_facility(details=…)` fails on a 
 ("could not find endpoint … in list output") in practically every run and the retry already reads
 `reused=True` — the reuse graders account for it (phase-keyed; `reused` FIELD only) and the reported
 `first_details_connect_succeeds` invariant tracks the rate until #39 is fixed.
+
+## Stranger, login & refusal scenarios — and the model sweep (2026-09-03)
+
+Six scenarios cover what shipped for V1's new-user story (in-terminal login, the public registry,
+registry-over-cache, the terminal no-account and no-SSH-access refusals, the stranger's walk). Five need
+no cluster block, so they are cheap enough to sweep across models. Graders for these read what the agent
+**said** (`Trace.texts`, the assistant text blocks) as well as what it did.
+
+| scenario | needs | proves | cost |
+|---|---|---|---|
+| `zero_config_list` | nothing | `list_facilities` out of the box; access notes relayed; no unprompted connect | ~2 min, no cluster |
+| `needs_login_paste` | **no** store (`NO_GLOBUS_DB`) | `needs_login` (paste mode) relayed as a link; no password asked; no code invented; bounded retries | ~2 min, no cluster |
+| `mep_no_account` | a 2nd identity's store (`GLOBUS_DB_SECRET` → `$HPCB_TEST_GLOBUS_DB_NOACCOUNT`) | terminal, sticky NO ACCOUNT relayed once with the identity; no SSH workaround | ~3 min, attach + one refused submit |
+| `no_ssh_access` | server-only `EXTRA_ENV` (bogus login name, no key) | NO SSH ACCESS explained (host, login name, remedies); no password; no raw ssh | ~2 min, one refused auth |
+| `registry_over_cache` | `SEED_FACILITY_CACHE` (a stale SSH-era `globus1`) | the registry's MEP entry wins: attach, zero SSH, no probe | ~2 min, attach only |
+| `stranger_mep_walk` | a block; **SERIAL** | one natural request: list → MEP attach → ask → compute run → honest stop | ~3 min + 11 min settle |
+
+Per-scenario knobs (module constants): `NO_GLOBUS_DB` and `GLOBUS_DB_SECRET` are read on the host by
+`harness/scenario_knobs.py` (run_smoke.sh decides what to mount); `EXTRA_ENV` (MCP-server-only env),
+`SEED_FACILITY_CACHE` and `SERIAL` are applied inside the container by run.py. The second identity: log
+in once as an identity globus1 does not map (e.g. a personal Google identity) via
+`scripts/fresh_user_session.sh --reset` or `agentic/mep_no_account_check.py`, then point
+`HPCB_TEST_GLOBUS_DB_NOACCOUNT=<that dir>/storage.db` in `agentic/.env`.
+
+```bash
+# The model sweep (subscription-billed; the cheap tier fits one 5-h window)
+# 1. cheap tier — every model, 2 repeats, 3 pool users, staggered against 429s
+python3 agentic/run_suite.py --scenarios zero_config_list,needs_login_paste,mep_no_account,no_ssh_access,registry_over_cache \
+  --models claude-opus-5,claude-sonnet-5,claude-haiku-4-5-20251001 --repeat 2 --concurrency 3 --stagger 20
+# 2. block tier, SERIAL — every MEP run maps to glabs; two at once would share one user endpoint
+python3 agentic/run_suite.py --scenarios stranger_mep_walk --models claude-opus-5,claude-sonnet-5,claude-haiku-4-5-20251001 --repeat 2 --concurrency 1
+# 3. the SSH-path classics on the weaker models (3 pool users)
+python3 agentic/run_suite.py --scenarios happy_path,gated_provision --models claude-sonnet-5,claude-haiku-4-5-20251001 --repeat 2 --concurrency 3 --stagger 20
+```
 
 ## How grading works
 

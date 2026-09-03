@@ -62,11 +62,17 @@ def build_trace(
     injected_answers = injected_answers or {}
     calls: list[ToolCall] = []
     by_id: dict[str, ToolCall] = {}
+    texts: list[str] = []
     for msg in messages:
         content = getattr(msg, "content", None)
         if not isinstance(content, list):
             continue
         for b in content:
+            if type(msg).__name__ == "AssistantMessage" and not _is_tool_use(b) and not _is_tool_result(b):
+                txt = getattr(b, "text", None)
+                if isinstance(txt, str) and txt.strip():
+                    texts.append(txt)
+                continue
             if _is_tool_use(b):
                 bid = getattr(b, "id", None)
                 tc = ToolCall.of(
@@ -81,7 +87,7 @@ def build_trace(
                 tc = by_id.get(getattr(b, "tool_use_id", None))
                 if tc is not None and tc.result is None:
                     tc.result = _result_to_dict(getattr(b, "content", None))
-    return Trace(calls)
+    return Trace(calls, texts)
 
 
 def trace_from_bundle(bundle_dir) -> Trace:
@@ -97,6 +103,7 @@ def trace_from_bundle(bundle_dir) -> Trace:
 
     calls: list[ToolCall] = []
     by_id: dict[str, ToolCall] = {}
+    texts: list[str] = []
     sessions: list[str] = []   # distinct session ids, in order of first appearance
     phase = 0
     with (Path(bundle_dir) / "messages.jsonl").open() as fh:
@@ -114,6 +121,10 @@ def trace_from_bundle(bundle_dir) -> Trace:
             for b in content:
                 if not isinstance(b, dict):
                     continue
+                if m.get("__type__") == "AssistantMessage" and b.get("__type__") == "TextBlock":
+                    if str(b.get("text") or "").strip():
+                        texts.append(str(b.get("text")))
+                    continue
                 if b.get("__type__") == "ToolUseBlock":
                     tc = ToolCall.of(b.get("name", "") or "", dict(b.get("input") or {}), phase=phase)
                     calls.append(tc)
@@ -123,4 +134,4 @@ def trace_from_bundle(bundle_dir) -> Trace:
                     tc = by_id.get(b.get("tool_use_id"))
                     if tc is not None and tc.result is None:
                         tc.result = _result_to_dict(b.get("content"))
-    return Trace(calls)
+    return Trace(calls, texts)

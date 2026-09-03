@@ -167,7 +167,8 @@ def _short_control_dir(preferred: str) -> str:
     return preferred  # nothing short exists; ssh will say so
 
 
-def _explain_provision_error(exc: BaseException, fac) -> str:
+def _explain_provision_error(exc: BaseException, fac=None, *, host: str | None = None,
+                             user: str | None = None, fallback: str | None = None) -> str:
     """Turn a bootstrap failure into what a newcomer can act on. The raw text names an internal step
     ('seed storage.db (mkdir) failed: u@host: Permission denied (publickey,…)') — a stranger with no
     account or key on the facility must instead hear WHICH host and login name were tried, where the
@@ -175,10 +176,15 @@ def _explain_provision_error(exc: BaseException, fac) -> str:
     raw = str(exc)
     low = raw.lower()
     ssh_line = raw.rsplit("failed: ", 1)[-1].strip() if "failed: " in raw else raw
+    # ssh prefixes the verdict with warnings ("Identity file … not accessible") — quote the verdict line
+    verdict = [ln for ln in ssh_line.splitlines() if "permission denied" in ln.lower() or "denied" in ln.lower()]
+    if verdict:
+        ssh_line = verdict[-1].strip()
     cli = getattr(fac, "cli", None)
     target = getattr(cli, "target", None) or getattr(cli, "_target", None)
-    host = getattr(target, "host", None) or getattr(fac, "alias", None) or "the login host"
-    user = getattr(target, "user", None)
+    host = host or getattr(target, "host", None) or getattr(fac, "alias", None) or "the login host"
+    if user is None:
+        user = getattr(target, "user", None)
     if "permission denied" in low or "authentication fail" in low or "too many authentication failures" in low:
         who = f"as {user!r}" if user else "as your local username (no login name is configured for this host)"
         src = ("HPC_BRIDGE_SSH_USER" if os.environ.get("HPC_BRIDGE_SSH_USER", "").strip()
@@ -197,7 +203,7 @@ def _explain_provision_error(exc: BaseException, fac) -> str:
     if "controlpath too long" in low:
         return (f"hpc-bridge error: the SSH ControlMaster socket path is too long ({ssh_line[:160]}); set "
                 "HPC_BRIDGE_STATE_DIR to a short path (e.g. ~/.hpc-bridge). Nothing was started.")
-    return f"hpc-bridge error: {type(exc).__name__}: {raw}"[:500]
+    return (fallback or f"hpc-bridge error: {type(exc).__name__}: {raw}")[:500]
 
 
 def _slurm_facility(profile, *, alias: str, user: str) -> Facility:
@@ -1419,10 +1425,15 @@ async def _propose_or_ask(
     except NeedsPreauth as pre:  # host wants an interactive login (password/MFA) — hand off to the user
         return _needs_preauth_result(facility, pre.target)
     except Exception as exc:  # noqa: BLE001 - probe/connect/creds failure -> structured result
+        # The same first-contact explanation the bootstrap gives (stranger's walk): a refused SSH is
+        # "NO SSH ACCESS to <host> as <user>" with the remedies, not a raw rc=255 dump.
         return ConnectFacilityResult(
             phase="failed",
             facility=facility,
-            notice=f"discovery over SSH to {host!r} failed: {type(exc).__name__}: {exc}"[:400],
+            notice=_explain_provision_error(
+                exc, host=host, user=os.environ.get("HPC_BRIDGE_SSH_USER", "").strip() or None,
+                fallback=f"discovery over SSH to {host!r} failed: {type(exc).__name__}: {exc}"[:400],
+            ),
         )
     notice = (
         "probed the login node and proposed this config — review/correct it WITH THE USER "
