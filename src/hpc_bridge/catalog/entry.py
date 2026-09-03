@@ -153,7 +153,9 @@ class CatalogEntry(BaseModel):
         if self.compute_mep_uuid:
             access, note = "mep", (
                 "zero SSH — the facility runs the endpoint; you need an account there with your Globus "
-                "identity mapped to it (no account ⇒ a terminal NO ACCOUNT on first use, nothing billed)"
+                "identity mapped to it (no account ⇒ a terminal NO ACCOUNT on first use, nothing billed). "
+                "connect_facility only attaches: no login node to warm, no allocation list — the first "
+                "billed block is where your access is actually tested"
             )
         else:
             access, note = "ssh", (

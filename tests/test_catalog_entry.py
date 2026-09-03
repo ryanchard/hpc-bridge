@@ -65,6 +65,7 @@ def test_summary_says_how_a_mep_facility_is_reached():
     from tests.fakes import fake_mep_entry
     s = fake_mep_entry().summary()
     assert s.access == "mep" and "identity mapped" in s.access_note and "NO ACCOUNT" in s.access_note
+    assert "only attaches" in s.access_note  # walk finding: the agent promised a login node + allocation list
     assert "da3df250" not in s.model_dump_json()  # still no raw UUIDs
 
 

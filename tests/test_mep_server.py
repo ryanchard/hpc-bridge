@@ -351,3 +351,18 @@ async def test_new_login_forgets_the_no_account_verdict(monkeypatch):
     rt.last_canary = CanaryResult(ok=False, error=_LIVE_422)
     _forget_identity_verdicts(app)
     assert rt.no_account is None and rt.last_canary is None and rt.runner_stale is True
+
+
+async def test_attach_notice_says_it_did_not_test_the_identity_mapping(monkeypatch):
+    # walk finding: the agent inferred "no NO ACCOUNT came back, so your identity is mapped" from a clean attach
+    app = _app()
+    res = await _connect(app, monkeypatch)
+    assert "does NOT test your identity mapping" in res.notice and "first block start" in res.notice
+
+
+async def test_warm_billed_block_explains_a_zero_spend(monkeypatch):
+    # walk finding: "session_spend: 0 so far" on a warm billed block read as a free tier
+    app = _app()
+    await _connect(app, monkeypatch)
+    res = await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
+    assert res.status == "up" and "no charge factor is configured" in res.notice and "not a free tier" in res.notice

@@ -899,6 +899,9 @@ async def _ensure_endpoint_up(
             if billable:  # #21: name the block's bounds so a caller runs long work as a task
                 bounds = _billed_bounds_note(app, rt)
                 notice = f"{notice}. {bounds}" if notice else bounds
+                if not app.charge_factor:  # walk finding: "session_spend: 0" on a billed block misleads
+                    notice += (" (session_spend stays 0 here because no charge factor is configured for this "
+                               "facility — the block is still a billed allocation, not a free tier)")
         else:
             status = "provisioning"
             if rt.provisioning_since is None:  # start the grace clock on the first cold poll
@@ -1291,7 +1294,9 @@ async def _connect_mep(app: AppCtx, facility: str, fac) -> ConnectFacilityResult
         reused=True,  # attached to the facility's always-on endpoint: zero SSH, nothing bootstrapped
         allocations=[],
         notice=(
-            "attached to the facility's multi-user endpoint (zero SSH, nothing to bootstrap). This "
+            "attached to the facility's multi-user endpoint (zero SSH, nothing to bootstrap). Attaching "
+            "does NOT test your identity mapping — the first block start does (no account there ⇒ a "
+            "terminal NO ACCOUNT then, nothing billed). This "
             "facility is COMPUTE-ONLY: there is no free login shape — every command runs on a "
             "billed scheduler block that stays warm between calls. " + how
         ),
