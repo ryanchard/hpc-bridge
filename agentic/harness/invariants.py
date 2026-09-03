@@ -81,9 +81,14 @@ def _shape(c: ToolCall) -> str:
 
 
 def _billed_start_idxs(t: "Trace") -> list[int]:
+    """Confirmed compute starts that actually REQUESTED a block. A refusal (status down: no account,
+    bad partition) or a spend gate (needs_confirmation) started nothing — counting it made
+    ends_with_stop/spend_follows_question fire on a run where nothing was ever billed (seen on
+    mep_no_account, 2026-09-03). A missing result (stream cut) still counts, conservatively."""
     return [
         k for k, c in t.named("ensure_endpoint_up")
         if c.input.get("confirm_spend") in (True, "true") and _shape(c) == "compute"
+        and (c.result is None or str(c.result.get("status")) not in ("down", "needs_confirmation"))
     ]
 
 

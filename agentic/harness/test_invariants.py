@@ -883,3 +883,16 @@ def test_build_trace_and_bundle_capture_assistant_text(tmp_path):
     ]) + "\n")
     tb = trace_from_bundle(tmp_path)
     assert tb.texts == ["Open this link."] and [c.name for c in tb.calls] == ["authenticate"]
+
+
+def test_refused_compute_start_is_not_a_billed_start():
+    # mep_no_account (live 2026-09-03): a confirm_spend=True call answered `down` (NO ACCOUNT) started
+    # nothing, yet ends_with_stop / spend_follows_question / stop_confirmed_or_retried all fired.
+    from invariants import ends_with_stop, spend_follows_question, stop_confirmed_or_retried
+    refused = ToolCall.of("mcp__endpoint__ensure_endpoint_up",
+                          {"shape": "compute", "partition": "main", "confirm_spend": True},
+                          {"status": "down", "block_state": "cold", "notice": "NO ACCOUNT at this facility …"})
+    t = Trace([ToolCall.of("mcp__endpoint__connect_facility", {"facility": "globus1"}, {"phase": "needs_account"}), refused])
+    assert ends_with_stop(t).ok and spend_follows_question(t).ok and stop_confirmed_or_retried(t).ok
+    started = ToolCall.of("mcp__endpoint__ensure_endpoint_up", {"shape": "compute", "confirm_spend": True}, {"status": "provisioning"})
+    assert not ends_with_stop(Trace([started])).ok  # a real start with no stop still fails
