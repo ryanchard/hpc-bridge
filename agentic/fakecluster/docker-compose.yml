@@ -1,0 +1,92 @@
+# hpc-bridge fake cluster — a Docker-simulated Slurm cluster that stands in for globus1 for live
+# hpc-bridge testing when the lab cluster is contended. See README.md for the commands.
+#
+#   mysql ─▶ slurmdbd ─▶ slurmctld ─▶ { c1, c2 (slurmd) , login (sshd) }
+#
+# Shared volumes: `munge` (the generated auth key) and `home` (/home on login AND compute — the
+# endpoint venv + session scratch under $HOME must be visible to the workers).
+# Project name is fixed so the network is predictable: `hpcb-fake_default` (the agentic jail can
+# join it and reach `login:22` with no port mapping or ssh alias).
+name: hpcb-fake
+
+x-slurm: &slurm
+  build: .
+  image: hpcb-fake:latest
+  platform: linux/arm64
+  environment:
+    SLURM_DB_PASS: ${SLURM_DB_PASS:-slurm-local-dev}   # local throwaway fixture, not a secret (private network, no published port)
+  volumes:
+    - munge:/etc/munge
+  restart: unless-stopped
+
+services:
+  mysql:
+    image: mariadb:11
+    platform: linux/arm64
+    environment:
+      MARIADB_ROOT_PASSWORD: ${SLURM_DB_PASS:-slurm-local-dev}
+      MARIADB_DATABASE: slurm_acct_db
+      MARIADB_USER: slurm
+      MARIADB_PASSWORD: ${SLURM_DB_PASS:-slurm-local-dev}
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - mysql:/var/lib/mysql
+    restart: unless-stopped
+
+  slurmdbd:
+    <<: *slurm
+    hostname: slurmdbd
+    command: [slurmdbd]
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  slurmctld:
+    <<: *slurm
+    hostname: slurmctld
+    command: [slurmctld]
+    depends_on: [slurmdbd]
+    volumes:
+      - munge:/etc/munge
+      - slurmctld-state:/var/spool/slurmctld
+
+  c1:
+    <<: *slurm
+    hostname: c1
+    command: [slurmd]
+    depends_on: [slurmctld]
+    volumes:
+      - munge:/etc/munge
+      - home:/home
+
+  c2:
+    <<: *slurm
+    hostname: c2
+    command: [slurmd]
+    depends_on: [slurmctld]
+    volumes:
+      - munge:/etc/munge
+      - home:/home
+
+  login:
+    <<: *slurm
+    hostname: login
+    command: [login]
+    depends_on: [slurmctld]
+    ports:
+      - "${HPCB_FAKE_SSH_PORT:-2222}:22"
+    volumes:
+      - munge:/etc/munge
+      - home:/home
+      # The freshly generated TEST public key (lives outside the repo; bin/up.sh creates it).
+      - ${HPCB_FAKE_KEY_PUB:-~/.ssh/hpcb-fake.pub}:/run/hpcb/authorized_keys:ro
+
+volumes:
+  munge:
+  home:
+  mysql:
+  slurmctld-state:

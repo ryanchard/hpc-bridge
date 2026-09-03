@@ -1,0 +1,13 @@
+# hpc-bridge fake cluster — sshd overrides for the login node (drop-in; the distro default is the base).
+# Key-only, no root, no PAM (the test users have no password; `usermod -p '*'` unlocks them).
+Port 22
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+UsePAM no
+PrintMotd no
+AllowUsers hpcbridge-test hpcbridge-test-*
+# hpc-bridge multiplexes many commands over one ControlMaster; don't starve it.
+MaxSessions 32
+MaxStartups 32:30:64
