@@ -1,6 +1,6 @@
 # hpc-bridge — handoff (state of the repo)
 
-_Snapshot: 2026-09-03. M1 is MERGED (`main` @ `45547b6`, PR #41). Tier 1 of the V1 sprint is done; Tier 2 is next._
+_Snapshot: 2026-09-03, end of day. V1 sprint: **Tier 1 DONE** (#41); the 08-19 "block-thrashing" thread **closed** (#43 harness, #44 product, #45 follow-ups); **fake-cluster spike merged** (#46). **Tier 2 in progress — see "Resume here" just below.**_
 _For a week-long handoff to a co-dev. Design rationale lives in `docs/hpc-bridge-vault/`; this file is the live state + how-to-run + gotchas on top._
 
 ## TL;DR
@@ -8,6 +8,16 @@ _For a week-long handoff to a co-dev. Design rationale lives in `docs/hpc-bridge
 **M1 — "consume a facility-run multi-user Globus Compute endpoint (MEP) with zero SSH" — is code-complete and validated live on globus1.** This is the V1-gating objective (Phase 2 in the vault). A catalogued MEP entry now resolves to a compute-only `MEPFacility` that dispatches over AMQP through the facility's identity mapping (no SSH bootstrap, ever). All unit tests green (**334 passed, 2 skipped**; harness **52 passed**). The SSH personal-endpoint path is unchanged and still green.
 
 What's left before merge: a **general code review** of the branch, a **clean agentic regression re-run** on a quiet cluster (a couple of wave-2 scenarios were only blocked by real cluster contention, not by our code), and two small **follow-ups** (below).
+
+## Resume here (paused 2026-09-03 evening — subscription allocation)
+
+**Where we stopped:** Tier 2 of the V1 sprint — `docs/hpc-bridge-vault/Planned/V1 release.md` is the plan of record. Tier-2 item 1 was re-scoped into **B — in-terminal Globus login** and **A — public registry**. Everything is on `main`; there are **no open branches**.
+
+- **B is designed, not yet coded.** The design note is `docs/hpc-bridge-vault/Planned/In-terminal Globus login.md`. It is **awaiting the maintainer's sanity-check** of two deliberate choices: (1) paste-back mode lets a one-time auth *code* (not a token) pass through the chat — the same trade Cloudflare's `complete_authentication` makes; browser mode avoids even that; (2) login is checked lazily at `connect_facility` only (registry reads are anonymous, so `list_facilities` works with zero setup). **On "go": branch `feat/in-terminal-login` from `main` and start L1** — login-state detection → `needs_login` phase + `login_url` → the loopback browser flow via the Compute SDK's *own* `UserApp` (**never a new OAuth client — endpoint credential seeding depends on the Compute client id**) → `authenticate()` tool. Then L2 paste-back (`complete_login`), L3 skill/docs/tests, L4 the live browser check with the maintainer (the definitive test that Globus accepts a `localhost` redirect for the Compute client).
+- **A (public registry)** follows B: ship the index id as the plugin default; `SearchCatalog` reads **anonymously** (Search needs auth only for non-public entries — verified against the docs); `list_facilities` works out of the box; "add your facility" = seed YAML + PR. Open: create a purpose-named production index (today's is `hpc-bridge-test`) and name the curator of record.
+- **Fake-cluster tier** (~½ day) is scheduled in the plan; the spike works today: `agentic/fakecluster/bin/up.sh` → `prove-sbatch.sh` → `stretch.sh`; `bin/down.sh` stops it.
+- **Docker Desktop was fully quit** at the stop (it was misbehaving) — restart it before any live run.
+- Merged today, in order: #41 (M1), #42, #43 (harness isolation), #44 (`poll_task` ORPHANED), #45 (harness follow-ups), #46 (fake-cluster spike), and this pause point. Unit suite 345, harness 61.
 
 ## Building project context — start with the vault
 
