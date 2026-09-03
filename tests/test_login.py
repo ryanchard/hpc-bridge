@@ -410,3 +410,13 @@ def test_globus_identity_label_uses_the_v4_userinfo_call(monkeypatch):
     assert login_mod.globus_identity_label() == "alice@example.edu"
     assert login_mod.globus_identity_label(fetch=False) == "alice@example.edu"  # cached
     monkeypatch.setattr(login_mod, "_IDENTITY_LABEL", None)
+
+
+async def test_authenticate_landing_forgets_no_account_verdicts():
+    from hpc_bridge.server import _shape_runtime
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    app.login_flow = _StubFlow(required=True, wait_result="done")
+    rt = _shape_runtime(app, "compute")
+    rt.no_account = "Identity failed to map to a local user name."
+    st = await _authenticate(app)
+    assert st.phase == "logged_in" and rt.no_account is None and rt.runner_stale is True

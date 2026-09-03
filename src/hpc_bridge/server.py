@@ -56,6 +56,11 @@ class ShapeRuntime:
     # Set when user_endpoint_config changed under a live runner (e.g. a new partition): the
     # cached Executor captured the old config at build time, so _runner_for must rebuild it.
     runner_stale: bool = False
+    # A recorded NO-ACCOUNT refusal (the MEP could not map our identity). Sticky: later calls return
+    # it without re-submitting — a rapid re-submit got a transient RESOURCE_CONFLICT from the web
+    # service (live, 2026-09-03) that flipped the verdict back to 'allocating nodes…'. Cleared when the
+    # runtime is dropped (re-bind/teardown) or a new login lands (_forget_identity_verdicts).
+    no_account: str | None = None
     # Deterministic spend floor: a scheduler compute shape may not start a block until spend is
     # explicitly acknowledged via ensure_endpoint_up(confirm_spend=True). Persists for the
     # session once given (no re-nagging); cleared on stop/reset when the shape state is dropped.
@@ -543,6 +548,8 @@ async def _confirm_worker(app: AppCtx, shape: str, *, force: bool) -> str:
     also kicks that block). Within CANARY_TTL_S of the last success we trust warmth and skip
     the round-trip so an interactive burst doesn't pay it on every call."""
     rt = _shape_runtime(app, shape)
+    if rt.no_account:  # terminal for this identity: no canary, no runner rebuild — keep last_canary as the evidence
+        return "provisioning"
     runner = _runner_for(app, shape)
     now = time.monotonic()
     # A task still running on this shape IS liveness — the worker is demonstrably executing our work.
@@ -567,6 +574,8 @@ async def _confirm_worker(app: AppCtx, shape: str, *, force: bool) -> str:
         # forever (the #37 dead-end in a new guise). Rebuild it on the next call; the failure text
         # rides `last_canary` into the provisioning notice so the cause is visible, not buried.
         rt.runner_stale = True
+        if _no_account_failure(result.error):
+            rt.no_account = result.error
     return "provisioning"
 
 
@@ -933,6 +942,7 @@ async def _authenticate(app: AppCtx, force: bool = False, mode: str | None = Non
         return LoginStatus(phase="logged_in", notice="Globus login present with every scope hpc-bridge needs.")
     start, status = await _start_login_and_wait(flow, mode)
     if status == "done":
+        _forget_identity_verdicts(app)
         return LoginStatus(phase="logged_in", notice="Globus login completed in the browser; carry on.")
     return LoginStatus(phase="needs_login", login_url=start.login_url, login_mode=start.mode,
                        notice=_login_notice(start, flow.error,
@@ -948,6 +958,7 @@ async def _complete_login(app: AppCtx, code: str) -> LoginStatus:
     except Exception as exc:  # noqa: BLE001 - a bad/expired code is a structured outcome, not a crash
         return LoginStatus(phase="failed", notice=f"login code not accepted: {type(exc).__name__}: {exc}"[:300]
                            + " — call authenticate() for a fresh link.")
+    _forget_identity_verdicts(app)
     return LoginStatus(phase="logged_in", notice="Globus login complete. Continue: connect_facility again.")
 
 
@@ -1775,7 +1786,27 @@ def _dispatch_error_suffix(canary: CanaryResult | None) -> str:
     path broke — the caller must see WHY rather than keep waiting on a block that will never come."""
     if canary is None or canary.ok or not canary.error or canary.error == "timeout":
         return ""
+    if _transient_dispatch_failure(canary.error):
+        return (f" — last dispatch was refused as TRANSIENT: {canary.error}. The endpoint is still processing "
+                "a previous start request — wait ~10 s and call again (not a config problem)")
     return f" — last dispatch failed: {canary.error}. Not a queue wait: fix the config/partition and retry"
+
+
+def _transient_dispatch_failure(error: str | None) -> bool:
+    """The web service's 409 RESOURCE_CONFLICT ('Endpoint … is already in use: possibly due to concurrent
+    requests -- please try again'): seen live when a submit followed another within ~2 s."""
+    e = (error or "").lower()
+    return "resource_conflict" in e or "already in use" in e
+
+
+def _forget_identity_verdicts(app: AppCtx) -> None:
+    """A new Globus login may be a different identity: drop every sticky no-account verdict and make the
+    runners rebuild (their Executors were built on the old credential)."""
+    for rt in app.shapes.values():
+        if rt.no_account:
+            rt.no_account = None
+            rt.last_canary = None
+        rt.runner_stale = True
 
 
 # The MEP manager's failure notices when it cannot start a user endpoint for the caller's identity

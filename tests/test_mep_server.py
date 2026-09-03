@@ -302,3 +302,52 @@ async def test_documented_422_through_the_canary_is_terminal_down(monkeypatch):
     monkeypatch.setattr("hpc_bridge.login.globus_identity_label", lambda fetch=True: None)  # no lookup needed
     res = await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
     assert res.status == "down" and "NO ACCOUNT" in res.notice and "(alice@example.edu)" in res.notice
+
+
+_LIVE_422 = ("ComputeAPIError[SEMANTICALLY_INVALID]: Request payload failed validation: Identity failed to map to a "
+             "local user name. (LookupError) Globus effective identity: a4ef1d60-542a-49b3-a800-9a9b73a63b63 "
+             "Globus username: ellermaugustus@gmail.com")
+_LIVE_409 = ("ComputeAPIError[RESOURCE_CONFLICT]: Endpoint da3df250-4013-4d69-942c-eef1568f860c is already in use: "
+             "possibly due to concurrent requests -- please try again")
+
+
+async def test_no_account_verdict_is_sticky_and_stops_submitting(monkeypatch):
+    # LIVE 2026-09-03: call #1 got the 422 -> terminal down; call #2 two seconds later re-submitted and got a
+    # transient 409 RESOURCE_CONFLICT, flipping the verdict back to "allocating nodes…". The verdict must stick.
+    app = _app()
+    await _connect(app, monkeypatch)
+    made, holder = [], {"err": _LIVE_422}
+
+    def factory(eid, user_endpoint_config=None, **_kw):
+        made.append(_FakeRunner(eid, _Res(0, "", ""), canary_result=CanaryResult(ok=False, error=holder["err"])))
+        return made[-1]
+
+    app.runner_factory = factory
+    monkeypatch.setattr("hpc_bridge.login.globus_identity_label", lambda fetch=True: None)
+    first = await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
+    assert first.status == "down" and "(ellermaugustus@gmail.com)" in first.notice
+    holder["err"] = _LIVE_409  # what a re-submit would have got
+    second = await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
+    assert second.status == "down" and "NO ACCOUNT" in second.notice and "allocating" not in second.notice
+    assert len(made) == 1 and made[0].canaries == 1  # no re-submit, no runner rebuild
+    # a cold run_shell is terminal too, without submitting
+    out = await _run_shell(app, "hostname", shape="compute")
+    assert out.phase == "failed" and "NO ACCOUNT" in out.notice and made[0].canaries == 1
+
+
+def test_transient_conflict_hint_is_not_fix_your_config():
+    from hpc_bridge.server import _dispatch_error_suffix, _transient_dispatch_failure
+    assert _transient_dispatch_failure(_LIVE_409) and not _transient_dispatch_failure(_LIVE_422)
+    s = _dispatch_error_suffix(CanaryResult(ok=False, error=_LIVE_409))
+    assert "TRANSIENT" in s and "wait ~10 s" in s and "fix the config" not in s
+
+
+async def test_new_login_forgets_the_no_account_verdict(monkeypatch):
+    from hpc_bridge.server import _forget_identity_verdicts, _shape_runtime
+    app = _app()
+    await _connect(app, monkeypatch)
+    rt = _shape_runtime(app, "compute")
+    rt.no_account = _LIVE_422
+    rt.last_canary = CanaryResult(ok=False, error=_LIVE_422)
+    _forget_identity_verdicts(app)
+    assert rt.no_account is None and rt.last_canary is None and rt.runner_stale is True
