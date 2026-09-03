@@ -49,6 +49,7 @@ On `needs_login`: present `login_url` as a link and say what will happen ("your 
 | **L2** | ✅ **built** — `complete_login(code)`; paste mode chosen for remote/headless sessions or when the browser flow can't produce a URL |
 | **L3** | ✅ **built** — SKILL.md + `hpc-connect.md` guidance; models; 12 hermetic tests (a start()/worker-thread lock deadlock in the fallback path was found by them and fixed) |
 | **L4** | ✅ **PASSED 2026-09-03** — scratch token dir → `needs_login` (browser) → login + one consent → Globus redirected to the loopback on `127.0.0.1` → `done` → `login_required()` False → all three resource servers stored with the required scopes **and refresh tokens**. **Globus honours the `localhost` redirect for the Compute client — confirmed.** Follow-up found by the check: the SDK's redirect handler logs the request line (with the one-time code) to stderr — silenced in our manager subclass. |
+| L5 fresh-user walk | ✅ 2026-09-03 |
 
 ## See also
 [[V1 release]] · [[Credential seeding]] · [[Facility catalog]] · [[Endpoint reuse and MEP integration]] (M2) · [[MFA and interactive SSH auth]] (the `needs_preauth` precedent) · [[credentials]]
