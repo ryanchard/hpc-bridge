@@ -31,3 +31,50 @@ def test_make_catalog_propagates_search_client_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_make_search_client", boom)
     with pytest.raises(RuntimeError, match="scope not granted"):
         server.make_catalog()
+
+
+
+def test_search_client_is_anonymous_unless_the_scope_is_already_held():
+    # the registry is public: a fresh install reads it with NO login/consent; an identity that already
+    # holds the Search scope (a curator) gets the authenticated client (sees restricted entries too)
+    from hpc_bridge import server
+
+    class _App:
+        def __init__(self, required):
+            self._required = required
+
+        def login_required(self):
+            return self._required
+
+        def add_scope_requirements(self, *a, **k):  # SearchClient(app=...) registers its scope here
+            pass
+
+        @property
+        def app_name(self):
+            return "t"
+
+    anon = server._make_search_client(_app_factory=lambda: _App(required=True))
+    assert getattr(anon, "authorizer", None) is None  # anonymous: public entries only
+    def boom():
+        raise OSError("no storage.db at all")
+    assert getattr(server._make_search_client(_app_factory=boom), "authorizer", None) is None
+
+
+def test_search_client_never_lets_the_compute_client_version_check(monkeypatch):
+    # the version check is an AUTHENTICATED call: on a fresh install it triggers the SDK's own
+    # command-line login on the MCP transport (review merge-blocker) — must be off
+    import globus_compute_sdk
+    from hpc_bridge import server
+    seen = {}
+
+    class _Client:
+        def __init__(self, *a, **kw):
+            seen.update(kw)
+            class _App:
+                def login_required(self): return True
+                def add_scope_requirements(self, *a, **k): pass
+            self.app = _App()
+
+    monkeypatch.setattr(globus_compute_sdk, "Client", _Client)
+    server._make_search_client()
+    assert seen.get("do_version_check") is False

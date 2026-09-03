@@ -28,6 +28,7 @@
 | `HPC_BRIDGE_SYNC_WAIT_S` | How long `run_shell` blocks for a result before handing back a poll handle (default `120`). A command still running past it comes back `running` + `task_id` (**not** cut); retrieve it with `poll_task`. Clamped strictly below the task ceiling. |
 | `HPC_BRIDGE_MAX_TASK_S` | Optional cap (seconds) on a single task before the worker kills it (exit 124). **Unset ⇒ the ceiling is the block walltime** — the deterministic default. Set it to bound the blast radius of a hung task on a long-walltime facility ([[Cost control]], [#21](https://github.com/ryanchard/hpc-bridge/issues/21)). |
 | `HPC_BRIDGE_USER_DIR` | Local `globus_compute` dir (set by `.mcp.json`). |
+| `HPC_BRIDGE_LOGIN_WAIT_S` | How long `connect_facility`/`authenticate` wait for a browser Globus login to land before returning `needs_login` (default 90). |
 
 ## BYO endpoint
 

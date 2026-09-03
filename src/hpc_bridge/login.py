@@ -1,0 +1,261 @@
+"""In-terminal Globus login — the Cloudflare-shaped OAuth flow, surfaced as a *phase*, never a prompt.
+
+The MCP server runs over stdio and can never prompt. So when Globus credentials are missing or
+under-scoped, `connect_facility` returns `phase="needs_login"` carrying an authorize URL: the agent
+shows it, the user's browser completes the login, Globus redirects to a **loopback listener inside
+this process**, tokens are stored, and the next `connect_facility` proceeds. Paste-back (a one-time
+auth CODE, not a token, handed to `complete_login`) is the fallback for remote/headless sessions.
+Design: docs/hpc-bridge-vault/Planned/In-terminal Globus login.md.
+
+Two constraints are load-bearing:
+- **Ride the Compute SDK's own client id and token storage.** The remote `globus-compute-endpoint`
+  refreshes tokens with the Compute SDK's native client id; a token issued to any other client can't
+  be refreshed there, and credential seeding (`credentials.build_minimal_storage_db`) would ship a
+  dead credential. So this module builds a `UserApp` with the SAME client id + the SAME
+  `storage.db`/namespace the SDK uses — it differs only in the login-flow manager. (Registering a
+  separate OAuth client, the literal Cloudflare approach, is exactly what NOT to do here.)
+- **One consent, the minimum:** exactly what a started endpoint hard-requires — the Compute scope +
+  Auth `openid` + `manage_projects` (`globus_compute_endpoint.auth.get_globus_app_with_scopes`; the
+  same set `globus-compute-endpoint login` requests) — with refresh tokens, so it is one browser
+  round-trip for the lifetime of the install. Search is NOT requested: registry reads are anonymous
+  for public entries; a `visible_to`-restricted registry would ask for it lazily via the same flow.
+
+Globus Auth allows native clients an implicit redirect to `localhost:<any-port>` (the SDK's own
+LocalServerLoginFlowManager relies on it), so nothing needs registering.
+"""
+from __future__ import annotations
+
+import os
+import platform
+import threading
+import time
+from dataclasses import dataclass, field
+from typing import Callable, Literal
+
+LoginMode = Literal["browser", "paste"]
+FLOW_TTL_S = 600.0  # a login URL / listener lives this long, then a fresh needs_login re-arms one
+
+SEARCH_SCOPE = "urn:globus:auth:scope:search.api.globus.org:search"
+
+
+def required_scopes(*, include_search: bool = False) -> dict[str, list[str]]:
+    """resource_server -> scopes to request in ONE consent. Default = the MINIMUM: exactly what a
+    started endpoint hard-requires (Compute + Auth openid/manage_projects — from `credentials`,
+    resolved from the SDK so it tracks upstream; parity with `globus-compute-endpoint login`).
+    `include_search=True` adds Search read — only for a registry with non-public entries; public
+    entries are read anonymously, so it is not part of the default consent."""
+    from .credentials import _required_scopes
+
+    out = {rs: list(dict.fromkeys(scopes)) for rs, scopes in _required_scopes().items()}  # deduped, ordered
+    if include_search:
+        out.setdefault("search.api.globus.org", [])
+        if SEARCH_SCOPE not in out["search.api.globus.org"]:
+            out["search.api.globus.org"].append(SEARCH_SCOPE)
+    return out
+
+
+def _remote_session() -> bool:
+    """A browser on THIS machine can't reach a loopback listener in a remote/headless session."""
+    return bool(os.environ.get("SSH_TTY") or os.environ.get("SSH_CONNECTION"))
+
+
+_TEXT_BROWSERS = ("lynx", "www-browser", "links", "elinks", "w3m")  # the SDK's own deny list
+
+
+def _browser_available() -> bool:
+    """Pre-flight for browser mode: is there a graphical browser this process can open? The SDK
+    only discovers 'no browser' AFTER it has produced the URL (URL first, then webbrowser.open), so
+    without this check a headless host would arm a loopback flow nobody can complete."""
+    if _remote_session():
+        return False
+    try:
+        import webbrowser
+
+        b = webbrowser.get()
+        name = getattr(b, "name", None) or getattr(b, "_name", "")
+        return name not in _TEXT_BROWSERS
+    except Exception:  # noqa: BLE001 - webbrowser.Error (no browser) or anything odd -> paste
+        return False
+
+
+@dataclass
+class LoginStart:
+    """What the agent gets: a URL to show the user, and how the login will complete."""
+
+    login_url: str
+    mode: LoginMode
+    expires_at: float  # time.monotonic()
+
+
+@dataclass
+class LoginFlow:
+    """The one in-flight login (per server process). `start()` is idempotent while a flow is live.
+
+    `app_factory(manager)` builds the Globus app to log in with — the real one rides the Compute SDK
+    (see `_default_app_factory`); tests inject a fake. `mode_override` forces browser/paste."""
+
+    app_factory: Callable | None = None
+    mode_override: LoginMode | None = None
+    ttl_s: float = FLOW_TTL_S
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _start: LoginStart | None = None
+    _thread: threading.Thread | None = None
+    _manager: object | None = None
+    _state: Literal["idle", "waiting", "done", "failed", "expired"] = "idle"
+    error: str | None = None
+    _gen: int = 0  # per-attempt generation: a dead worker from an EARLIER attempt must not touch state
+    _browser_failed: bool = False  # a browser attempt died (no browser / Globus rejected the redirect) -> paste next
+    _paste_client: object | None = field(default=None, repr=False)
+
+    # ---- state ----------------------------------------------------------------------------------
+
+    def login_required(self) -> bool:
+        """Non-prompting: does the stored credential satisfy every required scope? Errors (no
+        storage.db, unreadable db) count as 'required' — the safe default for a first run."""
+        try:
+            app = (self.app_factory or _default_app_factory)(None)
+            return bool(app.login_required())
+        except Exception as exc:  # noqa: BLE001 - treat an unreadable credential as absent
+            import sys
+
+            print(f"hpc-bridge: login_required check failed ({type(exc).__name__}: {exc}); treating as login"
+                  " required", file=sys.stderr)
+            return True
+
+    def status(self) -> str:
+        with self._lock:
+            self._expire_locked()
+            return self._state
+
+    def wait(self, timeout_s: float, poll_s: float = 0.25) -> str:
+        """Block until the armed login leaves 'waiting' (done/failed/expired) or `timeout_s` passes;
+        returns the status. This is what makes the browser flow feel like the Cloudflare plugin's:
+        the tool call that started it waits for the redirect and carries on — the user never has to
+        say 'done'. Found live: with a Globus web session + prior consent the redirect lands in ~4 s."""
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        while True:
+            st = self.status()
+            if st != "waiting" or time.monotonic() >= deadline:
+                return st
+            time.sleep(min(poll_s, max(0.0, deadline - time.monotonic())))
+
+    def _expire_locked(self) -> None:
+        if self._state == "waiting" and self._start and time.monotonic() > self._start.expires_at:
+            self._state = "expired"
+            self._stop_listener_locked("login URL expired")
+
+    # ---- the flow -------------------------------------------------------------------------------
+
+    def start(self, mode: LoginMode | None = None) -> LoginStart:
+        """(Re)arm a login. Idempotent while one is waiting: the same URL comes back. Browser mode
+        runs the SDK's loopback flow in a background thread (it opens the browser itself; the URL
+        is ALSO returned so the agent can show it if that failed). Paste mode builds the auth-code
+        URL for `complete_login`."""
+        with self._lock:
+            self._expire_locked()
+            if self._state == "waiting" and self._start is not None:
+                return self._start
+            if mode is None:
+                mode = self.mode_override or (
+                    "paste" if (self._browser_failed or not _browser_available()) else "browser"
+                )
+            self.error = None
+            if mode == "browser":
+                return self._start_browser_locked()
+            return self._start_paste_locked()
+
+    def _start_browser_locked(self) -> LoginStart:
+        from .login_flow_manager import CapturingLocalServerManager
+
+        url_ready = threading.Event()
+        captured: dict[str, str] = {}
+
+        def on_url(url: str) -> None:
+            captured["url"] = url
+            url_ready.set()
+
+        manager = CapturingLocalServerManager.build(on_url=on_url)
+        app = (self.app_factory or _default_app_factory)(manager)
+
+        self._gen += 1
+        gen = self._gen
+
+        def run() -> None:
+            # NB: plain attribute writes only — start() holds self._lock while it waits for the URL,
+            # so taking the lock here would deadlock the fallback path (found by the unit test). And
+            # only THIS attempt's worker may write: after our TTL expires and a new attempt is armed,
+            # the old worker wakes up failing — it must not mark the new flow failed (found in review).
+            try:
+                app.login(force=True)  # blocks until the loopback receives the code (or fails)
+                if self._gen == gen and self._state == "waiting":
+                    self._state = "done"
+            except Exception as exc:  # noqa: BLE001 - browser missing / remote / Globus error
+                self._browser_failed = True  # next start() goes straight to paste
+                if self._gen == gen and self._state == "waiting":
+                    self._state = "failed"
+                    self.error = f"{type(exc).__name__}: {exc}"[:300]
+            finally:
+                url_ready.set()  # never leave start() hanging
+
+        self._manager = manager
+        self._state = "waiting"
+        self._thread = threading.Thread(target=run, name="hpc-bridge-login", daemon=True)
+        self._thread.start()
+        url_ready.wait(timeout=15)
+        url = captured.get("url")
+        if not url:  # the flow died before producing a URL (e.g. no browser): fall back to paste
+            self._state = "idle"
+            return self._start_paste_locked(reason=self.error)
+        self._start = LoginStart(login_url=url, mode="browser", expires_at=time.monotonic() + self.ttl_s)
+        return self._start
+
+    def _start_paste_locked(self, reason: str | None = None) -> LoginStart:
+        from .login_flow_manager import paste_flow_url
+
+        self._gen += 1
+        url, self._paste_client = paste_flow_url()
+        self._state = "waiting"
+        self._start = LoginStart(login_url=url, mode="paste", expires_at=time.monotonic() + self.ttl_s)
+        if reason:
+            self.error = f"browser flow unavailable ({reason}); using paste-back"
+        return self._start
+
+    def complete_with_code(self, code: str) -> None:
+        """Paste-back: exchange the one-time auth code and store the tokens where the Compute SDK
+        (and the seeding) read them. Raises on a bad/expired code."""
+        from .login_flow_manager import store_paste_tokens
+
+        with self._lock:
+            self._expire_locked()
+            client = self._paste_client
+            if client is None or self._state != "waiting" or (self._start and self._start.mode != "paste"):
+                raise RuntimeError("no paste-back login is waiting (or it expired) — call authenticate() first")
+        store_paste_tokens(client, code.strip())
+        with self._lock:
+            self._state = "done"
+
+    def _stop_listener_locked(self, why: str) -> None:
+        m = self._manager
+        if m is not None and hasattr(m, "abort"):
+            try:
+                m.abort(why)
+            except Exception:  # noqa: BLE001 - best-effort
+                pass
+
+
+def _default_app_factory(manager):
+    """The REAL app: the Compute SDK's client id + token storage (so the endpoint can refresh what
+    we obtain), our scope set, and — when given — our capturing loopback manager. With
+    manager=None it is a non-prompting instance for `login_required()` only."""
+    from globus_sdk import GlobusAppConfig, UserApp
+    from globus_compute_sdk.sdk.auth.globus_app import DEFAULT_CLIENT_ID
+    from globus_compute_sdk.sdk.auth.token_storage import get_token_storage
+
+    config = GlobusAppConfig(
+        token_storage=get_token_storage(),
+        request_refresh_tokens=True,
+        **({"login_flow_manager": manager} if manager is not None else {}),
+    )
+    app = UserApp(app_name=f"hpc-bridge on {platform.node()}", client_id=DEFAULT_CLIENT_ID, config=config)
+    app.add_scope_requirements(required_scopes())
+    return app

@@ -30,7 +30,10 @@ A `Protocol` with `get(machine)` (exact → provisioning) and `discover(query)` 
 >
 > Ingest is idempotent (keyed by subject): `hpc-bridge-catalog 6ff95fb8-1113-42be-a811-3d1cb5a67bd5 src/hpc_bridge/catalog/seed/<file>.yaml` (needs the one-time `search:all` consent). All entries are currently `visible_to: public` — `ingest.py` hardcodes it; per-entry visibility is a curator TODO. **Seed `aliases` are NOT indexed** (the loader resolves them; `ingest.py` drops them and `SearchCatalog` matches only `id`/subject) — at runtime use the `id` (`globus1`) or subject, as `list_facilities` shows. Verified live 2026-08-19: `get("globus1")` → the MEP entry → `MEPFacility`, and a real status read of the MEP returned online.
 
-> [!note] Auth — reuse the Compute identity
+> [!note] Auth — anonymous by default (public registry); the Compute identity only when it already holds the Search scope
+> Globus Search needs auth only for non-public entries, so a fresh install lists the registry with zero setup. The note below records the earlier authenticated-read design; see [[Globus index discovery channel]] for the 2026-09-03 flip.
+>
+> [!note] (Original) Auth — reuse the Compute identity
 > Reads use `SearchClient(app=Client().app)` — the same Globus identity Compute already holds — needing a one-time search-scope consent (`hpc-bridge-catalog`); until granted, catalog discovery **hard-fails** (no bundled fallback). This unlocks `visible_to`-restricted entries. See [[Globus index discovery channel]].
 
 ## Three ways in — startup, agentic, or BYO
