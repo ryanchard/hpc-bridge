@@ -136,6 +136,39 @@ async def test_cold_compute_block_skips_the_login_pilot_query(monkeypatch):
     assert "login" not in app.shapes
 
 
+async def test_unmapped_identity_is_a_terminal_down_not_allocating(monkeypatch):
+    # the #32 provisioning-notice augmenter queries the scheduler over shape="login" — skipped on a MEP
+    import time as _time
+
+    app = _app()
+    await _connect(app, monkeypatch)
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(
+        eid, _Res(0, "", ""), canary_result=CanaryResult(ok=False, error="TaskExecutionFailed: Identity failed to map to a local user name.  (LookupError) "))
+    server._shape_runtime(app, "compute").provisioning_since = _time.monotonic() - (server.PROVISION_GRACE_S + 10)
+    monkeypatch.setattr("hpc_bridge.login.globus_identity_label", lambda fetch=True: "someone@example.org")
+    res = await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
+    assert res.status == "down" and res.block_state == "cold"
+    assert "NO ACCOUNT" in res.notice and "someone@example.org" in res.notice and "TERMINAL" in res.notice
+    assert "allocating" not in res.notice and "failed to map" in res.notice.lower()
+
+
+def test_no_account_markers_cover_the_manager_messages():
+    from hpc_bridge.server import _no_account_failure
+    assert _no_account_failure("TaskExecutionFailed: Identity failed to map to a local user name.  (LookupError) ")
+    assert _no_account_failure("(KeyError)\n  Identity mapped to a local user name, but local user does not exist.")
+    assert _no_account_failure("Ignoring start request for untrusted identity.")
+    assert not _no_account_failure("timeout") and not _no_account_failure(None)
+    assert not _no_account_failure("RuntimeError: Executor is shutdown")
+
+
+def test_cold_run_shell_on_no_account_is_failed_not_cold_start():
+    from hpc_bridge.server import _cold_outcome
+    out = _cold_outcome("cold", CanaryResult(ok=False, error="TaskExecutionFailed: Identity failed to map to a local user name."))
+    assert out.phase == "failed" and "NO ACCOUNT" in out.notice
+    assert _cold_outcome("cold", CanaryResult(ok=False, error="timeout")).phase == "cold_start"
+
+
+
 # --- stop / teardown: draining-only, no release channel ----------------------------------------------
 
 

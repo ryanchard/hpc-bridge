@@ -847,6 +847,18 @@ async def _ensure_endpoint_up(
                 rt.provisioning_since = time.monotonic()
             provisioning_elapsed = time.monotonic() - rt.provisioning_since
             notice = f"allocating nodes on {active_partition!r}…" if active_partition else "allocating nodes…"
+            if rt.last_canary is not None and _no_account_failure(rt.last_canary.error):
+                # The manager refused to start a user endpoint for THIS identity: no local account. Not
+                # 'allocating nodes' — a terminal `down`, so the agent stops polling and tells the user.
+                from .login import globus_identity_label
+
+                identity = await asyncio.to_thread(globus_identity_label)
+                rt.provisioning_since = None
+                return EndpointStatus(
+                    status="down", block_state="cold", endpoint_id=eid, session_spend=spend,
+                    partition=active_partition, account=active_account,
+                    notice=_no_account_notice(app, rt.last_canary.error, identity),
+                )
             if not _has_login_shape(app) and rt.last_canary is None:
                 # On a MEP a canary runs on EVERY poll whose manager gate passes (and is recorded even
                 # when it fails), so "provisioning with no canary ever recorded" means the manager
@@ -1766,7 +1778,41 @@ def _dispatch_error_suffix(canary: CanaryResult | None) -> str:
     return f" — last dispatch failed: {canary.error}. Not a queue wait: fix the config/partition and retry"
 
 
+# The MEP manager's failure notices when it cannot start a user endpoint for the caller's identity
+# (globus_compute_endpoint/endpoint/endpoint_manager.py; delivered by the web service as the task's
+# failure reason, so our canary future raises with this text). None of them is a queue wait, and
+# nothing on our side changes them: the facility must grant an account / add the identity mapping.
+_NO_ACCOUNT_MARKERS = (
+    "failed to map to a local user",          # identity mapping found no local user
+    "local user does not exist",              # mapped, but the account isn't on the machine
+    "untrusted identity",                     # single-user endpoint: not the owner's identity
+)
+
+
+def _no_account_failure(error: str | None) -> bool:
+    e = (error or "").lower()
+    return any(m in e for m in _NO_ACCOUNT_MARKERS)
+
+
+def _no_account_notice(app: AppCtx | None, error: str | None, identity: str | None) -> str:
+    who = f" ({identity})" if identity else ""
+    eid = app.state.endpoint_id if app is not None else None
+    where = f" {eid}" if eid else ""
+    return (
+        f"NO ACCOUNT at this facility: its multi-user endpoint{where} could not map the user's Globus "
+        f"identity{who} to a local user — the facility's manager said: {(error or '').strip()[:160]}. "
+        "This is TERMINAL, not a queue wait: no retry or poll from here changes it. The user needs an account "
+        "on this machine with their Globus identity added to the endpoint's identity mapping — tell them to "
+        "ask the facility's support, quoting that identity. Do not call ensure_endpoint_up again until they have."
+    )
+
+
 def _cold_outcome(block: str, canary: CanaryResult | None = None) -> ShellOutcome:
+    if canary is not None and _no_account_failure(canary.error):
+        from .login import globus_identity_label
+
+        return ShellOutcome(phase="failed", block_state=block,
+                            notice=_no_account_notice(None, canary.error, globus_identity_label(fetch=False)))
     return ShellOutcome(
         phase="cold_start",
         block_state=block,
