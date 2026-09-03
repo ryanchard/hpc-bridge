@@ -63,15 +63,27 @@ async def _build_once() -> bool:
     return True
 
 
-def _is_serial(scenario: str) -> bool:
-    """Ask the scenario module (via harness/scenario_knobs.py, importable on the host) whether it is SERIAL."""
+def _knobs(scenario: str) -> dict[str, str]:
+    """The scenario module's host-side knobs (via harness/scenario_knobs.py, importable on the host)."""
     import subprocess
     try:
         out = subprocess.run([sys.executable, str(REPO / "agentic" / "harness" / "scenario_knobs.py"), scenario],
                              capture_output=True, text=True, timeout=30).stdout
-    except Exception:  # noqa: BLE001 - unknown scenario / import error: run.py reports it; not serial
-        return False
-    return "HPCB_KNOB_SERIAL=1" in out
+    except Exception:  # noqa: BLE001 - unknown scenario / import error: run.py reports it; no knobs
+        return {}
+    return dict(ln.split("=", 1) for ln in out.splitlines() if "=" in ln)
+
+
+def _is_serial(scenario: str) -> bool:
+    k = _knobs(scenario)
+    return k.get("HPCB_KNOB_SERIAL") == "1" or int(k.get("HPCB_KNOB_COOLDOWN_S", "0") or 0) > 0
+
+
+def _cooldown_s(scenario: str) -> int:
+    """Seconds run_suite waits after each cell of `scenario` before the next one (holding its serial
+    lock): a scenario whose cells are deliberate failed SSH auths must stay under the cluster's
+    fail2ban maxretry/findtime — six back-to-back cells got the harness' egress banned (2026-09-03)."""
+    return int(_knobs(scenario).get("HPCB_KNOB_COOLDOWN_S", "0") or 0)
 
 
 def _short_model(m: str) -> str:
@@ -167,15 +179,22 @@ async def _main(args) -> int:
     # SERIAL scenarios (one Globus identity per cell — mep_no_account, stranger_mep_walk) run one at a
     # time: two cells at once make the web service answer the second with RESOURCE_CONFLICT (first sweep).
     serial_locks = {s: asyncio.Lock() for s in scenarios if _is_serial(s)}
+    cooldowns = {s: _cooldown_s(s) for s in serial_locks}
     if serial_locks:
-        print(f"serial scenarios (one cell at a time): {sorted(serial_locks)}", flush=True)
+        print("serial scenarios (one cell at a time): "
+              + ", ".join(f"{s}{f' (+{cooldowns[s]}s cooldown)' if cooldowns[s] else ''}" for s in sorted(serial_locks)),
+              flush=True)
 
     async def gated(s, m, e, pe, ab):
         lock = serial_locks.get(s)
         if lock is None:
             return await _run_job(s, m, e, pe, ab, claims, sem, stagger, halt)
         async with lock:
-            return await _run_job(s, m, e, pe, ab, claims, sem, stagger, halt)
+            r = await _run_job(s, m, e, pe, ab, claims, sem, stagger, halt)
+            if cooldowns.get(s) and not halt.is_set():
+                print(f"⏲ cooldown {s}: {cooldowns[s]}s before its next cell (fail2ban findtime)", flush=True)
+                await asyncio.sleep(cooldowns[s])
+            return r
 
     try:
         results = await asyncio.gather(*[gated(s, m, e, pe, ab) for s, m, e, pe, ab in jobs])
