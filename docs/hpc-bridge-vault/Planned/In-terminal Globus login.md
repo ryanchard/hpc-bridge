@@ -43,9 +43,9 @@ On `needs_login`: present `login_url` as a link and say what will happen ("your 
 ## Milestones
 | L | Deliverable |
 |---|---|
-| **L1** | login-state detection at connect → `needs_login` + `login_url` (browser mode via the loopback listener); `authenticate()` |
-| **L2** | `complete_login(code)` + paste-mode detection/fallback |
-| **L3** | SKILL.md + `commands/hpc-connect.md`; models; unit tests (fake flow manager: phases, listener lifecycle, scope set, mode switch); a `first_login` note in the harness (the browser step needs a human — hermetic + one live check) |
+| **L1** | ✅ **built** (`login.py`, `login_flow_manager.py`, `server.py`) — detection at connect → `needs_login` + `login_url`/`login_mode`; loopback browser flow; `authenticate(force)` |
+| **L2** | ✅ **built** — `complete_login(code)`; paste mode chosen for remote/headless sessions or when the browser flow can't produce a URL |
+| **L3** | ✅ **built** — SKILL.md + `hpc-connect.md` guidance; models; 12 hermetic tests (a start()/worker-thread lock deadlock in the fallback path was found by them and fixed) |
 | **L4** | **Live check with the maintainer:** fresh `storage.db` → `connect_facility` → `needs_login` → browser → back → connect proceeds. This is the definitive localhost-redirect test. |
 
 ## See also
