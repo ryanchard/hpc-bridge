@@ -149,6 +149,7 @@ class ConnectFacilityResult(BaseModel):
         "needs_facility_details",
         "proposed_facility_details",
         "needs_preauth",
+        "needs_login",
         "unsupported",
         "failed",
     ]
@@ -161,7 +162,23 @@ class ConnectFacilityResult(BaseModel):
     # open a reusable master (entering the password/MFA there). The agent relays it — never runs or
     # fills it, and never handles the secret.
     preauth_command: str | None = None
+    # phase="needs_login": Globus credentials are missing/under-scoped. `login_url` is the Globus
+    # authorize link for the USER to open; `login_mode` says how it completes — "browser": a loopback
+    # listener in this process receives the code (nothing to paste; call connect_facility again),
+    # "paste": Globus shows a one-time code the user hands to complete_login(code). The agent relays
+    # the link and never asks for a password or handles a token.
+    login_url: str | None = None
+    login_mode: Literal["browser", "paste"] | None = None
     # A draft discovered by probing the login node (phase="proposed_facility_details"): review/correct
     # it with the user, then connect_facility(details=…). None for every other phase.
     proposed_details: FacilityDetails | None = None
+    notice: str | None = None
+
+
+class LoginStatus(BaseModel):
+    """Result of authenticate() / complete_login(): where the Globus login stands."""
+
+    phase: Literal["logged_in", "needs_login", "failed"]
+    login_url: str | None = None
+    login_mode: Literal["browser", "paste"] | None = None
     notice: str | None = None

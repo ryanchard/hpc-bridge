@@ -21,6 +21,8 @@ from .cost import cap_output, estimate_spend
 from .discovery import discover_facility_details
 from .endpoint import EndpointCLI
 from .facility.base import Facility
+from .login import LoginFlow, LoginStart
+from .models import LoginStatus
 from .facility.local import LocalFacility
 from .lifecycle import EndpointState, ensure_warm
 from .models import (
@@ -95,6 +97,9 @@ class AppCtx:
     session_facilities: dict[str, CatalogEntry] = field(default_factory=dict)
     runner_factory: Callable[..., GlobusRunner] = GlobusRunner
     # serializes provision / runner-swap / teardown so concurrent tool calls can't race AppCtx state
+    # The in-terminal Globus login (login.py). None ⇒ no login gating (hermetic tests / unbound dev);
+    # lifespan installs the real one, which rides the Compute SDK's own client id + token storage.
+    login_flow: LoginFlow | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -380,6 +385,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppCtx]:
         state=EndpointState(endpoint_id=_env_endpoint_id()),
         scratch_root=scratch,
         charge_factor=_env_float("HPC_BRIDGE_CHARGE_FACTOR", 0.0),
+        login_flow=LoginFlow(),
     )
     try:
         yield app
@@ -906,6 +912,51 @@ async def _list_facilities(query: str = "") -> list[CatalogSummary]:
         return []
 
 
+async def _authenticate(app: AppCtx, force: bool = False) -> LoginStatus:
+    flow = app.login_flow
+    if flow is None:
+        flow = app.login_flow = LoginFlow()
+    if not force and not await asyncio.to_thread(flow.login_required):
+        return LoginStatus(phase="logged_in", notice="Globus login present with every scope hpc-bridge needs.")
+    start = await asyncio.to_thread(flow.start)
+    return LoginStatus(phase="needs_login", login_url=start.login_url, login_mode=start.mode,
+                       notice=_login_notice(start, flow.error))
+
+
+async def _complete_login(app: AppCtx, code: str) -> LoginStatus:
+    flow = app.login_flow
+    if flow is None:
+        return LoginStatus(phase="failed", notice="no login is waiting — call authenticate() first")
+    try:
+        await asyncio.to_thread(flow.complete_with_code, code)
+    except Exception as exc:  # noqa: BLE001 - a bad/expired code is a structured outcome, not a crash
+        return LoginStatus(phase="failed", notice=f"login code not accepted: {type(exc).__name__}: {exc}"[:300]
+                           + " — call authenticate() for a fresh link.")
+    return LoginStatus(phase="logged_in", notice="Globus login complete. Continue: connect_facility again.")
+
+
+@mcp.tool()
+async def authenticate(ctx: Context, force: bool = False) -> LoginStatus:
+    """Log in to Globus from the terminal — the ONE credential hpc-bridge needs (it covers computing,
+    starting an endpoint, and reading the facility registry). Normally you don't call this: a
+    connect_facility that needs it returns phase="needs_login" with the same link. Call it to log in
+    proactively, to get a FRESH link after one expired (~10 min), or with force=True to re-login.
+
+    Returns `login_url` for the USER to open. `login_mode="browser"`: their browser completes it and
+    this process receives the result — nothing to paste; just call connect_facility again afterwards.
+    `login_mode="paste"` (remote/headless sessions): Globus shows a one-time code — ask the user to
+    paste it and call complete_login(code). Never ask for a Globus password."""
+    return await _authenticate(ctx.request_context.lifespan_context, force=force)
+
+
+@mcp.tool()
+async def complete_login(code: str, ctx: Context) -> LoginStatus:
+    """Finish a paste-mode Globus login with the one-time authorization code the user pasted (from
+    the page Globus showed after they approved). Single-use and short-lived — not a password, not a
+    token. Only needed when authenticate()/connect_facility reported login_mode="paste"."""
+    return await _complete_login(ctx.request_context.lifespan_context, code)
+
+
 @mcp.tool()
 async def list_facilities(query: str = "") -> list[CatalogSummary]:
     """List the HPC machines hpc-bridge can stand up, from the facility catalog (the Globus Search
@@ -1038,6 +1089,12 @@ async def _connect_facility(
         )
     if reason:
         return ConnectFacilityResult(phase="unsupported", facility=facility, notice=reason)
+    # Globus login gate — BEFORE any SSH/bootstrap. Both reaches need it: the SSH path seeds the
+    # endpoint's credential from our token storage, the MEP path dispatches with it. A phase, not a
+    # prompt: the agent shows the link, the user's browser completes it, the next call proceeds.
+    if app.login_flow is not None and await asyncio.to_thread(app.login_flow.login_required):
+        start = await asyncio.to_thread(app.login_flow.start)
+        return _needs_login_result(facility, start, app.login_flow.error)
     try:
         fac = _facility_from_entry(entry, account=os.environ.get("HPC_BRIDGE_ACCOUNT", "").strip())
     except Exception as exc:  # noqa: BLE001 - surface a missing SSH_USER/KEY as a structured result
@@ -1147,6 +1204,40 @@ async def _connect_mep(app: AppCtx, facility: str, fac) -> ConnectFacilityResult
             "facility is COMPUTE-ONLY: there is no free login shape — every command runs on a "
             "billed scheduler block that stays warm between calls. " + how
         ),
+    )
+
+
+def _login_notice(start: LoginStart, flow_error: str | None, *, facility: str | None = None) -> str:
+    """The agent-facing instructions for a login, by mode. Same discipline as needs_preauth: relay
+    the link, never ask for a password, never handle a token; in paste mode only a one-time code
+    (not a token) passes through the chat."""
+    for_what = f" before {facility!r} can be reached" if facility else ""
+    head = (f"A Globus login is needed{for_what} (first use, or a stored credential missing a scope an "
+            "endpoint needs). ")
+    tail = (" The login happens ONLY in the browser: never ask the user for a Globus password, and "
+            "never paste the link into a shell.")
+    prefix = f"({flow_error}) " if flow_error else ""
+    if start.mode == "browser":
+        return prefix + head + (
+            "A browser window should have opened to Globus; if it didn't, give the USER this link to "
+            f"open: {start.login_url}\nThey log in and approve once; the page then says they can return "
+            "here. When they confirm, call connect_facility again — nothing to paste. (The link is valid "
+            "for ~10 minutes; a new connect_facility issues a fresh one.)"
+        ) + tail
+    return prefix + head + (
+        f"Give the USER this link to open: {start.login_url}\nAfter they log in and approve, Globus shows "
+        "a one-time authorization CODE. Ask them to paste that code here and call complete_login(code). "
+        "It is single-use and expires in minutes."
+    ) + tail
+
+
+def _needs_login_result(facility: str, start: LoginStart, flow_error: str | None) -> ConnectFacilityResult:
+    return ConnectFacilityResult(
+        phase="needs_login",
+        facility=facility,
+        login_url=start.login_url,
+        login_mode=start.mode,
+        notice=_login_notice(start, flow_error, facility=facility),
     )
 
 
