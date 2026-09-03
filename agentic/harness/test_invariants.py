@@ -246,6 +246,26 @@ def test_reuse_signalled_needs_a_reconnect_after_the_first_work():
     assert not r.ok and "after first work=False" in r.detail
 
 
+def test_first_bring_up_connect_is_tracked_on_the_cached_path_too():
+    # 2026-09-03: a cached-config reconnect skips the probe and bootstraps directly — the first connect
+    # (no details=) fails on #39 registration lag, the retry reattaches reused=True. The invariant must
+    # see THAT as the first bring-up, not ignore it for lacking details=.
+    from invariants import first_details_connect_succeeds
+    t = Trace([
+        ToolCall.of("mcp__endpoint__connect_facility", {"facility": "g", "ssh_host": "h"},
+                    {"phase": "failed", "reused": False,
+                     "notice": "hpc-bridge error: RuntimeError: could not find endpoint 'hpc-bridge-g' in `list` output"}),
+        ToolCall.of("mcp__endpoint__connect_facility", {"facility": "g", "ssh_host": "h"},
+                    {"phase": "needs_account", "reused": True}),
+    ])
+    r = first_details_connect_succeeds(t)
+    assert r.ok is False and "cached/catalog" in r.detail and "#39" in r.detail
+    # a probe/ask-only trace has no bring-up to judge
+    probe_only = Trace([ToolCall.of("mcp__endpoint__connect_facility", {"facility": "g"},
+                                    {"phase": "needs_facility_details"})])
+    assert first_details_connect_succeeds(probe_only).ok is True
+
+
 def test_first_details_connect_succeeds_reports_the_39_race():
     from invariants import first_details_connect_succeeds
     r = first_details_connect_succeeds(_reuse_trace())          # the #39 shape: first details-connect failed

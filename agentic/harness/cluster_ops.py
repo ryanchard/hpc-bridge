@@ -66,3 +66,17 @@ def capture_logs_cmd(endpoint_name: str, eids: list[str], *, tail_lines: int = 2
         f"for f in {files}; do [ -f \"$f\" ] || continue; "
         f'echo "=== $f ($(wc -l < "$f") lines; last {n})"; tail -n {n} "$f"; done; true'
     )
+
+
+def uep_dirs_cleanup_cmd(eids: list[str]) -> str:
+    """Remove THIS run's per-UEP directories (`~/.globus_compute/uep.<eid>.<config-hash>/`).
+
+    `globus-compute-endpoint delete <name>` removes only the MANAGER's dir; the UEP dirs it forked
+    (one per distinct user_endpoint_config, per run) are left behind and accumulate in the pool
+    user's home — dozens were found after a few weeks of runs. Scoped by the run's endpoint uuid(s),
+    the same marker discipline as the block cancel; run it AFTER capture_logs_cmd (their endpoint.logs
+    are the post-mortem evidence). No uuid known ⇒ nothing is removed."""
+    if not eids:
+        return 'echo "uep-dirs: no endpoint uuid known for this run — removing nothing"'
+    globs = " ".join(f'"$HOME/.globus_compute/uep."{shlex.quote(e)}.*' for e in eids)
+    return f'n=0; for d in {globs}; do [ -d "$d" ] && rm -rf "$d" && n=$((n+1)); done; echo "uep-dirs removed: $n"'

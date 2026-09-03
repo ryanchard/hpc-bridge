@@ -2,7 +2,8 @@
 
     python -m pytest agentic/harness/test_pool_and_cluster_ops.py -q
 """
-from cluster_ops import capture_logs_cmd, delete_endpoint_cmd, endpoint_uuid_cmd, scoped_cancel_cmd
+from cluster_ops import (capture_logs_cmd, delete_endpoint_cmd, endpoint_uuid_cmd, scoped_cancel_cmd,
+                         uep_dirs_cleanup_cmd)
 from pool import PoolClaims
 
 POOL = [f"hpcbridge-test-{i:02d}" for i in range(4)]
@@ -64,3 +65,14 @@ def test_uuid_and_log_capture_commands_are_bounded_and_scoped():
     flat = cap.replace('"', "").replace("'", "")  # bash concatenates the quoted pieces
     assert "tail -n 500" in cap and f"uep.{EID}" in flat and "submit_scripts" in cap
     assert "ep-x/endpoint.log" in flat
+
+
+def test_uep_dir_cleanup_is_scoped_to_this_runs_uuids():
+    cmd = uep_dirs_cleanup_cmd([EID])
+    flat = cmd.replace('"', "")
+    assert f".globus_compute/uep.{EID}.*" in flat and 'rm -rf "$d"' in cmd  # only that uuid's UEP dirs
+    assert "rm -rf $HOME" not in flat and 'rm -rf "$HOME' not in cmd  # never a broad delete
+    two = uep_dirs_cleanup_cmd([EID, "11111111-2222-3333-4444-555555555555"]).replace('"', "")
+    assert "uep.11111111-2222" in two and f"uep.{EID}" in two
+    none = uep_dirs_cleanup_cmd([])
+    assert "rm" not in none and "removing nothing" in none

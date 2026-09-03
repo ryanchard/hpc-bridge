@@ -74,8 +74,8 @@ a run as that user. `run_suite` claims users with a per-user **`flock`** file un
 is in use and released by the kernel if the process dies. So **two `run_suite` invocations on one host
 can run concurrently** — they take disjoint users, and a suite that finds every user claimed waits
 rather than colliding. Teardown is **run-scoped**: it deletes only this run's endpoint
-(`HPC_BRIDGE_ENDPOINT_NAME`) and cancels only blocks carrying this run's `uep.<eid>` marker — never
-`scancel -u`. Before each delete it saves the manager + UEP `endpoint.log`s and the blocks'
+(`HPC_BRIDGE_ENDPOINT_NAME`), cancels only blocks carrying this run's `uep.<eid>` marker — never
+`scancel -u` — and removes this run's `uep.<eid>.*` dirs (which `gce delete` leaves behind). Before each delete it saves the manager + UEP `endpoint.log`s and the blocks'
 stdout/stderr into the bundle as `endpoint-logs.txt` (the post-mortem evidence `delete` would erase).
 
 > **Why:** on 2026-08-19 two suites both allocated test-00 (the old allocator was per-process and

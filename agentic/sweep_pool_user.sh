@@ -18,6 +18,6 @@ try: fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
 except OSError: sys.exit(1)
 PY
 GCE='$HOME/hpc-bridge/gce-venv/bin/globus-compute-endpoint'
-echo "sweeping $USER_@$HOST: all hpc-bridge-* endpoints + ALL jobs of this user …"
+echo "sweeping $USER_@$HOST: all hpc-bridge-* endpoints + ALL uep.* dirs + ALL jobs of this user …"
 ssh -o BatchMode=yes -o ConnectTimeout=20 -i "$KEY" -o IdentitiesOnly=yes "$USER_@$HOST" \
-  "for ep in \$(ls ~/.globus_compute/ 2>/dev/null | grep '^hpc-bridge-'); do $GCE stop \"\$ep\" >/dev/null 2>&1; $GCE delete \"\$ep\" --yes >/dev/null 2>&1; echo \"deleted \$ep\"; done; scancel -u \"\$(whoami)\" 2>/dev/null; echo \"jobs left: \$(squeue -u \"\$(whoami)\" -h | wc -l)\""
+  "for ep in \$(ls ~/.globus_compute/ 2>/dev/null | grep '^hpc-bridge-'); do $GCE stop \"\$ep\" >/dev/null 2>&1; $GCE delete \"\$ep\" --yes >/dev/null 2>&1; echo \"deleted \$ep\"; done; scancel -u \"\$(whoami)\" 2>/dev/null; n=\$(ls -d ~/.globus_compute/uep.* 2>/dev/null | wc -l); rm -rf ~/.globus_compute/uep.* 2>/dev/null; echo \"uep dirs removed: \$n\"; echo \"jobs left: \$(squeue -u \"\$(whoami)\" -h | wc -l)\""
