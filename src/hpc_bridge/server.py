@@ -1794,13 +1794,23 @@ def _no_account_failure(error: str | None) -> bool:
     return any(m in e for m in _NO_ACCOUNT_MARKERS)
 
 
+_GLOBUS_USERNAME_RE = re.compile(r"Globus username:\s*([^\s'\"),]+)")
+
+
+def _identity_from_error(error: str | None) -> str | None:
+    """The web service echoes the submitter in the 422 ('Globus username: alice@example.edu')."""
+    m = _GLOBUS_USERNAME_RE.search(error or "")
+    return m.group(1) if m else None
+
+
 def _no_account_notice(app: AppCtx | None, error: str | None, identity: str | None) -> str:
+    identity = _identity_from_error(error) or identity
     who = f" ({identity})" if identity else ""
     eid = app.state.endpoint_id if app is not None else None
     where = f" {eid}" if eid else ""
     return (
         f"NO ACCOUNT at this facility: its multi-user endpoint{where} could not map the user's Globus "
-        f"identity{who} to a local user — the facility's manager said: {(error or '').strip()[:160]}. "
+        f"identity{who} to a local user — the facility's manager said: {(error or '').strip()[:320]}. "
         "This is TERMINAL, not a queue wait: no retry or poll from here changes it. The user needs an account "
         "on this machine with their Globus identity added to the endpoint's identity mapping — tell them to "
         "ask the facility's support, quoting that identity. Do not call ensure_endpoint_up again until they have."

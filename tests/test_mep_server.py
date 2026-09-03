@@ -256,3 +256,49 @@ async def test_stop_mep_refuses_while_a_task_runs_and_keeps_its_handle(monkeypat
     assert res.status == "up" and "can't stop" in res.notice and out.task_id in res.notice
     assert "poll_task" in res.notice and "no cancel channel" in res.notice.lower()
     assert out.task_id in app.tasks and "compute" in app.shapes  # handle + shape survive; result retrievable
+
+
+_DOCUMENTED_422 = (
+    "Request payload failed validation: Identity failed to map to a local user name.  (LookupError)\n"
+    "   Globus effective identity: 3c085472-314d-4f22-abc6-591f2767af2b\n"
+    "   Globus username: alice@example.edu"
+)
+
+
+def test_dispatch_error_text_keeps_the_api_message_not_the_url_preamble():
+    from hpc_bridge.runner import dispatch_error_text
+
+    class _ComputeAPIError(Exception):  # shape of globus_sdk's GlobusAPIError: .message / .code / long repr
+        message = _DOCUMENTED_422
+        code = "SEMANTICALLY_INVALID"
+        http_status = 422
+
+        def __str__(self):
+            return ("('POST', 'https://compute.api.globus.org/v3/endpoints/da3df250-4013-4d69-942c-eef1568f860c/submit', "
+                    f"'Bearer', 422, 'SEMANTICALLY_INVALID', {self.message!r})")
+
+    text = dispatch_error_text(_ComputeAPIError())
+    assert text.startswith("_ComputeAPIError[SEMANTICALLY_INVALID]: Request payload failed validation")
+    assert "failed to map to a local user" in text and "alice@example.edu" in text
+    assert dispatch_error_text(RuntimeError("Executor is shutdown")) == "RuntimeError: Executor is shutdown"
+    assert len(dispatch_error_text(RuntimeError("x" * 5000))) <= 600
+
+
+async def test_documented_422_is_terminal_and_names_the_identity_from_the_error(monkeypatch):
+    from hpc_bridge.server import _identity_from_error
+    assert _identity_from_error("ComputeAPIError[SEMANTICALLY_INVALID]: " + " ".join(_DOCUMENTED_422.split())) == "alice@example.edu"
+    assert _identity_from_error("timeout") is None
+
+
+async def test_documented_422_through_the_canary_is_terminal_down(monkeypatch):
+    # the #32 provisioning-notice augmenter queries the scheduler over shape="login" — skipped on a MEP
+    import time as _time
+
+    app = _app()
+    await _connect(app, monkeypatch)
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(
+        eid, _Res(0, "", ""), canary_result=CanaryResult(ok=False, error="ComputeAPIError[SEMANTICALLY_INVALID]: " + " ".join(_DOCUMENTED_422.split())))
+    server._shape_runtime(app, "compute").provisioning_since = _time.monotonic() - (server.PROVISION_GRACE_S + 10)
+    monkeypatch.setattr("hpc_bridge.login.globus_identity_label", lambda fetch=True: None)  # no lookup needed
+    res = await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
+    assert res.status == "down" and "NO ACCOUNT" in res.notice and "(alice@example.edu)" in res.notice

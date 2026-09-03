@@ -59,8 +59,21 @@ async def _probe_executor(executor, *, timeout: float, command: str = _CANARY_CM
     except TimeoutError:
         return False, "timeout"
     except Exception as exc:  # noqa: BLE001 - shutdown Executor / broken dispatch path, not a crash
-        return False, f"{type(exc).__name__}: {exc}"[:200]
+        return False, dispatch_error_text(exc)
     return True, getattr(res, "stdout", "") or ""
+
+
+def dispatch_error_text(exc: BaseException, limit: int = 600) -> str:
+    """The diagnosis a caller can act on. A Globus API error's repr opens with the method, the full
+    submit URL, the scheme and the status — ~190 chars before the message starts — so a short slice
+    of `str(exc)` lost the part that matters (found while wiring the no-account failure: the 422
+    'Identity failed to map to a local user name … Globus username: alice@example.edu' begins past
+    char 190). Prefer the API error's `.message`; fall back to str(exc)."""
+    msg = getattr(exc, "message", None)
+    text = msg if isinstance(msg, str) and msg.strip() else str(exc)
+    code = getattr(exc, "code", None)
+    head = f"{type(exc).__name__}" + (f"[{code}]" if isinstance(code, str) and code else "")
+    return f"{head}: {' '.join(text.split())}"[:limit]
 
 
 class GlobusRunner:
