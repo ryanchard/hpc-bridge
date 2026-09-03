@@ -305,7 +305,9 @@ def _make_search_client(_app_factory=None):
     try:
         from globus_compute_sdk import Client
 
-        app = (_app_factory or (lambda: Client().app))()
+        # do_version_check=False: the check is an AUTHENTICATED call — on a fresh install it would
+        # trigger the SDK's command-line login on the MCP transport (see the gate in _connect_facility).
+        app = (_app_factory or (lambda: Client(do_version_check=False).app))()
         client = SearchClient(app=app)  # registers the search scope requirement on this app instance
         if not app.login_required():  # non-prompting: the scope is already granted -> authenticated
             return client
@@ -915,13 +917,13 @@ async def _list_facilities(query: str = "") -> list[CatalogSummary]:
         return []
 
 
-async def _authenticate(app: AppCtx, force: bool = False) -> LoginStatus:
+async def _authenticate(app: AppCtx, force: bool = False, mode: str | None = None) -> LoginStatus:
     flow = app.login_flow
     if flow is None:
         flow = app.login_flow = LoginFlow()
     if not force and not await asyncio.to_thread(flow.login_required):
         return LoginStatus(phase="logged_in", notice="Globus login present with every scope hpc-bridge needs.")
-    start = await asyncio.to_thread(flow.start)
+    start = await asyncio.to_thread(flow.start, mode)
     return LoginStatus(phase="needs_login", login_url=start.login_url, login_mode=start.mode,
                        notice=_login_notice(start, flow.error))
 
@@ -939,7 +941,7 @@ async def _complete_login(app: AppCtx, code: str) -> LoginStatus:
 
 
 @mcp.tool()
-async def authenticate(ctx: Context, force: bool = False) -> LoginStatus:
+async def authenticate(ctx: Context, force: bool = False, mode: str | None = None) -> LoginStatus:
     """Log in to Globus from the terminal — the ONE credential hpc-bridge needs (it covers computing,
     starting an endpoint, and reading the facility registry). Normally you don't call this: a
     connect_facility that needs it returns phase="needs_login" with the same link. Call it to log in
@@ -948,8 +950,9 @@ async def authenticate(ctx: Context, force: bool = False) -> LoginStatus:
     Returns `login_url` for the USER to open. `login_mode="browser"`: their browser completes it and
     this process receives the result — nothing to paste; just call connect_facility again afterwards.
     `login_mode="paste"` (remote/headless sessions): Globus shows a one-time code — ask the user to
-    paste it and call complete_login(code). Never ask for a Globus password."""
-    return await _authenticate(ctx.request_context.lifespan_context, force=force)
+    paste it and call complete_login(code). `mode="paste"` forces paste mode (e.g. no browser on this
+    machine). Never ask for a Globus password."""
+    return await _authenticate(ctx.request_context.lifespan_context, force=force, mode=mode)
 
 
 @mcp.tool()
@@ -1037,6 +1040,15 @@ def _entry_from_details(facility: str, details: FacilityDetails) -> CatalogEntry
 async def _connect_facility(
     app: AppCtx, facility: str, ssh_host: str | None = None, details: FacilityDetails | None = None
 ) -> ConnectFacilityResult:
+    # Globus login gate — FIRST, before the catalog read and before any SSH. Every non-`unsupported`
+    # outcome needs Globus (the SSH path seeds the endpoint's credential from our token storage; the
+    # MEP path dispatches with it) — and, found in review, constructing the Compute SDK Client for
+    # the catalog on a fresh install would run the SDK's OWN command-line login: a URL on stdout and
+    # input() on stdin — i.e. the MCP transport. A phase, not a prompt: the agent shows the link, the
+    # user's browser completes it, the next call proceeds. (login_required() is a local SQLite read.)
+    if app.login_flow is not None and await asyncio.to_thread(app.login_flow.login_required):
+        start = await asyncio.to_thread(app.login_flow.start)
+        return _needs_login_result(facility, start, app.login_flow.error)
     # Resolve the entry: a session-local one the agent already supplied wins; else the catalog. An
     # index error is treated as "unresolved" (the agent can still supply details), not a hard fail.
     if details is not None:
@@ -1092,12 +1104,6 @@ async def _connect_facility(
         )
     if reason:
         return ConnectFacilityResult(phase="unsupported", facility=facility, notice=reason)
-    # Globus login gate — BEFORE any SSH/bootstrap. Both reaches need it: the SSH path seeds the
-    # endpoint's credential from our token storage, the MEP path dispatches with it. A phase, not a
-    # prompt: the agent shows the link, the user's browser completes it, the next call proceeds.
-    if app.login_flow is not None and await asyncio.to_thread(app.login_flow.login_required):
-        start = await asyncio.to_thread(app.login_flow.start)
-        return _needs_login_result(facility, start, app.login_flow.error)
     try:
         fac = _facility_from_entry(entry, account=os.environ.get("HPC_BRIDGE_ACCOUNT", "").strip())
     except Exception as exc:  # noqa: BLE001 - surface a missing SSH_USER/KEY as a structured result

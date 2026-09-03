@@ -89,11 +89,33 @@ def test_browser_flow_returns_the_captured_url_then_completes(browser_flow):
     assert apps["app"].logged_in and flow.status() == "done"
 
 
+def test_headless_browser_failure_after_url_switches_next_start_to_paste(monkeypatch):
+    # The SDK produces the URL FIRST and only then tries the browser (review finding): on a headless
+    # host the first browser attempt yields a URL nobody can complete, then dies. The failure must be
+    # REMEMBERED so the next start() goes to paste — not re-arm browser forever.
+    from hpc_bridge import login_flow_manager as lfm
+    monkeypatch.setattr(lfm.CapturingLocalServerManager, "build", staticmethod(lambda *, on_url: _FakeManager(on_url)))
+    monkeypatch.setattr(login_mod, "_browser_available", lambda: True)  # pre-flight thinks a browser exists
+    flow = LoginFlow(app_factory=lambda m: _FakeApp(required=True, manager=m, fail=RuntimeError("Failed to open browser")))
+    first = flow.start()  # the fake emits the URL, then fails — exactly the SDK's order
+    assert first.mode == "browser"
+    flow._thread.join(timeout=5)
+    assert flow.status() == "failed" and flow._browser_failed is True
+    second = flow.start()
+    assert second.mode == "paste" and "auth-code" in second.login_url
+
+
+def test_browser_preflight_failure_goes_straight_to_paste(monkeypatch):
+    monkeypatch.setattr(login_mod, "_browser_available", lambda: False)
+    flow = LoginFlow(app_factory=lambda m: _FakeApp(required=True))
+    assert flow.start().mode == "paste"
+
+
 def test_browser_flow_failure_before_url_falls_back_to_paste(monkeypatch):
     from hpc_bridge import login_flow_manager as lfm
 
     class _NoUrlManager(_FakeManager):
-        def emit(self, url):  # the SDK's flow died before producing a URL (no browser / remote)
+        def emit(self, url):  # the flow died before producing a URL at all
             pass
 
     monkeypatch.setattr(lfm.CapturingLocalServerManager, "build", staticmethod(lambda *, on_url: _NoUrlManager(on_url)))
@@ -101,8 +123,40 @@ def test_browser_flow_failure_before_url_falls_back_to_paste(monkeypatch):
     start = flow.start()
     assert start.mode == "paste"
     assert "auth.globus.org/v2/oauth2/authorize" in start.login_url and "4cf29807-cf21-49ec-9443-ff9a3fb9f81c" in start.login_url
-    assert "auth-code" in start.login_url  # Globus's own copy-the-code page is the redirect
     assert flow.error and "paste-back" in flow.error
+
+
+def test_expired_worker_cannot_clobber_the_rearmed_flow(monkeypatch):
+    # review finding: after the TTL expires and a new attempt is armed, the OLD worker wakes up failing
+    # and used to mark the NEW flow failed (and orphan its listener). Generation-guarded now.
+    import threading as _th
+    from hpc_bridge import login_flow_manager as lfm
+    monkeypatch.setattr(lfm.CapturingLocalServerManager, "build", staticmethod(lambda *, on_url: _FakeManager(on_url)))
+    monkeypatch.setattr(login_mod, "_browser_available", lambda: True)
+    release = _th.Event()
+
+    hold = _th.Event()
+    attempts = []
+
+    class _SlowFailApp(_FakeApp):
+        def login(self, force=False):
+            attempts.append(self)
+            self.manager.emit(f"https://auth.globus.org/v2/oauth2/authorize?attempt={len(attempts)}")
+            if len(attempts) == 1:
+                release.wait(timeout=5)  # the OLD worker wakes AFTER the new flow is armed…
+                raise RuntimeError("login URL expired")  # …and fails: must not touch the new flow
+            hold.wait(timeout=5)  # the re-armed attempt just waits (a user at the browser)
+
+    flow = LoginFlow(app_factory=lambda m: _SlowFailApp(required=True, manager=m), mode_override="browser", ttl_s=0.05)
+    flow.start()
+    time.sleep(0.1)
+    assert flow.status() == "expired"
+    second = flow.start()  # a new generation (browser again: _browser_failed is still False)
+    release.set()
+    time.sleep(0.3)
+    assert flow.status() == "waiting", (flow.status(), flow.error)  # the stale failure was ignored
+    assert flow._start is second and len(attempts) == 2
+    hold.set()
 
 
 def test_paste_flow_url_carries_every_required_scope_and_pkce():
@@ -129,7 +183,7 @@ def test_complete_with_code_requires_a_waiting_paste_flow(monkeypatch):
         flow.complete_with_code("abc")  # nothing waiting
     flow.start()
     stored = {}
-    monkeypatch.setattr("hpc_bridge.login_flow_manager.store_paste_tokens", lambda client, code, f: stored.update(code=code))
+    monkeypatch.setattr("hpc_bridge.login_flow_manager.store_paste_tokens", lambda client, code: stored.update(code=code))
     flow.complete_with_code("  the-code  ")
     assert stored["code"] == "the-code" and flow.status() == "done"
 
@@ -147,7 +201,7 @@ class _StubFlow:
     def start(self, mode=None):
         self.started += 1
         from hpc_bridge.login import LoginStart
-        return LoginStart(login_url="https://auth.globus.org/v2/oauth2/authorize?x=1", mode="browser", expires_at=time.monotonic() + FLOW_TTL_S)
+        return LoginStart(login_url="https://auth.globus.org/v2/oauth2/authorize?x=1", mode=mode or "browser", expires_at=time.monotonic() + FLOW_TTL_S)
 
     def complete_with_code(self, code):
         self.required = False
@@ -225,3 +279,35 @@ def test_loopback_handler_never_logs_the_request_line():
         assert server.server_address[0] in ("127.0.0.1", "::1", "localhost")
         assert m._server is server
     assert m._server is None
+
+
+def test_complete_with_code_after_expiry_is_refused(monkeypatch):
+    flow = LoginFlow(app_factory=lambda m: _FakeApp(required=True), mode_override="paste", ttl_s=0.01)
+    flow.start()
+    time.sleep(0.03)
+    with pytest.raises(RuntimeError, match="expired"):
+        flow.complete_with_code("late")
+
+
+async def test_connect_gate_runs_before_the_catalog_read(monkeypatch):
+    # review MERGE-BLOCKER: the gate used to sit after make_catalog(), whose Client() would run the
+    # SDK's command-line login on the MCP transport (stdout URL + stdin input()) on a fresh install.
+    from hpc_bridge import server
+
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    app.login_flow = _StubFlow(required=True)
+
+    def no_catalog():
+        raise AssertionError("catalog must not be touched before the login gate")
+
+    monkeypatch.setattr(server, "make_catalog", no_catalog)
+    monkeypatch.setattr(server, "_propose_or_ask", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no SSH probe before login")))
+    res = await server._connect_facility(app, "anything", ssh_host="login.example.edu")
+    assert res.phase == "needs_login"
+
+
+async def test_authenticate_mode_override_forces_paste():
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    app.login_flow = _StubFlow(required=True)
+    st = await _authenticate(app, mode="paste")
+    assert st.login_mode == "paste"

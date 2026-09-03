@@ -476,7 +476,7 @@ def stop_confirmed_or_retried(t: Trace) -> Result:
 
 
 # Result phases that mean connect_facility is still PROBING or ASKING — no bring-up was attempted yet.
-_PROBE_PHASES = {"proposed_facility_details", "needs_facility_details", "needs_preauth", "unsupported"}
+_PROBE_PHASES = {"proposed_facility_details", "needs_facility_details", "needs_preauth", "needs_login", "unsupported"}
 
 
 def first_details_connect_succeeds(t: Trace) -> Result:

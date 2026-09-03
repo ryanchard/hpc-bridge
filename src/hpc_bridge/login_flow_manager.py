@@ -87,11 +87,21 @@ def paste_flow_url() -> tuple[str, object]:
     return client.oauth2_get_authorize_url(), client
 
 
-def store_paste_tokens(client, code: str, app_factory=None) -> None:
-    """Exchange a pasted one-time code and store the tokens in the Compute SDK's token storage
-    (same file, same namespace the SDK and the seeding read)."""
+def store_paste_tokens(client, code: str) -> None:
+    """Exchange a pasted one-time code and store the tokens where the Compute SDK (and the seeding)
+    read them. Prefer the app's VALIDATING storage (it enforces the SDK's unchanging-identity check,
+    so a paste login as a different Globus identity is refused like a browser login would be);
+    fall back to the raw SQLite storage only if the SDK's private attribute isn't there."""
     from globus_compute_sdk.sdk.auth.token_storage import get_token_storage
 
+    from .login import _default_app_factory
+
     token_response = client.oauth2_exchange_code_for_tokens(code)
-    storage = get_token_storage()
+    storage = None
+    try:
+        storage = getattr(_default_app_factory(None), "_token_storage", None)
+    except Exception:  # noqa: BLE001
+        storage = None
+    if storage is None or not hasattr(storage, "store_token_response"):
+        storage = get_token_storage()
     storage.store_token_response(token_response)

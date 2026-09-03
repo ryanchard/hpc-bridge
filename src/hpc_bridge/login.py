@@ -46,7 +46,7 @@ def required_scopes(*, include_search: bool = False) -> dict[str, list[str]]:
     entries are read anonymously, so it is not part of the default consent."""
     from .credentials import _required_scopes
 
-    out = {rs: list(scopes) for rs, scopes in _required_scopes().items()}
+    out = {rs: list(dict.fromkeys(scopes)) for rs, scopes in _required_scopes().items()}  # deduped, ordered
     if include_search:
         out.setdefault("search.api.globus.org", [])
         if SEARCH_SCOPE not in out["search.api.globus.org"]:
@@ -57,6 +57,25 @@ def required_scopes(*, include_search: bool = False) -> dict[str, list[str]]:
 def _remote_session() -> bool:
     """A browser on THIS machine can't reach a loopback listener in a remote/headless session."""
     return bool(os.environ.get("SSH_TTY") or os.environ.get("SSH_CONNECTION"))
+
+
+_TEXT_BROWSERS = ("lynx", "www-browser", "links", "elinks", "w3m")  # the SDK's own deny list
+
+
+def _browser_available() -> bool:
+    """Pre-flight for browser mode: is there a graphical browser this process can open? The SDK
+    only discovers 'no browser' AFTER it has produced the URL (URL first, then webbrowser.open), so
+    without this check a headless host would arm a loopback flow nobody can complete."""
+    if _remote_session():
+        return False
+    try:
+        import webbrowser
+
+        b = webbrowser.get()
+        name = getattr(b, "name", None) or getattr(b, "_name", "")
+        return name not in _TEXT_BROWSERS
+    except Exception:  # noqa: BLE001 - webbrowser.Error (no browser) or anything odd -> paste
+        return False
 
 
 @dataclass
@@ -84,6 +103,9 @@ class LoginFlow:
     _manager: object | None = None
     _state: Literal["idle", "waiting", "done", "failed", "expired"] = "idle"
     error: str | None = None
+    _gen: int = 0  # per-attempt generation: a dead worker from an EARLIER attempt must not touch state
+    _browser_failed: bool = False  # a browser attempt died (no browser / Globus rejected the redirect) -> paste next
+    _paste_client: object | None = field(default=None, repr=False)
 
     # ---- state ----------------------------------------------------------------------------------
 
@@ -93,7 +115,11 @@ class LoginFlow:
         try:
             app = (self.app_factory or _default_app_factory)(None)
             return bool(app.login_required())
-        except Exception:  # noqa: BLE001 - treat an unreadable credential as absent
+        except Exception as exc:  # noqa: BLE001 - treat an unreadable credential as absent
+            import sys
+
+            print(f"hpc-bridge: login_required check failed ({type(exc).__name__}: {exc}); treating as login"
+                  " required", file=sys.stderr)
             return True
 
     def status(self) -> str:
@@ -117,7 +143,10 @@ class LoginFlow:
             self._expire_locked()
             if self._state == "waiting" and self._start is not None:
                 return self._start
-            mode = mode or self.mode_override or ("paste" if _remote_session() else "browser")
+            if mode is None:
+                mode = self.mode_override or (
+                    "paste" if (self._browser_failed or not _browser_available()) else "browser"
+                )
             self.error = None
             if mode == "browser":
                 return self._start_browser_locked()
@@ -136,15 +165,21 @@ class LoginFlow:
         manager = CapturingLocalServerManager.build(on_url=on_url)
         app = (self.app_factory or _default_app_factory)(manager)
 
+        self._gen += 1
+        gen = self._gen
+
         def run() -> None:
             # NB: plain attribute writes only — start() holds self._lock while it waits for the URL,
-            # so taking the lock here would deadlock the fallback path (found by the unit test).
+            # so taking the lock here would deadlock the fallback path (found by the unit test). And
+            # only THIS attempt's worker may write: after our TTL expires and a new attempt is armed,
+            # the old worker wakes up failing — it must not mark the new flow failed (found in review).
             try:
                 app.login(force=True)  # blocks until the loopback receives the code (or fails)
-                if self._state == "waiting":
+                if self._gen == gen and self._state == "waiting":
                     self._state = "done"
             except Exception as exc:  # noqa: BLE001 - browser missing / remote / Globus error
-                if self._state == "waiting":
+                self._browser_failed = True  # next start() goes straight to paste
+                if self._gen == gen and self._state == "waiting":
                     self._state = "failed"
                     self.error = f"{type(exc).__name__}: {exc}"[:300]
             finally:
@@ -165,6 +200,7 @@ class LoginFlow:
     def _start_paste_locked(self, reason: str | None = None) -> LoginStart:
         from .login_flow_manager import paste_flow_url
 
+        self._gen += 1
         url, self._paste_client = paste_flow_url()
         self._state = "waiting"
         self._start = LoginStart(login_url=url, mode="paste", expires_at=time.monotonic() + self.ttl_s)
@@ -178,10 +214,11 @@ class LoginFlow:
         from .login_flow_manager import store_paste_tokens
 
         with self._lock:
-            client = getattr(self, "_paste_client", None)
+            self._expire_locked()
+            client = self._paste_client
             if client is None or self._state != "waiting" or (self._start and self._start.mode != "paste"):
-                raise RuntimeError("no paste-back login is waiting — call authenticate() first")
-        store_paste_tokens(client, code.strip(), self.app_factory)
+                raise RuntimeError("no paste-back login is waiting (or it expired) — call authenticate() first")
+        store_paste_tokens(client, code.strip())
         with self._lock:
             self._state = "done"
 
