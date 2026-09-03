@@ -261,7 +261,7 @@ def globus_identity_label(*, fetch: bool = True) -> str | None:
         app = _default_app_factory(None)
         if app.login_required():
             return None
-        info = AuthClient(authorizer=app.get_authorizer("auth.globus.org")).oauth2_userinfo()
+        info = AuthClient(authorizer=app.get_authorizer("auth.globus.org")).userinfo()
         _IDENTITY_LABEL = info.get("preferred_username") or info.get("sub") or None
     except Exception:  # noqa: BLE001 - a label is a courtesy, never a failure
         return None

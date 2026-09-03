@@ -387,3 +387,25 @@ async def test_authenticate_returns_logged_in_when_the_browser_flow_lands():
     app.login_flow = _StubFlow(required=True, wait_result="done")
     st = await _authenticate(app)
     assert st.phase == "logged_in" and "browser" in st.notice
+
+
+def test_globus_identity_label_uses_the_v4_userinfo_call(monkeypatch):
+    # globus-sdk 4 renamed oauth2_userinfo() -> userinfo(); the helper swallowed the AttributeError and
+    # returned None silently (found live by the no-account driver). Pin the real method name.
+    import globus_sdk
+    monkeypatch.setattr(login_mod, "_IDENTITY_LABEL", None)
+
+    class _App:
+        def login_required(self): return False
+        def get_authorizer(self, rs): return object()
+
+    class _Auth:
+        def __init__(self, *, authorizer): pass
+        def userinfo(self): return {"preferred_username": "alice@example.edu", "sub": "x"}
+
+    assert hasattr(globus_sdk.AuthClient, "userinfo") and not hasattr(globus_sdk.AuthClient, "oauth2_userinfo")
+    monkeypatch.setattr(login_mod, "_default_app_factory", lambda m: _App())
+    monkeypatch.setattr(globus_sdk, "AuthClient", _Auth)
+    assert login_mod.globus_identity_label() == "alice@example.edu"
+    assert login_mod.globus_identity_label(fetch=False) == "alice@example.edu"  # cached
+    monkeypatch.setattr(login_mod, "_IDENTITY_LABEL", None)

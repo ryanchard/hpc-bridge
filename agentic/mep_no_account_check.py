@@ -68,7 +68,7 @@ def main(argv: list[str]) -> int:
     from hpc_bridge.login import _default_app_factory
 
     app_ = _default_app_factory(None)
-    info = AuthClient(authorizer=app_.get_authorizer("auth.globus.org")).oauth2_userinfo()
+    info = AuthClient(authorizer=app_.get_authorizer("auth.globus.org")).userinfo()
     me = (info.get("preferred_username") or "").lower()
     linked = sorted({(i.get("username") or "").lower() for i in info.get("identity_set", [])} - {""})
     print(f"2. identity: {me}   linked set: {linked or '(not returned by userinfo)'}   label={globus_identity_label()}")
