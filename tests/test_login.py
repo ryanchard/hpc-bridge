@@ -202,3 +202,20 @@ def test_needs_login_is_a_known_phase():
     from hpc_bridge.models import ConnectFacilityResult
     r = ConnectFacilityResult(phase="needs_login", facility="f", login_url="https://x", login_mode="paste")
     assert r.login_mode == "paste"
+
+
+def test_loopback_handler_never_logs_the_request_line():
+    # L4 showed the SDK's RedirectHandler logging "GET /?code=<one-time code>&state=…" to stderr — in the
+    # real server that lands in logs/transcripts. Our manager installs a quiet handler and keeps the
+    # server handle for abort(). (Binds an ephemeral localhost port; no network beyond that.)
+    from globus_sdk.login_flows.local_server_login_flow_manager.local_server import RedirectHandler
+    from hpc_bridge.login_flow_manager import CapturingLocalServerManager
+
+    m = CapturingLocalServerManager.build(on_url=lambda u: None)
+    with m.background_local_server() as server:
+        cls = server.RequestHandlerClass
+        assert issubclass(cls, RedirectHandler) and cls is not RedirectHandler
+        assert cls.log_message(None, "%s", "GET /?code=SECRET") is None  # a no-op, not stderr
+        assert server.server_address[0] in ("127.0.0.1", "::1", "localhost")
+        assert m._server is server
+    assert m._server is None

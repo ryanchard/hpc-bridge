@@ -4,6 +4,8 @@ for hermetic tests."""
 from __future__ import annotations
 
 import platform
+import threading
+from contextlib import contextmanager
 from typing import Callable
 
 
@@ -26,21 +28,34 @@ class CapturingLocalServerManager:
                 on_url(url)
                 return url
 
+            @contextmanager
             def background_local_server(self):  # type: ignore[override]
-                ctx = super().background_local_server()
-                # keep a handle so abort() can unblock wait_for_code()
-                outer = self
+                """The SDK's server, but with a QUIET handler: BaseHTTPRequestHandler's default
+                log_message() writes the request line — `GET /?code=<one-time auth code>&state=…` — to
+                stderr, which in the MCP server flows into logs/transcripts (seen in the L4 live check).
+                Nothing about a login may be logged. We also keep the server handle so abort() can
+                unblock the SDK's wait at our TTL."""
+                from globus_sdk.login_flows.local_server_login_flow_manager.local_server import (
+                    RedirectHandler, RedirectHTTPServer,
+                )
 
-                class _Ctx:
-                    def __enter__(self_inner):
-                        outer._server = ctx.__enter__()
-                        return outer._server
+                class _QuietHandler(RedirectHandler):
+                    def log_message(self, format, *args):  # noqa: A002 - BaseHTTPRequestHandler's signature
+                        return None
 
-                    def __exit__(self_inner, *a):
-                        outer._server = None
-                        return ctx.__exit__(*a)
-
-                return _Ctx()
+                server = RedirectHTTPServer(
+                    server_address=self.server_address,
+                    handler_class=_QuietHandler,
+                    html_template=self.html_template,
+                )
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                self._server = server
+                try:
+                    yield server
+                finally:
+                    self._server = None
+                    server.shutdown()
 
             def abort(self, why: str) -> None:
                 srv = self._server
