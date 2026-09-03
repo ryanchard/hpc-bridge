@@ -25,6 +25,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 SMOKE = REPO / "agentic" / "run_smoke.sh"
+sys.path.insert(0, str(REPO / "agentic" / "harness"))
+from pool import PoolClaims  # noqa: E402  (cross-process pool-user claims — see pool.py)
 POOL = [f"hpcbridge-test-{i:02d}" for i in range(10)]
 DEFAULT_MODEL = "claude-opus-4-8"
 
@@ -70,8 +72,21 @@ def _cell(model: str, effort: str | None) -> str:
     return f"{model} @ {effort or 'default'}"
 
 
-async def _run_job(scenario, model, effort, persona, ablate, users, stagger, halt) -> dict:
-    user = await users.get()  # a distinct pool user == a concurrency slot
+async def _run_job(scenario, model, effort, persona, ablate, claims, sem, stagger, halt) -> dict:
+    # A concurrency slot (this invocation) + an EXCLUSIVE claim on a pool user (across every harness
+    # process on this host — two invocations must never share one: the other's teardown would cancel
+    # this run's blocks). If another invocation holds the whole pool, wait rather than collide.
+    await sem.acquire()
+    user = None
+    while (user := claims.claim_any(POOL)) is None:
+        if halt.is_set():
+            sem.release()
+            return {"scenario": scenario, "model": model, "effort": effort, "persona": persona,
+                    "ablate": ablate, "user": None, "ok": False, "skipped": True,
+                    "result": "SKIPPED (rate-limit halt)", "output": ""}
+        print(f"⏳ wait   {scenario} — every pool user is claimed ({len(claims.busy(POOL))} held, some by "
+              "another invocation); retrying in 20s", flush=True)
+        await asyncio.sleep(20)
     label = f"{scenario} · {_short_model(model)}/{effort or 'default'}" \
             f"{f'/{persona}' if persona else ''}{' ~' + ablate if ablate else ''} · {user}"
     try:
@@ -108,7 +123,8 @@ async def _run_job(scenario, model, effort, persona, ablate, users, stagger, hal
                 "skipped": False, "rate_limited": proc.returncode == 3,
                 "result": result, "output": text}
     finally:
-        users.put_nowait(user)
+        claims.release(user)
+        sem.release()
 
 
 async def _main(args) -> int:
@@ -129,13 +145,19 @@ async def _main(args) -> int:
     if not args.no_build and not await _build_once():
         return 2
 
-    users: asyncio.Queue = asyncio.Queue()
-    for u in POOL[:slots]:
-        users.put_nowait(u)
+    claims = PoolClaims()
+    held = claims.busy(POOL)
+    if held:
+        print(f"pool: {len(held)} user(s) already claimed by another harness process — {held}; "
+              "this suite uses the rest", flush=True)
+    sem = asyncio.Semaphore(slots)
     stagger = Stagger(args.stagger)
     halt = asyncio.Event()
-    results = await asyncio.gather(
-        *[_run_job(s, m, e, pe, ab, users, stagger, halt) for s, m, e, pe, ab in jobs])
+    try:
+        results = await asyncio.gather(
+            *[_run_job(s, m, e, pe, ab, claims, sem, stagger, halt) for s, m, e, pe, ab in jobs])
+    finally:
+        claims.release_all()
 
     skipped = [r for r in results if r.get("skipped")]
     limited = [r for r in results if r.get("rate_limited")]

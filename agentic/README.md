@@ -65,6 +65,30 @@ export `HPC_BRIDGE_SEARCH_INDEX=<index-uuid>` on the host and `run_smoke.sh` for
 then already hold the Search scope: grant it ONCE on the host with `hpc-bridge-catalog <index> …`
 (the jail can't do the interactive login), or catalog calls fail with "Globus Search scope not granted".
 
+## Concurrency & isolation (pool users)
+
+Every live run needs its **own** pool user (`hpcbridge-test-00..09`): the user is a shared cluster
+identity — its jobs, `~/.globus_compute`, and the endpoint manager — and the harness cleans up after
+a run as that user. `run_suite` claims users with a per-user **`flock`** file under
+`agentic/runs/.pool-claims/` (`HPCB_POOL_CLAIMS_DIR` to move it), held for exactly as long as the user
+is in use and released by the kernel if the process dies. So **two `run_suite` invocations on one host
+can run concurrently** — they take disjoint users, and a suite that finds every user claimed waits
+rather than colliding. Teardown is **run-scoped**: it deletes only this run's endpoint
+(`HPC_BRIDGE_ENDPOINT_NAME`) and cancels only blocks carrying this run's `uep.<eid>` marker — never
+`scancel -u`. Before each delete it saves the manager + UEP `endpoint.log`s and the blocks'
+stdout/stderr into the bundle as `endpoint-logs.txt` (the post-mortem evidence `delete` would erase).
+
+> **Why:** on 2026-08-19 two suites both allocated test-00 (the old allocator was per-process and
+> started at 00) and one run's `scancel -u` teardown killed the other's live blocks mid-task — it looked
+> like the endpoint thrashing its own blocks and cost days to diagnose. `first_details_connect_succeeds`
+> and the pool-claim tests (`harness/test_pool_and_cluster_ops.py`) pin the fix.
+
+A run that dies before teardown (SIGKILL, Docker gone) can leave its endpoint/blocks behind. Sweep
+that user **by hand, only when no run is using it**: `./agentic/sweep_pool_user.sh hpcbridge-test-03`
+(the one deliberately user-wide operation; it refuses if the user's claim is held). Direct
+`run_smoke.sh` runs use the base `hpcbridge-test` user and don't participate in claims — don't run two
+of those at once; use `run_suite` for parallelism.
+
 ## Regression set (before merging a PR)
 
 Run these against globus1 before pushing a branch that touches connect/discovery, endpoint naming,
