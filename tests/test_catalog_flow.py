@@ -247,7 +247,7 @@ async def test_connect_facility_index_unavailable_falls_back_to_details(monkeypa
     app = AppCtx(facility=FakeFacility(), profile=Profile())
     res = await server._connect_facility(app, "anvil")
     assert res.phase == "needs_facility_details"
-    assert res.notice and "catalog unavailable" in res.notice
+    assert res.notice and "registry unavailable" in res.notice
 
 
 async def test_list_facilities_empty_without_catalog(monkeypatch):
@@ -724,3 +724,59 @@ async def test_startup_pin_on_a_mep_entry(monkeypatch):
     monkeypatch.setattr(server, "make_catalog", lambda: FakeCatalog([fake_mep_entry(account_required=True)]))
     with pytest.raises(RuntimeError, match="HPC_BRIDGE_ACCOUNT"):
         await server._catalog_facility("globus1")
+
+
+async def test_registry_wins_over_a_stale_cached_config_for_a_catalogued_id(monkeypatch):
+    # Decision 2026-09-03: curated registry entries are the stable ones. Found live: the maintainer's
+    # local cache held an SSH-era `globus1` config that would have shadowed the registry's MEP entry
+    # and silently taken the SSH path. (The autouse fixture isolates the cache to tmp.)
+    from hpc_bridge import server
+    from tests.fakes import MEP_UUID, fake_mep_entry
+
+    server._facility_store().put("globus1", _details(ssh_host="globus1").model_dump(mode="json"))
+    monkeypatch.setattr(server, "make_catalog", lambda: FakeCatalog([fake_mep_entry(id="globus1")]))
+    seen = []
+
+    def stop(entry, *, account):
+        seen.append(entry)
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(server, "_facility_from_entry", stop)
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    res = await server._connect_facility(app, "globus1")
+    assert res.phase == "failed" and "stop here" in (res.notice or "")
+    assert len(seen) == 1 and seen[0].compute_mep_uuid == MEP_UUID and seen[0].ssh_host is None  # the REGISTRY entry
+
+
+async def test_cached_config_still_serves_when_the_registry_is_unreachable(monkeypatch):
+    from hpc_bridge import server
+
+    server._facility_store().put("midway3", _details(ssh_host="midway3").model_dump(mode="json"))
+
+    def down():
+        raise RuntimeError("search down")
+
+    monkeypatch.setattr(server, "make_catalog", down)
+    seen = []
+
+    def stop(entry, *, account):
+        seen.append(entry)
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(server, "_facility_from_entry", stop)
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    res = await server._connect_facility(app, "midway3")
+    assert len(seen) == 1 and seen[0].ssh_host == "midway3"  # the cache served; no probe, no 'registry unavailable'
+    assert res.phase == "failed" and "stop here" in (res.notice or "")
+
+
+async def test_registry_unreachable_and_nothing_cached_asks_for_a_host(monkeypatch):
+    from hpc_bridge import server
+
+    def down():
+        raise RuntimeError("search down")
+
+    monkeypatch.setattr(server, "make_catalog", down)
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    res = await server._connect_facility(app, "nowhere")
+    assert res.phase == "needs_facility_details" and "registry unavailable" in (res.notice or "")

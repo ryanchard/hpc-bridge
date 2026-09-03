@@ -136,6 +136,39 @@ async def test_cold_compute_block_skips_the_login_pilot_query(monkeypatch):
     assert "login" not in app.shapes
 
 
+async def test_unmapped_identity_is_a_terminal_down_not_allocating(monkeypatch):
+    # the #32 provisioning-notice augmenter queries the scheduler over shape="login" — skipped on a MEP
+    import time as _time
+
+    app = _app()
+    await _connect(app, monkeypatch)
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(
+        eid, _Res(0, "", ""), canary_result=CanaryResult(ok=False, error="TaskExecutionFailed: Identity failed to map to a local user name.  (LookupError) "))
+    server._shape_runtime(app, "compute").provisioning_since = _time.monotonic() - (server.PROVISION_GRACE_S + 10)
+    monkeypatch.setattr("hpc_bridge.login.globus_identity_label", lambda fetch=True: "someone@example.org")
+    res = await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
+    assert res.status == "down" and res.block_state == "cold"
+    assert "NO ACCOUNT" in res.notice and "someone@example.org" in res.notice and "TERMINAL" in res.notice
+    assert "allocating" not in res.notice and "failed to map" in res.notice.lower()
+
+
+def test_no_account_markers_cover_the_manager_messages():
+    from hpc_bridge.server import _no_account_failure
+    assert _no_account_failure("TaskExecutionFailed: Identity failed to map to a local user name.  (LookupError) ")
+    assert _no_account_failure("(KeyError)\n  Identity mapped to a local user name, but local user does not exist.")
+    assert _no_account_failure("Ignoring start request for untrusted identity.")
+    assert not _no_account_failure("timeout") and not _no_account_failure(None)
+    assert not _no_account_failure("RuntimeError: Executor is shutdown")
+
+
+def test_cold_run_shell_on_no_account_is_failed_not_cold_start():
+    from hpc_bridge.server import _cold_outcome
+    out = _cold_outcome("cold", CanaryResult(ok=False, error="TaskExecutionFailed: Identity failed to map to a local user name."))
+    assert out.phase == "failed" and "NO ACCOUNT" in out.notice
+    assert _cold_outcome("cold", CanaryResult(ok=False, error="timeout")).phase == "cold_start"
+
+
+
 # --- stop / teardown: draining-only, no release channel ----------------------------------------------
 
 
@@ -223,3 +256,98 @@ async def test_stop_mep_refuses_while_a_task_runs_and_keeps_its_handle(monkeypat
     assert res.status == "up" and "can't stop" in res.notice and out.task_id in res.notice
     assert "poll_task" in res.notice and "no cancel channel" in res.notice.lower()
     assert out.task_id in app.tasks and "compute" in app.shapes  # handle + shape survive; result retrievable
+
+
+_DOCUMENTED_422 = (
+    "Request payload failed validation: Identity failed to map to a local user name.  (LookupError)\n"
+    "   Globus effective identity: 3c085472-314d-4f22-abc6-591f2767af2b\n"
+    "   Globus username: alice@example.edu"
+)
+
+
+def test_dispatch_error_text_keeps_the_api_message_not_the_url_preamble():
+    from hpc_bridge.runner import dispatch_error_text
+
+    class _ComputeAPIError(Exception):  # shape of globus_sdk's GlobusAPIError: .message / .code / long repr
+        message = _DOCUMENTED_422
+        code = "SEMANTICALLY_INVALID"
+        http_status = 422
+
+        def __str__(self):
+            return ("('POST', 'https://compute.api.globus.org/v3/endpoints/da3df250-4013-4d69-942c-eef1568f860c/submit', "
+                    f"'Bearer', 422, 'SEMANTICALLY_INVALID', {self.message!r})")
+
+    text = dispatch_error_text(_ComputeAPIError())
+    assert text.startswith("_ComputeAPIError[SEMANTICALLY_INVALID]: Request payload failed validation")
+    assert "failed to map to a local user" in text and "alice@example.edu" in text
+    assert dispatch_error_text(RuntimeError("Executor is shutdown")) == "RuntimeError: Executor is shutdown"
+    assert len(dispatch_error_text(RuntimeError("x" * 5000))) <= 600
+
+
+async def test_documented_422_is_terminal_and_names_the_identity_from_the_error(monkeypatch):
+    from hpc_bridge.server import _identity_from_error
+    assert _identity_from_error("ComputeAPIError[SEMANTICALLY_INVALID]: " + " ".join(_DOCUMENTED_422.split())) == "alice@example.edu"
+    assert _identity_from_error("timeout") is None
+
+
+async def test_documented_422_through_the_canary_is_terminal_down(monkeypatch):
+    # the #32 provisioning-notice augmenter queries the scheduler over shape="login" — skipped on a MEP
+    import time as _time
+
+    app = _app()
+    await _connect(app, monkeypatch)
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(
+        eid, _Res(0, "", ""), canary_result=CanaryResult(ok=False, error="ComputeAPIError[SEMANTICALLY_INVALID]: " + " ".join(_DOCUMENTED_422.split())))
+    server._shape_runtime(app, "compute").provisioning_since = _time.monotonic() - (server.PROVISION_GRACE_S + 10)
+    monkeypatch.setattr("hpc_bridge.login.globus_identity_label", lambda fetch=True: None)  # no lookup needed
+    res = await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
+    assert res.status == "down" and "NO ACCOUNT" in res.notice and "(alice@example.edu)" in res.notice
+
+
+_LIVE_422 = ("ComputeAPIError[SEMANTICALLY_INVALID]: Request payload failed validation: Identity failed to map to a "
+             "local user name. (LookupError) Globus effective identity: a4ef1d60-542a-49b3-a800-9a9b73a63b63 "
+             "Globus username: ellermaugustus@gmail.com")
+_LIVE_409 = ("ComputeAPIError[RESOURCE_CONFLICT]: Endpoint da3df250-4013-4d69-942c-eef1568f860c is already in use: "
+             "possibly due to concurrent requests -- please try again")
+
+
+async def test_no_account_verdict_is_sticky_and_stops_submitting(monkeypatch):
+    # LIVE 2026-09-03: call #1 got the 422 -> terminal down; call #2 two seconds later re-submitted and got a
+    # transient 409 RESOURCE_CONFLICT, flipping the verdict back to "allocating nodes…". The verdict must stick.
+    app = _app()
+    await _connect(app, monkeypatch)
+    made, holder = [], {"err": _LIVE_422}
+
+    def factory(eid, user_endpoint_config=None, **_kw):
+        made.append(_FakeRunner(eid, _Res(0, "", ""), canary_result=CanaryResult(ok=False, error=holder["err"])))
+        return made[-1]
+
+    app.runner_factory = factory
+    monkeypatch.setattr("hpc_bridge.login.globus_identity_label", lambda fetch=True: None)
+    first = await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
+    assert first.status == "down" and "(ellermaugustus@gmail.com)" in first.notice
+    holder["err"] = _LIVE_409  # what a re-submit would have got
+    second = await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
+    assert second.status == "down" and "NO ACCOUNT" in second.notice and "allocating" not in second.notice
+    assert len(made) == 1 and made[0].canaries == 1  # no re-submit, no runner rebuild
+    # a cold run_shell is terminal too, without submitting
+    out = await _run_shell(app, "hostname", shape="compute")
+    assert out.phase == "failed" and "NO ACCOUNT" in out.notice and made[0].canaries == 1
+
+
+def test_transient_conflict_hint_is_not_fix_your_config():
+    from hpc_bridge.server import _dispatch_error_suffix, _transient_dispatch_failure
+    assert _transient_dispatch_failure(_LIVE_409) and not _transient_dispatch_failure(_LIVE_422)
+    s = _dispatch_error_suffix(CanaryResult(ok=False, error=_LIVE_409))
+    assert "TRANSIENT" in s and "wait ~10 s" in s and "fix the config" not in s
+
+
+async def test_new_login_forgets_the_no_account_verdict(monkeypatch):
+    from hpc_bridge.server import _forget_identity_verdicts, _shape_runtime
+    app = _app()
+    await _connect(app, monkeypatch)
+    rt = _shape_runtime(app, "compute")
+    rt.no_account = _LIVE_422
+    rt.last_canary = CanaryResult(ok=False, error=_LIVE_422)
+    _forget_identity_verdicts(app)
+    assert rt.no_account is None and rt.last_canary is None and rt.runner_stale is True

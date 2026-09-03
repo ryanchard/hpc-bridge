@@ -21,10 +21,10 @@ A `Protocol` with `get(machine)` (exact → provisioning) and `discover(query)` 
 - **`BundledCatalog`** (`catalog/bundled.py`) — loads the checked-in seed YAML: the **curator's ingest source** + a test fixture. *Not* a runtime catalog.
 - **`FakeCatalog`** (`tests/fakes.py`) — in-memory test double.
 
-`make_catalog()` ([[server]]) **requires** `HPC_BRIDGE_SEARCH_INDEX` — the index is the only runtime catalog. No index (or no search scope) is a hard failure.
+`make_catalog()` ([[server]]) reads the **public registry** — the index id is baked in (`PUBLIC_REGISTRY_INDEX`, `catalog/search.py`) and read **anonymously**; `HPC_BRIDGE_SEARCH_INDEX` only overrides it. No bundled runtime fallback: a machine the registry can't resolve falls to the local BYO cache, then to the probe. **Precedence (decided 2026-09-03): explicit `details=` this session → the registry → the local cache → probe.** The registry wins for any catalogued id — curated entries are the stable ones; a stale local config must never shadow one (it would have, for `globus1`).
 
 > [!info] The index — `6ff95fb8-1113-42be-a811-3d1cb5a67bd5`
-> Our Globus Search index (display name `hpc-bridge-test`), owned by the maintainer's Globus identity. Set `HPC_BRIDGE_SEARCH_INDEX=6ff95fb8-1113-42be-a811-3d1cb5a67bd5` for the server (locally it lives in `.claude/settings.local.json`, which is gitignored — so an interactive shell does **not** have it; pass the UUID literally to `hpc-bridge-catalog`). Curated entries ingested so far (subject → seed):
+> Our Globus Search index (display name `hpc-bridge-test`), owned by the maintainer's Globus identity. It is the plugin's **default registry** (baked in; `HPC_BRIDGE_SEARCH_INDEX` only overrides it), read **anonymously** — a stranger's `list_facilities()` works with no login. Curators pass the UUID to `hpc-bridge-catalog` explicitly (it is not in your interactive shell). Curated entries ingested so far (subject → seed):
 > - `purdue:anvil` ← `catalog/seed/anvil.yaml` (SSH-bootstrap, personal endpoint; 2026-06)
 > - `globus:globus1` ← `catalog/seed/globus-cluster.yaml` (the **MEP** entry for `globus-cluster-mep`, zero SSH; ingested 2026-08-19 — see [[Endpoint reuse and MEP integration]])
 >
@@ -34,7 +34,7 @@ A `Protocol` with `get(machine)` (exact → provisioning) and `discover(query)` 
 > Globus Search needs auth only for non-public entries, so a fresh install lists the registry with zero setup. The note below records the earlier authenticated-read design; see [[Globus index discovery channel]] for the 2026-09-03 flip.
 >
 > [!note] (Original) Auth — reuse the Compute identity
-> Reads use `SearchClient(app=Client().app)` — the same Globus identity Compute already holds — needing a one-time search-scope consent (`hpc-bridge-catalog`); until granted, catalog discovery **hard-fails** (no bundled fallback). This unlocks `visible_to`-restricted entries. See [[Globus index discovery channel]].
+> **Reads are anonymous** (`SearchClient()` — superseded 2026-09-03; the earlier authenticated read via `SearchClient(app=Client().app)` is only used when a Search-scoped login already exists, e.g. a curator's). Globus Search needs auth only for non-public entries; the registry's are `visible_to: public`. Writes stay curator-only: `hpc-bridge-catalog` asks for the Search scope itself.
 
 ## Three ways in — startup, agentic, or BYO
 

@@ -17,7 +17,7 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FRESH="${FRESH:-$HOME/hpcb-fresh}"
-INDEX="${HPC_BRIDGE_SEARCH_INDEX:-6ff95fb8-1113-42be-a811-3d1cb5a67bd5}"   # the hpc-bridge-test registry
+INDEX="${HPC_BRIDGE_SEARCH_INDEX:-6ff95fb8-1113-42be-a811-3d1cb5a67bd5}"   # = the plugin's built-in default (PUBLIC_REGISTRY_INDEX); set only to use another registry
 
 if [[ "${1:-}" == "--reset" ]]; then
   rm -rf "$FRESH"

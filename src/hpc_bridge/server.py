@@ -56,6 +56,11 @@ class ShapeRuntime:
     # Set when user_endpoint_config changed under a live runner (e.g. a new partition): the
     # cached Executor captured the old config at build time, so _runner_for must rebuild it.
     runner_stale: bool = False
+    # A recorded NO-ACCOUNT refusal (the MEP could not map our identity). Sticky: later calls return
+    # it without re-submitting — a rapid re-submit got a transient RESOURCE_CONFLICT from the web
+    # service (live, 2026-09-03) that flipped the verdict back to 'allocating nodes…'. Cleared when the
+    # runtime is dropped (re-bind/teardown) or a new login lands (_forget_identity_verdicts).
+    no_account: str | None = None
     # Deterministic spend floor: a scheduler compute shape may not start a block until spend is
     # explicitly acknowledged via ensure_endpoint_up(confirm_spend=True). Persists for the
     # session once given (no re-nagging); cleared on stop/reset when the shape state is dropped.
@@ -317,21 +322,17 @@ def _make_search_client(_app_factory=None):
 
 
 def make_catalog():
-    """The runtime catalog is the Globus Search index (HPC_BRIDGE_SEARCH_INDEX). There is **no
-    bundled fallback**: a machine the index can't resolve is a hard failure (the soft
-    agent-discovery fallback is a later slice). The bundled seed is the curator's ingest source
+    """The runtime catalog is the PUBLIC REGISTRY — a Globus Search index, read anonymously. The
+    plugin ships its id (`PUBLIC_REGISTRY_INDEX`), so `list_facilities()` works out of the box with no
+    login and no configuration; HPC_BRIDGE_SEARCH_INDEX overrides it (a private/staging registry).
+    There is **no bundled fallback**: a machine the registry can't resolve is a hard failure (the
+    soft agent-discovery fallback is a later slice). The bundled seed is the curator's ingest source
     (see `hpc-bridge-catalog`), never a runtime catalog.
     """
-    index = os.environ.get("HPC_BRIDGE_SEARCH_INDEX", "").strip()
-    if not index:
-        raise RuntimeError(
-            "HPC_BRIDGE_SEARCH_INDEX is required: the catalog is the Globus Search index (the "
-            "bundled fallback was removed). Set it and run `hpc-bridge-catalog` once to grant the "
-            "search scope."
-        )
-    from .catalog.search import SearchCatalog
+    from .catalog.search import PUBLIC_REGISTRY_INDEX, SearchCatalog
 
-    client = _make_search_client()  # raises if the search scope isn't granted yet
+    index = os.environ.get("HPC_BRIDGE_SEARCH_INDEX", "").strip() or PUBLIC_REGISTRY_INDEX
+    client = _make_search_client()  # anonymous unless a Search-scoped login is already held
     cache_dir = (
         Path(os.environ.get("CLAUDE_PLUGIN_DATA", str(Path.home() / ".hpc-bridge")))
         / "catalog-cache"
@@ -547,6 +548,8 @@ async def _confirm_worker(app: AppCtx, shape: str, *, force: bool) -> str:
     also kicks that block). Within CANARY_TTL_S of the last success we trust warmth and skip
     the round-trip so an interactive burst doesn't pay it on every call."""
     rt = _shape_runtime(app, shape)
+    if rt.no_account:  # terminal for this identity: no canary, no runner rebuild — keep last_canary as the evidence
+        return "provisioning"
     runner = _runner_for(app, shape)
     now = time.monotonic()
     # A task still running on this shape IS liveness — the worker is demonstrably executing our work.
@@ -571,6 +574,8 @@ async def _confirm_worker(app: AppCtx, shape: str, *, force: bool) -> str:
         # forever (the #37 dead-end in a new guise). Rebuild it on the next call; the failure text
         # rides `last_canary` into the provisioning notice so the cause is visible, not buried.
         rt.runner_stale = True
+        if _no_account_failure(result.error):
+            rt.no_account = result.error
     return "provisioning"
 
 
@@ -851,6 +856,18 @@ async def _ensure_endpoint_up(
                 rt.provisioning_since = time.monotonic()
             provisioning_elapsed = time.monotonic() - rt.provisioning_since
             notice = f"allocating nodes on {active_partition!r}…" if active_partition else "allocating nodes…"
+            if rt.last_canary is not None and _no_account_failure(rt.last_canary.error):
+                # The manager refused to start a user endpoint for THIS identity: no local account. Not
+                # 'allocating nodes' — a terminal `down`, so the agent stops polling and tells the user.
+                from .login import globus_identity_label
+
+                identity = await asyncio.to_thread(globus_identity_label)
+                rt.provisioning_since = None
+                return EndpointStatus(
+                    status="down", block_state="cold", endpoint_id=eid, session_spend=spend,
+                    partition=active_partition, account=active_account,
+                    notice=_no_account_notice(app, rt.last_canary.error, identity),
+                )
             if not _has_login_shape(app) and rt.last_canary is None:
                 # On a MEP a canary runs on EVERY poll whose manager gate passes (and is recorded even
                 # when it fails), so "provisioning with no canary ever recorded" means the manager
@@ -925,6 +942,7 @@ async def _authenticate(app: AppCtx, force: bool = False, mode: str | None = Non
         return LoginStatus(phase="logged_in", notice="Globus login present with every scope hpc-bridge needs.")
     start, status = await _start_login_and_wait(flow, mode)
     if status == "done":
+        _forget_identity_verdicts(app)
         return LoginStatus(phase="logged_in", notice="Globus login completed in the browser; carry on.")
     return LoginStatus(phase="needs_login", login_url=start.login_url, login_mode=start.mode,
                        notice=_login_notice(start, flow.error,
@@ -940,6 +958,7 @@ async def _complete_login(app: AppCtx, code: str) -> LoginStatus:
     except Exception as exc:  # noqa: BLE001 - a bad/expired code is a structured outcome, not a crash
         return LoginStatus(phase="failed", notice=f"login code not accepted: {type(exc).__name__}: {exc}"[:300]
                            + " — call authenticate() for a fresh link.")
+    _forget_identity_verdicts(app)
     return LoginStatus(phase="logged_in", notice="Globus login complete. Continue: connect_facility again.")
 
 
@@ -968,8 +987,9 @@ async def complete_login(code: str, ctx: Context) -> LoginStatus:
 
 @mcp.tool()
 async def list_facilities(query: str = "") -> list[CatalogSummary]:
-    """List the HPC machines hpc-bridge can stand up, from the facility catalog (the Globus Search
-    index — set HPC_BRIDGE_SEARCH_INDEX). Empty query lists all; a query filters by name/description.
+    """List the HPC machines hpc-bridge can stand up, from the public facility registry (a Globus
+    Search index, read anonymously — works with no login). Empty query lists all; a query filters by
+    name/description.
 
     Returns agent-safe summaries (no executable config or raw UUIDs). Pick one and call
     connect_facility(facility=…) to bring up its login node and see your allocations. No SSH, no
@@ -1075,10 +1095,20 @@ async def _connect_facility(
             _facility_store().put(details.ssh_host, details.model_dump(mode="json"))
     else:
         entry = app.session_facilities.get(facility)
+        registry_error: Exception | None = None
+        if entry is None:
+            # THE REGISTRY WINS for any catalogued id (decision 2026-09-03: curated entries are the stable
+            # ones). Found live: the maintainer's local cache held an SSH-era `globus1` config that would
+            # have shadowed the registry's MEP entry and silently taken the SSH path.
+            try:
+                entry = await make_catalog().get(facility)
+            except Exception as exc:  # noqa: BLE001 - registry unreachable -> the cache may still serve
+                registry_error = exc
         if entry is None:
             # LOCAL DISCOVERY: a previously-confirmed BYO config for this host, cached to disk (keyed on
-            # ssh_host, canonical; facility id as fallback) — use it with NO SSH probe, then bootstrap
-            # reuses the online endpoint over the web. A stale/invalid cache falls through to catalog/probe.
+            # ssh_host, canonical; facility id as fallback) — only for facilities the registry does NOT
+            # know (or when it is unreachable). Used with NO SSH probe; bootstrap then reuses the online
+            # endpoint over the web. A stale/invalid cache falls through to the probe.
             cached = _facility_store().get(ssh_host or facility)
             if cached is not None:
                 try:
@@ -1086,15 +1116,12 @@ async def _connect_facility(
                     app.session_facilities[facility] = entry
                 except Exception:  # noqa: BLE001 - stale/invalid cached config
                     entry = None
-        if entry is None:
-            try:
-                entry = await make_catalog().get(facility)
-            except Exception as exc:  # noqa: BLE001 - index/scope unavailable -> ask/probe
-                return await _propose_or_ask(
-                    facility, ssh_host,
-                    f"catalog unavailable ({type(exc).__name__}); give me this facility's SSH host "
-                    "(ssh_host=… or HPC_BRIDGE_SSH_HOST) to probe it, or supply details= directly.",
-                )
+        if entry is None and registry_error is not None:
+            return await _propose_or_ask(
+                facility, ssh_host,
+                f"registry unavailable ({type(registry_error).__name__}); give me this facility's SSH "
+                "host (ssh_host=… or HPC_BRIDGE_SSH_HOST) to probe it, or supply details= directly.",
+            )
         if entry is None:
             return await _propose_or_ask(
                 facility, ssh_host,
@@ -1759,10 +1786,74 @@ def _dispatch_error_suffix(canary: CanaryResult | None) -> str:
     path broke — the caller must see WHY rather than keep waiting on a block that will never come."""
     if canary is None or canary.ok or not canary.error or canary.error == "timeout":
         return ""
+    if _transient_dispatch_failure(canary.error):
+        return (f" — last dispatch was refused as TRANSIENT: {canary.error}. The endpoint is still processing "
+                "a previous start request — wait ~10 s and call again (not a config problem)")
     return f" — last dispatch failed: {canary.error}. Not a queue wait: fix the config/partition and retry"
 
 
+def _transient_dispatch_failure(error: str | None) -> bool:
+    """The web service's 409 RESOURCE_CONFLICT ('Endpoint … is already in use: possibly due to concurrent
+    requests -- please try again'): seen live when a submit followed another within ~2 s."""
+    e = (error or "").lower()
+    return "resource_conflict" in e or "already in use" in e
+
+
+def _forget_identity_verdicts(app: AppCtx) -> None:
+    """A new Globus login may be a different identity: drop every sticky no-account verdict and make the
+    runners rebuild (their Executors were built on the old credential)."""
+    for rt in app.shapes.values():
+        if rt.no_account:
+            rt.no_account = None
+            rt.last_canary = None
+        rt.runner_stale = True
+
+
+# The MEP manager's failure notices when it cannot start a user endpoint for the caller's identity
+# (globus_compute_endpoint/endpoint/endpoint_manager.py; delivered by the web service as the task's
+# failure reason, so our canary future raises with this text). None of them is a queue wait, and
+# nothing on our side changes them: the facility must grant an account / add the identity mapping.
+_NO_ACCOUNT_MARKERS = (
+    "failed to map to a local user",          # identity mapping found no local user
+    "local user does not exist",              # mapped, but the account isn't on the machine
+    "untrusted identity",                     # single-user endpoint: not the owner's identity
+)
+
+
+def _no_account_failure(error: str | None) -> bool:
+    e = (error or "").lower()
+    return any(m in e for m in _NO_ACCOUNT_MARKERS)
+
+
+_GLOBUS_USERNAME_RE = re.compile(r"Globus username:\s*([^\s'\"),]+)")
+
+
+def _identity_from_error(error: str | None) -> str | None:
+    """The web service echoes the submitter in the 422 ('Globus username: alice@example.edu')."""
+    m = _GLOBUS_USERNAME_RE.search(error or "")
+    return m.group(1) if m else None
+
+
+def _no_account_notice(app: AppCtx | None, error: str | None, identity: str | None) -> str:
+    identity = _identity_from_error(error) or identity
+    who = f" ({identity})" if identity else ""
+    eid = app.state.endpoint_id if app is not None else None
+    where = f" {eid}" if eid else ""
+    return (
+        f"NO ACCOUNT at this facility: its multi-user endpoint{where} could not map the user's Globus "
+        f"identity{who} to a local user — the facility's manager said: {(error or '').strip()[:320]}. "
+        "This is TERMINAL, not a queue wait: no retry or poll from here changes it. The user needs an account "
+        "on this machine with their Globus identity added to the endpoint's identity mapping — tell them to "
+        "ask the facility's support, quoting that identity. Do not call ensure_endpoint_up again until they have."
+    )
+
+
 def _cold_outcome(block: str, canary: CanaryResult | None = None) -> ShellOutcome:
+    if canary is not None and _no_account_failure(canary.error):
+        from .login import globus_identity_label
+
+        return ShellOutcome(phase="failed", block_state=block,
+                            notice=_no_account_notice(None, canary.error, globus_identity_label(fetch=False)))
     return ShellOutcome(
         phase="cold_start",
         block_state=block,

@@ -243,6 +243,37 @@ class LoginFlow:
                 pass
 
 
+_IDENTITY_LABEL: str | None = None
+
+
+def globus_identity_label(*, fetch: bool = True) -> str | None:
+    """Best-effort 'who am I' for notices — the stored login's preferred_username (openid userinfo,
+    silent refresh through the SDK app's EXISTING auth.globus.org authorizer; never prompts). Cached
+    after the first success; `fetch=False` returns only the cache (for sync callers). None on any
+    failure. Do NOT build AuthClient(app=app): that registers scopes the login may not hold and would
+    make the app want a new login (found by agentic/whoami_globus.py)."""
+    global _IDENTITY_LABEL
+    if _IDENTITY_LABEL or not fetch:
+        return _IDENTITY_LABEL
+    try:
+        from globus_sdk import AuthClient
+
+        app = _default_app_factory(None)
+        if app.login_required():
+            return None
+        ac = AuthClient(authorizer=app.get_authorizer("auth.globus.org"))
+        info = ac.userinfo()  # with `openid` alone this carries `sub` but NO preferred_username
+        label = info.get("preferred_username")
+        sub = info.get("sub")
+        if not label and sub:
+            idents = ac.get_identities(ids=sub).get("identities") or []
+            label = (idents[0].get("username") if idents else None) or sub
+        _IDENTITY_LABEL = label or None
+    except Exception:  # noqa: BLE001 - a label is a courtesy, never a failure
+        return None
+    return _IDENTITY_LABEL
+
+
 def _default_app_factory(manager):
     """The REAL app: the Compute SDK's client id + token storage (so the endpoint can refresh what
     we obtain), our scope set, and — when given — our capturing loopback manager. With
