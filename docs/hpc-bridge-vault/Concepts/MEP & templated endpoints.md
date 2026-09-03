@@ -5,7 +5,7 @@
 
 ## What it is
 
-The endpoint is a Globus Compute **v4 Multi-User Endpoint (MEP)** run in *personal / single-user* mode. "Multi-user" here names the **manager + templated-UEP** architecture — *not* identity mapping:
+The endpoint hpc-bridge *stands up* is a Globus Compute **v4 Multi-User Endpoint (MEP)** run in *personal / single-user* mode. "Multi-user" here names the **manager + templated-UEP** architecture — *not* identity mapping. (The *other* sense — a manager the **facility** runs in true multi-user mode with identity mapping, which hpc-bridge *consumes* with zero SSH — is [[facility-mep]]; the architecture below is the same, only who owns the manager and the template differs.)
 
 - **Manager** — a detached daemon on one login node. Its `config.yaml` is **engine-free** (just `display_name`, `amqp_port`). It registers with Globus and listens on AMQP.
 - **UEP (User Endpoint Process)** — forked by the manager *per task*. Its engine + provider come from `user_config_template.yaml.j2`, rendered from the `user_endpoint_config` dict the task carries.
@@ -22,12 +22,12 @@ flowchart TD
 
 ## Shapes: one endpoint, many configs
 
-`user_endpoint_config` is a named bag of template vars — a **shape** ([[shapes]]). `shape="compute"` renders a scheduler block (billed compute); `shape="login"` renders a `LocalProvider` (a free process on the login node — also the no-SSH discovery channel). `compute` is **scheduler-neutral**: the facility's `profile.scheduler` (`config_template`, `remote.py:649`) selects `_SLURM_TEMPLATE`/`_PBS_TEMPLATE`, and thus the provider (`SlurmProvider` / `PBSProProvider`) and launcher. See [[Resource shapes & the spend floor]].
+`user_endpoint_config` is a named bag of template vars — a **shape** ([[shapes]]). `shape="compute"` renders a scheduler block (billed compute); `shape="login"` renders a `LocalProvider` (a free process on the login node — also the no-SSH discovery channel). `compute` is **scheduler-neutral**: the facility's `profile.scheduler` (`config_template`, `remote.py:657`) selects `_SLURM_TEMPLATE`/`_PBS_TEMPLATE`, and thus the provider (`SlurmProvider` / `PBSProProvider`) and launcher. A facility MEP serves **only** `compute` (its schema rejects the `LocalProvider` login shape) — see [[Resource shapes & the spend floor]].
 
 ## How it shows up in the code
 
-- The template + default vars: `SlurmFacility.config_template()` ([[facility-remote]], `remote.py:625`).
-- The manager + UEP config written at provision: `provision()` (`remote.py:723`).
+- The template + default vars: `SlurmFacility.config_template()` ([[facility-remote]], `remote.py:657`); a `MEPFacility` returns only the defaults — the facility owns the template ([[facility-mep]]).
+- The manager + UEP config written at provision: `provision()` (`remote.py:753`).
 - The shape → vars mapping: `shape_config()` ([[shapes]]).
 
 > [!warning] `config.yaml` must be engine-free
@@ -40,4 +40,4 @@ flowchart TD
 > The engine sets `run_in_sandbox: true`: ShellFunctions expect a sandbox, and without it every task logs *"Task sandboxing will not work due to endpoint misconfiguration."* Sandboxing runs each task in `tasks_working_dir/<TASK_UUID>` — harmless here because the [[Session continuity|session shim]] immediately `cd`s to an absolute `<scratch>/sessions/<id>` path, overriding the sandbox landing dir. The config is written at `configure` time, so a flip only takes effect on a **freshly bootstrapped** endpoint, not a reused one.
 
 ## See also
-[[Resource shapes & the spend floor]] · [[shapes]] · [[facility-remote]] · [[Standing up the endpoint]] · [[Two-channel architecture]]
+[[Resource shapes & the spend floor]] · [[shapes]] · [[facility-remote]] · [[facility-mep]] · [[Standing up the endpoint]] · [[Two-channel architecture]] · [[Endpoint reuse and MEP integration]]

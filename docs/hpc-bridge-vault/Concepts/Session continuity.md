@@ -5,7 +5,7 @@
 
 ## How
 
-`wrap()` ([[session_shell]], `session_shell.py:83`) rewrites a command so that, under `/bin/bash`:
+`wrap()` ([[session_shell]], `session_shell.py:102`) rewrites a command so that, under `/bin/bash`:
 
 1. `cd` into the session's saved `.cwd` (or the session dir on first call);
 2. source the saved `.env`;
@@ -21,7 +21,7 @@
 > The env is diffed per-variable via base64 fingerprints and re-emitted with `printf %q`, so a multi-line value can't leave an orphan line that breaks the next `. .env` (which would silently drop the whole session env).
 
 > [!note] `<scratch>` follows the bound facility
-> The session root is the *facility's* remote scratch (e.g. Anvil `$SCRATCH`) — set at startup and **re-set by `connect_facility`** when a machine is bound at runtime. Without that, the shim runs at the local `~/.hpc-bridge` path on the remote node ([[Facility catalog]]).
+> The session root is the *facility's* remote scratch (e.g. Anvil `$SCRATCH`) — set at startup and **re-set by `connect_facility`** when a machine is bound at runtime. Without that, the shim runs at the local `~/.hpc-bridge` path on the remote node ([[Facility catalog]]). A root written as `$HOME/…` (or `${HOME}/…`, `~/…`) is expanded **on the worker** by `Session.quoted_state_dir` (`"$HOME"'/rest'`), which is what lets a [[facility-mep|multi-user endpoint]] — whose local username we can't know client-side — use a home-relative scratch; `~` is expanded client-side only for a `LocalFacility` (`_resolve_scratch_root`, [[server]]).
 
 ## See also
 [[session_shell]] · [[server]] · [[The MCP tools]]

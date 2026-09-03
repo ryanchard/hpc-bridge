@@ -5,9 +5,9 @@
 
 ## What it does
 
-- **`Session`** (`session_shell.py:21`) — `(session_id, root)`. `session_id` is an untrusted MCP param, so it's validated against `_VALID_SESSION_ID` (`:8`, strict allowlist — no `../`, no metacharacters → no path traversal).
-- **`wrap(command, session)`** (`:83`) — renders `_WRAP_TEMPLATE` (`:47`): `cd` into the saved `.cwd`, source `.env`, run the **base64-carried** command via `eval` in the current shell, then persist the new cwd + changed env. Runs under `/bin/bash` (`ShellFunction` execs `shell=True, executable=/bin/bash`).
-- **`reset_command(session)`** (`:107`) — clears `.cwd`/`.env` (and any leaked snapshot).
+- **`Session`** (`session_shell.py:21`) — `(session_id, root)`. `session_id` is an untrusted MCP param, so it's validated against `_VALID_SESSION_ID` (`:8`, strict allowlist — no `../`, no metacharacters → no path traversal). **`quoted_state_dir()`** (`:46`) is the state dir as a shell word: a root written `$HOME/…` / `${HOME}/…` / `~/…` is emitted as `"$HOME"'/rest'` so the variable expands **on the worker** — what lets a [[facility-mep|multi-user endpoint]], whose local username we can't know client-side, use a home-relative scratch; anything else is quoted whole.
+- **`wrap(command, session)`** (`:102`) — renders `_WRAP_TEMPLATE` (`:63`): `cd` into the saved `.cwd`, source `.env`, run the **base64-carried** command via `eval` in the current shell, then persist the new cwd + changed env. Runs under `/bin/bash` (`ShellFunction` execs `shell=True, executable=/bin/bash`). The state-dir splice has **no outer quotes** (an assignment RHS doesn't word-split), so the mixed quoting above survives.
+- **`reset_command(session)`** (`:126`) — clears `.cwd`/`.env` (and any leaked snapshot).
 
 This is the mechanism behind [[Session continuity]]; both invariants (volatile-var filtering, record-safe multi-line env) are documented there.
 

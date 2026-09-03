@@ -1,7 +1,7 @@
 # Two-channel architecture
 
 > [!abstract] In one line
-> SSH is the **control plane** — bootstrap, the un-indexed-facility **discovery probe**, and the `login_shell` escape hatch — reused over **one authenticated connection** (ControlMaster: authenticate once, not once-per-call). All *work* — `run_shell`, the warmth canary, **and releasing the block on `stop`** — rides **Globus Compute over AMQP**, a scoped Globus token, never SSH material. (Catalogued-facility discovery also rides AMQP, via the login shape.)
+> SSH is the **control plane** — bootstrap, the un-indexed-facility **discovery probe**, and the `login_shell` escape hatch — reused over **one authenticated connection** (ControlMaster: authenticate once, not once-per-call). All *work* — `run_shell`, the warmth canary, **and releasing the block on `stop`** — rides **Globus Compute over AMQP**, a scoped Globus token, never SSH material. (Catalogued-facility discovery also rides AMQP, via the login shape.) A **facility multi-user endpoint** ([[facility-mep]]) has no control plane at all: the facility's identity mapping *is* the access, so it is AMQP only — zero SSH, ever.
 
 ## What & why
 
@@ -23,10 +23,11 @@ flowchart LR
 ## How it shows up in the code
 
 - **SSH transport:** `ssh_exec()` ([[facility-remote]]) — `BatchMode`, ControlMaster-multiplexed, key optional (defers to `~/.ssh/config`), reaps the child on timeout. Drives `bootstrap`, the un-indexed `discover_facility_details` ([[discovery]]) probe, `login_exec` (the `login_shell` tool), and — only for an *explicit full teardown* — `gce stop`/`cancel_blocks` (the facility's `teardown()`, **not** called by `stop_endpoint`). The stop's block-release rides AMQP (`_release_blocks_over_login`, [[server]]).
-- **AMQP hot path:** `GlobusRunner` ([[runner]]) submits a `ShellFunction` through a long-lived Globus Compute `Executor`; the same Executor runs the canary ([[Warmth, the canary & cold-start]]). Reached from `run_shell` via [[server]] → `_run_shell`.
+- **AMQP hot path:** `GlobusRunner` ([[runner]]) submits a `ShellFunction` through a long-lived Globus Compute `Executor`; the same Executor runs the canary ([[Warmth, the canary & cold-start]]). Reached from `run_shell` via [[server]] → `_run_shell`. The Globus token it carries comes from the in-terminal login ([[login]]) — the one credential hpc-bridge needs.
+- **No control plane on a facility MEP:** `MEPFacility` ([[facility-mep]]) has no `bootstrap`/`login_exec`/`teardown`; `connect_facility` attaches to the catalogued UUID and every call is an AMQP dispatch. The price is the missing release channel — stop is draining-only ([[Cost control]]).
 
 > [!warning] The load-bearing invariant
 > The hot path carries a **scoped Globus Auth token, never SSH material** — the invariant that doesn't move. SSH is the control plane (bootstrap, the un-indexed discovery probe, the `login_shell` escape hatch), reused over one ControlMaster authentication. Routing *work* — `run_shell`, the canary, the stop's block-release — and *catalogued-facility discovery* through AMQP is what keeps a warm session SSH-free once the endpoint is up — see [[Discovery today]].
 
 ## See also
-[[Standing up the endpoint]] · [[MEP & templated endpoints]] · [[Credential seeding]] · [[server]] · [[facility-remote]] · [[runner]]
+[[Standing up the endpoint]] · [[MEP & templated endpoints]] · [[Credential seeding]] · [[server]] · [[facility-remote]] · [[facility-mep]] · [[runner]] · [[login]]

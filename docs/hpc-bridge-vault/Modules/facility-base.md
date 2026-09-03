@@ -5,13 +5,13 @@
 
 ## What it does
 
-- **`Facility`** Protocol (`facility/base.py:17`) — the contract the runtime depends on: `provision(profile)`, `manager_online(endpoint_id)`, `config_template(profile)`. (Concrete facilities also add `bootstrap`/`teardown`/`login_exec`/etc., accessed via `getattr` so they're optional.)
-- **`EndpointHandle`** (`:10`) — `provision`/`bootstrap` return value: `endpoint_id`, `name`, `login_host` (the pinned FQDN), `reused` (True if reused over the web, no SSH).
+- **`Facility`** Protocol (`facility/base.py:18`) — the contract the runtime depends on: `provision(profile)`, `manager_online(endpoint_id)`, `config_template(profile)`. Concrete facilities add optional capabilities the server reads via `getattr`: `bootstrap`/`teardown`/`login_exec`/`scratch_root`/`profile` (SSH facilities), and **`supported_shapes`** / `account_required` / `max_idletime_s` (a facility MEP) — absent `supported_shapes` means every shape.
+- **`EndpointHandle`** (`:10`) — `provision`/`bootstrap` return value: `endpoint_id`, `name`, `login_host` (the pinned FQDN), `reused` (True if reused over the web — or attached to a facility's endpoint — with no SSH).
 
-Implementations: [[facility-local]] (LocalProvider, no SSH) and [[facility-remote]] (Slurm over SSH). [[server]]'s `make_facility` picks one from env.
+Implementations: [[facility-local]] (LocalProvider, no SSH), [[facility-remote]] (Slurm/PBS over SSH), and [[facility-mep]] (a facility-run multi-user endpoint, zero SSH, compute-only). [[server]]'s `make_facility` picks one from env at startup, and `_facility_from_entry` builds one from a catalog entry at runtime (a `compute_mep_uuid` entry → `MEPFacility`, else `SlurmFacility`).
 
 > [!note] Why a seam
 > Everything that differs between machines sits behind this Protocol; the dispatch/session/cost runtime never imports a specific facility. The discovery work ([[Discovery today]]) is about *generating* these instead of hand-writing them.
 
 ## See also
-[[facility-local]] · [[facility-remote]] · [[server]] · [[Discovery today]]
+[[facility-local]] · [[facility-remote]] · [[facility-mep]] · [[server]] · [[Discovery today]]
