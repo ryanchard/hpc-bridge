@@ -14,9 +14,11 @@ Two constraints are load-bearing:
   dead credential. So this module builds a `UserApp` with the SAME client id + the SAME
   `storage.db`/namespace the SDK uses — it differs only in the login-flow manager. (Registering a
   separate OAuth client, the literal Cloudflare approach, is exactly what NOT to do here.)
-- **One consent covers everything:** the Compute scope, Auth `openid` + `manage_projects` (a started
-  manager requires it — the silent-death case in the seeding note), and Search read — with refresh
-  tokens, so it is one browser round-trip for the lifetime of the install.
+- **One consent, the minimum:** exactly what a started endpoint hard-requires — the Compute scope +
+  Auth `openid` + `manage_projects` (`globus_compute_endpoint.auth.get_globus_app_with_scopes`; the
+  same set `globus-compute-endpoint login` requests) — with refresh tokens, so it is one browser
+  round-trip for the lifetime of the install. Search is NOT requested: registry reads are anonymous
+  for public entries; a `visible_to`-restricted registry would ask for it lazily via the same flow.
 
 Globus Auth allows native clients an implicit redirect to `localhost:<any-port>` (the SDK's own
 LocalServerLoginFlowManager relies on it), so nothing needs registering.
@@ -36,16 +38,19 @@ FLOW_TTL_S = 600.0  # a login URL / listener lives this long, then a fresh needs
 SEARCH_SCOPE = "urn:globus:auth:scope:search.api.globus.org:search"
 
 
-def required_scopes() -> dict[str, list[str]]:
-    """resource_server -> scopes the whole product needs, in ONE consent: what a started endpoint
-    requires (Compute + Auth openid/manage_projects — from `credentials`, resolved from the SDK so it
-    tracks upstream) plus Search read (registry entries that are not public)."""
+def required_scopes(*, include_search: bool = False) -> dict[str, list[str]]:
+    """resource_server -> scopes to request in ONE consent. Default = the MINIMUM: exactly what a
+    started endpoint hard-requires (Compute + Auth openid/manage_projects — from `credentials`,
+    resolved from the SDK so it tracks upstream; parity with `globus-compute-endpoint login`).
+    `include_search=True` adds Search read — only for a registry with non-public entries; public
+    entries are read anonymously, so it is not part of the default consent."""
     from .credentials import _required_scopes
 
     out = {rs: list(scopes) for rs, scopes in _required_scopes().items()}
-    out.setdefault("search.api.globus.org", [])
-    if SEARCH_SCOPE not in out["search.api.globus.org"]:
-        out["search.api.globus.org"].append(SEARCH_SCOPE)
+    if include_search:
+        out.setdefault("search.api.globus.org", [])
+        if SEARCH_SCOPE not in out["search.api.globus.org"]:
+            out["search.api.globus.org"].append(SEARCH_SCOPE)
     return out
 
 

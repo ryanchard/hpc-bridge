@@ -288,27 +288,30 @@ def _resolve_scratch_root(facility) -> str:
     return os.path.expanduser(root) if isinstance(facility, LocalFacility) else root
 
 
-def _make_search_client():
-    """Build a Globus SearchClient that reuses the Compute SDK's GlobusApp identity.
+def _make_search_client(_app_factory=None):
+    """Build the Globus SearchClient for the facility registry.
 
-    Constructing ``SearchClient(app=...)`` registers the ``search.api.globus.org`` scope on the
-    app. Spec §8 — confirmed live (2026-06-25): the Compute app does NOT already hold the search
-    scope, so it must be granted once by an interactive login (run ``hpc-bridge-catalog``). We
-    never trigger that login from here — a server runs non-interactively, and a blocking prompt
-    on the MCP stdio channel would hang it — so if the scope isn't granted yet we raise (a hard
-    failure; there is no bundled fallback). Once granted, the token is cached and this
-    returns a ready client with no further prompts. Isolated so tests can substitute it.
+    The registry's entries are `visible_to: public`, and Globus Search requires authentication
+    ONLY for non-public entries (docs, verified 2026-09-03) — so the default is an **anonymous**
+    client: a fresh install can `list_facilities` with zero setup and no consent. If the user's
+    Compute identity already holds the Search scope (a curator who ran `hpc-bridge-catalog`, or a
+    later registry with `visible_to`-restricted entries), we use it — the authenticated client also
+    sees restricted entries. We never trigger a login here (a server runs non-interactively); a
+    restricted registry that needs one is the job of the `needs_login` flow, lazily. Isolated so
+    tests can substitute it.
     """
-    from globus_compute_sdk import Client
     from globus_sdk import SearchClient
 
-    app = Client().app
-    client = SearchClient(app=app)  # registers the search scope requirement on the app
-    if app.login_required():  # non-prompting check; the scope hasn't been granted yet
-        raise RuntimeError(
-            "Globus Search scope not granted; run `hpc-bridge-catalog <index> <seed>` once to log in"
-        )
-    return client
+    try:
+        from globus_compute_sdk import Client
+
+        app = (_app_factory or (lambda: Client().app))()
+        client = SearchClient(app=app)  # registers the search scope requirement on this app instance
+        if not app.login_required():  # non-prompting: the scope is already granted -> authenticated
+            return client
+    except Exception:  # noqa: BLE001 - no Compute login at all, unreadable storage, SDK trouble -> anonymous
+        pass
+    return SearchClient()  # anonymous: public entries only (the registry's default)
 
 
 def make_catalog():

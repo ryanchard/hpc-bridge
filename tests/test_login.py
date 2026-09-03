@@ -57,11 +57,16 @@ def browser_flow(monkeypatch):
     return LoginFlow(app_factory=factory, mode_override="browser"), apps
 
 
-def test_required_scopes_cover_endpoint_start_and_search():
+def test_required_scopes_are_the_endpoint_floor_and_nothing_more():
+    # minimum = exactly what globus_compute_endpoint.auth.get_globus_app_with_scopes hard-requires
+    # (parity with `globus-compute-endpoint login`); Search is NOT in the default consent — registry
+    # reads are anonymous for public entries
     rs = required_scopes()
-    assert "search.api.globus.org" in rs and any("search.api.globus.org:search" in s for s in rs["search.api.globus.org"])
-    assert any("manage_projects" in s for s in rs.get("auth.globus.org", []))  # what a started manager requires
-    assert any(rs_ for rs_ in rs if "funcx" in rs_ or "compute" in rs_.lower())  # the compute scope's resource server
+    assert set(rs) == {"auth.globus.org", "funcx_service"}, rs
+    assert any("manage_projects" in s for s in rs["auth.globus.org"]) and any(s.endswith("openid") or s == "openid" for s in rs["auth.globus.org"])
+    assert rs["funcx_service"] and all(s.endswith("/all") for s in rs["funcx_service"])
+    with_search = required_scopes(include_search=True)
+    assert any("search.api.globus.org:search" in s for s in with_search["search.api.globus.org"])
 
 
 def test_login_required_is_non_prompting_and_conservative():
@@ -103,7 +108,8 @@ def test_browser_flow_failure_before_url_falls_back_to_paste(monkeypatch):
 def test_paste_flow_url_carries_every_required_scope_and_pkce():
     flow = LoginFlow(app_factory=lambda m: _FakeApp(required=True), mode_override="paste")
     url = flow.start().login_url
-    assert "manage_projects" in url and "search.api.globus.org" in url and "code_challenge=" in url
+    assert "manage_projects" in url and "openid" in url and "code_challenge=" in url
+    assert "search.api.globus.org" not in url  # not part of the minimum consent
     assert "access_type=offline" in url  # refresh tokens: one round-trip for the life of the install
 
 
