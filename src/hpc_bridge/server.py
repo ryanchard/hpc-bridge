@@ -317,21 +317,17 @@ def _make_search_client(_app_factory=None):
 
 
 def make_catalog():
-    """The runtime catalog is the Globus Search index (HPC_BRIDGE_SEARCH_INDEX). There is **no
-    bundled fallback**: a machine the index can't resolve is a hard failure (the soft
-    agent-discovery fallback is a later slice). The bundled seed is the curator's ingest source
+    """The runtime catalog is the PUBLIC REGISTRY — a Globus Search index, read anonymously. The
+    plugin ships its id (`PUBLIC_REGISTRY_INDEX`), so `list_facilities()` works out of the box with no
+    login and no configuration; HPC_BRIDGE_SEARCH_INDEX overrides it (a private/staging registry).
+    There is **no bundled fallback**: a machine the registry can't resolve is a hard failure (the
+    soft agent-discovery fallback is a later slice). The bundled seed is the curator's ingest source
     (see `hpc-bridge-catalog`), never a runtime catalog.
     """
-    index = os.environ.get("HPC_BRIDGE_SEARCH_INDEX", "").strip()
-    if not index:
-        raise RuntimeError(
-            "HPC_BRIDGE_SEARCH_INDEX is required: the catalog is the Globus Search index (the "
-            "bundled fallback was removed). Set it and run `hpc-bridge-catalog` once to grant the "
-            "search scope."
-        )
-    from .catalog.search import SearchCatalog
+    from .catalog.search import PUBLIC_REGISTRY_INDEX, SearchCatalog
 
-    client = _make_search_client()  # raises if the search scope isn't granted yet
+    index = os.environ.get("HPC_BRIDGE_SEARCH_INDEX", "").strip() or PUBLIC_REGISTRY_INDEX
+    client = _make_search_client()  # anonymous unless a Search-scoped login is already held
     cache_dir = (
         Path(os.environ.get("CLAUDE_PLUGIN_DATA", str(Path.home() / ".hpc-bridge")))
         / "catalog-cache"
@@ -968,8 +964,9 @@ async def complete_login(code: str, ctx: Context) -> LoginStatus:
 
 @mcp.tool()
 async def list_facilities(query: str = "") -> list[CatalogSummary]:
-    """List the HPC machines hpc-bridge can stand up, from the facility catalog (the Globus Search
-    index — set HPC_BRIDGE_SEARCH_INDEX). Empty query lists all; a query filters by name/description.
+    """List the HPC machines hpc-bridge can stand up, from the public facility registry (a Globus
+    Search index, read anonymously — works with no login). Empty query lists all; a query filters by
+    name/description.
 
     Returns agent-safe summaries (no executable config or raw UUIDs). Pick one and call
     connect_facility(facility=…) to bring up its login node and see your allocations. No SSH, no
@@ -1075,10 +1072,20 @@ async def _connect_facility(
             _facility_store().put(details.ssh_host, details.model_dump(mode="json"))
     else:
         entry = app.session_facilities.get(facility)
+        registry_error: Exception | None = None
+        if entry is None:
+            # THE REGISTRY WINS for any catalogued id (decision 2026-09-03: curated entries are the stable
+            # ones). Found live: the maintainer's local cache held an SSH-era `globus1` config that would
+            # have shadowed the registry's MEP entry and silently taken the SSH path.
+            try:
+                entry = await make_catalog().get(facility)
+            except Exception as exc:  # noqa: BLE001 - registry unreachable -> the cache may still serve
+                registry_error = exc
         if entry is None:
             # LOCAL DISCOVERY: a previously-confirmed BYO config for this host, cached to disk (keyed on
-            # ssh_host, canonical; facility id as fallback) — use it with NO SSH probe, then bootstrap
-            # reuses the online endpoint over the web. A stale/invalid cache falls through to catalog/probe.
+            # ssh_host, canonical; facility id as fallback) — only for facilities the registry does NOT
+            # know (or when it is unreachable). Used with NO SSH probe; bootstrap then reuses the online
+            # endpoint over the web. A stale/invalid cache falls through to the probe.
             cached = _facility_store().get(ssh_host or facility)
             if cached is not None:
                 try:
@@ -1086,15 +1093,12 @@ async def _connect_facility(
                     app.session_facilities[facility] = entry
                 except Exception:  # noqa: BLE001 - stale/invalid cached config
                     entry = None
-        if entry is None:
-            try:
-                entry = await make_catalog().get(facility)
-            except Exception as exc:  # noqa: BLE001 - index/scope unavailable -> ask/probe
-                return await _propose_or_ask(
-                    facility, ssh_host,
-                    f"catalog unavailable ({type(exc).__name__}); give me this facility's SSH host "
-                    "(ssh_host=… or HPC_BRIDGE_SSH_HOST) to probe it, or supply details= directly.",
-                )
+        if entry is None and registry_error is not None:
+            return await _propose_or_ask(
+                facility, ssh_host,
+                f"registry unavailable ({type(registry_error).__name__}); give me this facility's SSH "
+                "host (ssh_host=… or HPC_BRIDGE_SSH_HOST) to probe it, or supply details= directly.",
+            )
         if entry is None:
             return await _propose_or_ask(
                 facility, ssh_host,

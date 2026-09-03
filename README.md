@@ -79,6 +79,16 @@ Config is **discovered, not hand-written**: SSH identity comes from your `~/.ssh
 `HPC_BRIDGE_SSH_USER` / `HPC_BRIDGE_SSH_KEY`), and the facility's own settings are probed on first
 connect. The full env-var reference is in the docs.
 
+## Add your facility
+
+The facility registry is **public data, curated**: a Globus Search index the plugin reads anonymously, so a fresh install can `list_facilities()` with no login. The plugin never writes it — executable config (`env_setup` shell, endpoint UUIDs) is an injection vector, so new machines arrive by review:
+
+1. Copy a seed under `src/hpc_bridge/catalog/seed/` — `anvil.yaml` for an **SSH-bootstrap** facility (hpc-bridge stands up a personal endpoint on the login node), `globus-cluster.yaml` for a **facility-run multi-user endpoint** (zero SSH: `compute_mep_uuid`, no `ssh_host`, `$HOME`-relative scratch, a version-pinned `env_setup`).
+2. Fill in the scheduler, interface, `env_setup`, scratch root, defaults, and `last_validated`; run `python -m pytest tests/test_catalog_bundled.py -q` (the schema validates it).
+3. Open a PR. A curator ingests it with `hpc-bridge-catalog <index-uuid> <seed>.yaml` (idempotent, keyed by subject) and it is live for everyone at the next `list_facilities()`.
+
+Un-catalogued clusters still work today: give the agent an SSH login host and it discovers the config (BYO), caching it locally. For a catalogued id the registry always wins over that cache.
+
 ## Docs
 
 The **[vault](docs/hpc-bridge-vault/Home.md)** (an Obsidian vault at `docs/hpc-bridge-vault/`) is the

@@ -5,11 +5,22 @@ import hpc_bridge.server as server
 from hpc_bridge.catalog.search import SearchCatalog
 
 
-def test_make_catalog_requires_index(monkeypatch):
-    # The catalog IS the Globus Search index — no index is a hard failure (no bundled fallback).
+def test_make_catalog_defaults_to_the_public_registry(monkeypatch, tmp_path):
+    # Out of the box: no env, no login — the plugin ships the public registry's id (Tier-2 A).
+    from hpc_bridge.catalog.search import PUBLIC_REGISTRY_INDEX
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path))
     monkeypatch.delenv("HPC_BRIDGE_SEARCH_INDEX", raising=False)
-    with pytest.raises(RuntimeError, match="HPC_BRIDGE_SEARCH_INDEX is required"):
-        server.make_catalog()
+    monkeypatch.setattr(server, "_make_search_client", lambda: object())
+    cat = server.make_catalog()
+    assert isinstance(cat, SearchCatalog) and cat._index_id == PUBLIC_REGISTRY_INDEX
+    assert PUBLIC_REGISTRY_INDEX == "6ff95fb8-1113-42be-a811-3d1cb5a67bd5"
+
+
+def test_make_catalog_env_overrides_the_default(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path))
+    monkeypatch.setenv("HPC_BRIDGE_SEARCH_INDEX", "staging-idx")
+    monkeypatch.setattr(server, "_make_search_client", lambda: object())
+    assert server.make_catalog()._index_id == "staging-idx"
 
 
 def test_make_catalog_uses_search_when_index_set(monkeypatch, tmp_path):

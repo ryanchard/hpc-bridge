@@ -8,6 +8,12 @@ from pathlib import Path
 from .entry import CatalogEntry, CatalogSummary
 
 
+# The public registry of HPC facilities (Globus Search index `hpc-bridge-test`, entries `visible_to: public`,
+# read ANONYMOUSLY). Baked in so `list_facilities()` works out of the box; HPC_BRIDGE_SEARCH_INDEX overrides
+# it (a private/staging registry). A purpose-named production index is an open V1 item — swap the id here.
+PUBLIC_REGISTRY_INDEX = "6ff95fb8-1113-42be-a811-3d1cb5a67bd5"
+
+
 class SearchCatalog:
     """Globus Search backed — the runtime catalog. There is **no bundled fallback**: a subject the
     index can't resolve returns ``None`` (a hard failure; the soft agent-discovery fallback is a
