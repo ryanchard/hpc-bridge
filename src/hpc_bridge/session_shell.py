@@ -43,6 +43,22 @@ class Session:
     def state_dir(self) -> str:
         return f"{self.root}/sessions/{self.session_id}"
 
+    def quoted_state_dir(self) -> str:
+        """The state dir as a shell word safe to splice into the wrapper.
+
+        A root may be written relative to the worker's home — ``$HOME/...``, ``${HOME}/...`` or
+        ``~/...`` — for a facility whose local username we CANNOT know client-side (a multi-user
+        endpoint maps our Globus identity to a local account the facility owns; the SSH path, by
+        contrast, resolves ``{user}`` from the login name). Quoting such a root whole would make
+        ``'$HOME/...'`` a literal string — no expansion, so ``mkdir`` fails — so we emit
+        ``"$HOME"'/rest'``: the variable expands on the worker, the remainder stays quoted.
+        Anything else is quoted whole, exactly as before.
+        """
+        for prefix in ("$HOME/", "${HOME}/", "~/"):
+            if self.state_dir.startswith(prefix):
+                return '"$HOME"' + shlex.quote("/" + self.state_dir[len(prefix):])
+        return shlex.quote(self.state_dir)
+
 
 _WRAP_TEMPLATE = r"""umask 077
 mkdir -p @@SD@@
@@ -58,7 +74,10 @@ __hb_snap() {
     printf '%s=%s\n' "$__hb_k" "$(printf %s "${!__hb_k}" | base64 | tr -d '\n')"
   done
 }
-__hb_base="@@SD@@/.env.base.$$"
+# No outer quotes: @@SD@@ may carry MIXED quoting ("$HOME"'/rest'), which double quotes would turn
+# literal (breaking the baseline path -> the whole ambient env gets persisted). An assignment RHS
+# doesn't word-split, so the bare form is safe for every quoting shlex/quoted_state_dir emits.
+__hb_base=@@SD@@/.env.base.$$
 __hb_snap > "$__hb_base"
 [ -f @@SD@@/.env ] && . @@SD@@/.env 2>/dev/null
 eval "$(printf %s @@B64@@ | base64 -d)"
@@ -95,7 +114,7 @@ def wrap(command: str, session: Session) -> str:
     line diff) and emitting with ``printf %q`` make this correct for multi-line values too.
     Runs under bash (Globus Compute ShellFunction executes via /bin/bash).
     """
-    sd = shlex.quote(session.state_dir)
+    sd = session.quoted_state_dir()
     b64 = shlex.quote(base64.b64encode(command.encode()).decode())
     return (
         _WRAP_TEMPLATE.replace("@@SD@@", sd)
@@ -106,6 +125,6 @@ def wrap(command: str, session: Session) -> str:
 
 def reset_command(session: Session) -> str:
     """A command that clears the session's persisted cwd/env (fresh slate)."""
-    sd = shlex.quote(session.state_dir)
+    sd = session.quoted_state_dir()
     # also sweep any .env.base.* snapshot a command leaked by exiting mid-wrapper
     return f"rm -f {sd}/.cwd {sd}/.env {sd}/.env.base.*"

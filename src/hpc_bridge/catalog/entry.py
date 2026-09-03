@@ -5,7 +5,7 @@ import datetime
 import uuid
 from typing import Any, Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 
 class Allocation(BaseModel):
@@ -43,6 +43,7 @@ class Defaults(BaseModel):
     max_workers_per_node: int = 2
     nodes_per_block: int = 1
     cpus_per_node: int | None = None  # PBSProProvider.cpus_per_node; Slurm ignores it
+    init_blocks: int = 0  # blocks to pre-spawn; 0 = lazy (block on first task). A MEP entry sets 1 for a warm, low-latency block (its login-shape replacement)
     max_blocks: int = 1
     available_accelerators: int | list[str] | None = None
 
@@ -74,10 +75,14 @@ class CatalogEntry(BaseModel):
     transfer_endpoint_uuid: str | None = None  # Globus Transfer (not wired yet) — compute-only entries omit it
 
     # access
-    ssh_host: str
+    ssh_host: str | None = None  # None ⇒ a MEP entry (dispatch-only, no SSH); an SSH-bootstrap entry MUST set it
     auth_method: Literal["ssh-key", "mfa-otp", "sfapi"] = "ssh-key"  # only ssh-key wired in v1
 
     allocation: Allocation | None = None  # a facility may have no auto-listable allocation tool
+    # Whether a scheduler block needs an --account to charge. False for an unmetered machine whose
+    # scheduler doesn't enforce accounting (e.g. the lab cluster) — then the agent must NOT be sent
+    # hunting for an allocation; it may confirm spend and proceed without one.
+    account_required: bool = True
     compute: Compute
     defaults: Defaults
 
@@ -91,6 +96,48 @@ class CatalogEntry(BaseModel):
         if v is None:
             return v
         return str(uuid.UUID(v))  # normalize to canonical lowercase hyphenated form
+
+    @model_validator(mode="after")
+    def _reachable(self) -> "CatalogEntry":
+        """An entry must be reachable: a facility MEP to dispatch to, or an SSH host to bootstrap.
+
+        `ssh_host` is optional now (MEP entries have none), so this guards the failure mode that
+        optionality opens — a non-MEP entry that silently omits `ssh_host` and only fails, opaquely,
+        at connect time. A future facility could carry both (MEP + SSH fallback); we require *at
+        least* one, not exactly one.
+        """
+        if self.compute_mep_uuid is None and self.ssh_host is None:
+            raise ValueError(
+                "a catalog entry needs a reach: set compute_mep_uuid (facility MEP) "
+                "or ssh_host (SSH bootstrap)"
+            )
+        if self.compute_mep_uuid is not None and self.ssh_host is None:
+            # A MEP-only entry is consumed with NO SSH, so there is no login name to resolve `{user}`
+            # and no client-managed venv for `{venv}` — the facility maps our identity to a local
+            # account we never learn. Those tokens would reach the worker LITERALLY. Such an entry
+            # must use worker-side forms ($HOME, $USER) that the mapped user's shell expands.
+            for field in ("env_setup", "scratch_root"):
+                val = getattr(self.compute, field)
+                if "{user}" in val or "{venv}" in val:
+                    raise ValueError(
+                        f"compute.{field} uses client-side templating ({{user}}/{{venv}}) but this is a "
+                        "MEP-only entry (no ssh_host): nothing can resolve it — use worker-side forms "
+                        "($HOME for scratch_root; $HOME/$USER in env_setup)"
+                    )
+            # scratch_root is spliced into the session-shell wrapper by `Session.quoted_state_dir`,
+            # which expands ONLY a leading $HOME/ (or ${HOME}/, ~/); any other `$VAR` — `$USER`
+            # included — is shell-quoted LITERAL, so `/scratch/$USER/…` would create a directory
+            # literally named `$USER`. Catch it at validation, not at the first run_shell.
+            sr = self.compute.scratch_root
+            home_rel = any(sr.startswith(p) for p in ("$HOME/", "${HOME}/", "~/"))
+            rest = sr.split("/", 1)[1] if home_rel and "/" in sr else sr
+            if not ((home_rel and "$" not in rest) or (sr.startswith("/") and "$" not in sr)):
+                raise ValueError(
+                    f"compute.scratch_root {sr!r} on a MEP-only entry must be $HOME/… (or an absolute "
+                    "path with no $VAR): only a leading $HOME expands on the worker — $USER or any "
+                    "other variable would be quoted literal by the session shell"
+                )
+        return self
 
     @property
     def subject(self) -> str:
@@ -113,7 +160,9 @@ class CatalogEntry(BaseModel):
         `account` is intentionally absent — it is per-user, from allocation selection.
         `worker_init` is absent — in the code it is derived as `= env_setup`.
         `ssh_host` is also absent — consumed by the transport layer (SshTarget) / facility
-        selection, not MachineProfile. `scheduler` IS passed through to the profile (the
+        selection, not MachineProfile. `init_blocks` is likewise absent — the SSH path derives
+        eager start from the run mode (`@@EAGER@@`), and the MEP UEC builder reads
+        `defaults.init_blocks` directly. `scheduler` IS passed through to the profile (the
         template dispatches on it). `auth_method` is reserved (only ssh-key is wired; nothing
         reads it yet).
         """

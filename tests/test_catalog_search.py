@@ -89,3 +89,27 @@ async def test_search_get_resolves_a_bare_id_via_search(tmp_path):
     assert got is not None and got.subject == "purdue:anvil"
     # the full subject still resolves directly (no extra search)
     assert (await c.get("purdue:anvil")).id == "anvil"
+
+
+async def test_one_unparseable_index_entry_does_not_blank_the_catalog(tmp_path):
+    # rollout note from the final review: the shared index now holds a MEP entry (ssh_host: null) that
+    # an OLDER client's schema can't parse; a per-entry guard keeps discover()/by-id working around it.
+    import json as _json
+
+    from hpc_bridge.catalog.search import SearchCatalog
+    from tests.fakes import fake_entry
+
+    good = fake_entry(id="anvil", facility_key="purdue")
+    bad = {"id": "broken", "facility_key": "x"}  # fails CatalogEntry validation
+
+    class C:
+        def get_subject(self, index_id, subject):
+            raise RuntimeError("404")
+
+        def post_search(self, index_id, query):
+            return {"gmeta": [{"entries": [{"content": bad}]},
+                              {"entries": [{"content": _json.loads(good.model_dump_json())}]}]}
+
+    cat = SearchCatalog("idx", C(), tmp_path)
+    assert [s.id for s in await cat.discover("")] == ["anvil"]
+    assert (await cat.get("anvil")).id == "anvil"  # the by-id search skips the bad hit

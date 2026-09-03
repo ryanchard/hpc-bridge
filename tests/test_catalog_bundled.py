@@ -97,3 +97,34 @@ async def test_default_bundled_catalog_has_anvil():
     assert anvil.compute.interface == "ib0"
     assert anvil.compute.amqp_port == 443
     assert anvil.allocation.parser == "mybalance"
+
+
+# --- the real globus1 MEP seed: must keep producing the admin-verified UEC ----------------------
+
+SEED_DIR = Path(__file__).resolve().parents[1] / "src" / "hpc_bridge" / "catalog" / "seed"
+
+
+async def test_globus_cluster_seed_is_a_valid_mep_entry_yielding_the_verified_uec():
+    # What the cluster admin verified end-to-end on `globus-cluster-mep` (2026-08-18): dispatch ->
+    # mapped to glabs -> Slurm job on `main`. The seed must validate as a MEP entry (no ssh_host, no
+    # allocation) and the client-side chain must reproduce that UEC — with the 4.15.0 pin
+    # UNCONDITIONAL (no `command -v` guard) and NO account (AccountingStorageEnforce=none).
+    from hpc_bridge.facility.mep import MEPFacility
+    from hpc_bridge.profile import Profile
+    from hpc_bridge.shapes import shape_config
+
+    cat = BundledCatalog(SEED_DIR / "globus-cluster.yaml")  # construction re-validates (= ingest)
+    [e] = cat.entries()
+    assert e.compute_mep_uuid == "da3df250-4013-4d69-942c-eef1568f860c"
+    assert e.ssh_host is None and e.allocation is None and e.account_required is False
+    assert (await cat.get("globus-cluster-mep")).id == "globus1"  # alias resolves
+    fac = MEPFacility.from_entry(e)
+    assert fac.supported_shapes == ("compute",) and fac.scratch_root.startswith("$HOME/")
+    uec = {**fac.config_template(Profile())[1], **shape_config("compute")}
+    assert {k: uec[k] for k in ("compute", "partition", "nodes_per_block", "max_workers_per_node", "init_blocks", "max_blocks")} == {
+        "compute": True, "partition": "main", "nodes_per_block": 1, "max_workers_per_node": 2,
+        "init_blocks": 1, "max_blocks": 1,
+    }
+    assert "account" not in uec
+    assert "globus-compute-endpoint==4.15.0" in uec["worker_init"] and "command -v" not in uec["worker_init"]
+    assert "{user}" not in uec["worker_init"] and "{venv}" not in uec["worker_init"]

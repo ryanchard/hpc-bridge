@@ -53,7 +53,10 @@ class SearchCatalog:
             return None
         for gmeta in resp.get("gmeta", []):
             for e in gmeta.get("entries") or []:
-                entry = CatalogEntry.model_validate(e["content"])
+                try:
+                    entry = CatalogEntry.model_validate(e["content"])
+                except Exception:  # noqa: BLE001 - a hit this client's schema can't parse: skip, don't abort
+                    continue
                 if entry.id == machine_id:
                     self._cache_file(entry.subject).write_text(entry.model_dump_json())
                     return entry
@@ -80,5 +83,8 @@ class SearchCatalog:
             entries = gmeta.get("entries") or []
             if not entries:
                 continue
-            out.append(CatalogEntry.model_validate(entries[0]["content"]).summary())
+            try:
+                out.append(CatalogEntry.model_validate(entries[0]["content"]).summary())
+            except Exception:  # noqa: BLE001 - schema drift in ONE entry must not blank the whole list
+                continue
         return out

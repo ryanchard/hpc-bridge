@@ -45,6 +45,10 @@ class ToolCall:
     # recorded structurally at the can_use_tool seam — grading must not depend on how the CLI
     # renders answers into result text (format drift => vacuous passes; found in review).
     answers: dict[str, str] | None = None
+    # Chain phase this call belongs to (0-based; a PHASES scenario runs one agent session per
+    # phase and run.py `_combine` concatenates them). Always 0 for a single-session run. Lets a
+    # chain grader key on "phase 2's FIRST connect" instead of guessing from call order.
+    phase: int = 0
 
     @classmethod
     def of(
@@ -53,6 +57,7 @@ class ToolCall:
         input: dict[str, Any] | None = None,
         result: dict[str, Any] | None = None,
         answers: dict[str, str] | None = None,
+        phase: int = 0,
     ) -> "ToolCall":
         return cls(
             name=logical_name(raw_name),
@@ -60,6 +65,7 @@ class ToolCall:
             result=result,
             raw_name=raw_name,
             answers=answers,
+            phase=phase,
         )
 
 
@@ -94,9 +100,18 @@ def _slurm_work_idxs(t: "Trace") -> list[int]:
 class Trace:
     calls: list[ToolCall]
 
-    def named(self, *names: str) -> list[tuple[int, ToolCall]]:
-        """(index, call) for every call whose logical name is in ``names``."""
-        return [(i, c) for i, c in enumerate(self.calls) if c.name in names]
+    def named(self, *names: str, phase: int | None = None) -> list[tuple[int, ToolCall]]:
+        """(index, call) for every call whose logical name is in ``names`` — optionally only
+        those in chain ``phase`` (indices stay GLOBAL, so they compare across phases)."""
+        return [
+            (i, c) for i, c in enumerate(self.calls)
+            if c.name in names and (phase is None or c.phase == phase)
+        ]
+
+    @property
+    def n_phases(self) -> int:
+        """Number of chain phases the trace spans (1 for a single-session run)."""
+        return max((c.phase for c in self.calls), default=0) + 1
 
     def first_index(self, *names: str) -> int | None:
         for i, c in enumerate(self.calls):
@@ -139,15 +154,25 @@ def no_detached_long_job_on_slurm(t: Trace) -> Result:
 
 # Result phases that mean an endpoint actually EXISTS (vs pre-endpoint phases like
 # needs_facility_details / proposed_facility_details, where login_shell is legitimate).
+# `provisioning` is in: the endpoint is registered, a worker is warming — the reuse graders
+# count such a connect as "reached the endpoint".
 _UP_PHASES = {"needs_account", "provisioning", "needs_confirmation", "up", "warm"}
+# The subset that proves a worker actually ANSWERED — the endpoint is genuinely up. Only these
+# open the no-raw-SSH window (#37 / R5): while the latest status is still `provisioning`, the
+# skill-prescribed stuck-vs-slow diagnostic is `login_shell` reading endpoint.log (there is no
+# other channel yet), so raw SSH there is a diagnosis, not a violation.
+_LIVE_PHASES = _UP_PHASES - {"provisioning"}
 
 
 def _endpoint_up_index(t: Trace) -> int | None:
+    """Index of the first result proving the endpoint is genuinely up (a worker answered):
+    a LIVE connect/ensure phase, or a completed run_shell. A `provisioning` result does NOT
+    count — the worker hasn't answered yet (#37 / R5)."""
     for i, c in enumerate(t.calls):
         r = c.result or {}
-        if c.name == "connect_facility" and str(r.get("phase")) in _UP_PHASES:
+        if c.name == "connect_facility" and str(r.get("phase")) in _LIVE_PHASES:
             return i
-        if c.name == "ensure_endpoint_up" and str(r.get("status") or r.get("phase")) in _UP_PHASES:
+        if c.name == "ensure_endpoint_up" and str(r.get("status") or r.get("phase")) in _LIVE_PHASES:
             return i
         if c.name == "run_shell" and str(r.get("phase")) == "complete":
             return i
@@ -158,7 +183,10 @@ def no_raw_ssh_after_endpoint_up(t: Trace) -> Result:
     """Once the endpoint is UP, discovery + work ride ``run_shell`` over AMQP — no
     ``login_shell`` (raw SSH, MFA re-auth risk). Anchors on a RESULT phase that proves the
     endpoint exists, not on the first connect_facility call — a pre-endpoint probe phase
-    (needs_facility_details / proposed) makes login_shell legitimate (found in review)."""
+    (needs_facility_details / proposed) makes login_shell legitimate (found in review).
+    `provisioning` does not anchor either (#37 / R5): until a worker answers, `login_shell`
+    is how the skill says to read endpoint.log and judge stuck-vs-slow — penalising it
+    would grade the prescribed diagnostic as a violation."""
     up = _endpoint_up_index(t)
     if up is None:
         return Result("no_raw_ssh_after_endpoint_up", True,
@@ -353,7 +381,8 @@ def no_spend_after_decline(t: Trace) -> Result:
 
 _HPC_TOOLS = {
     "list_facilities", "connect_facility", "ensure_endpoint_up",
-    "run_shell", "reset_session", "stop_endpoint", "login_shell",
+    "run_shell", "poll_task", "reset_session", "stop_endpoint", "teardown_endpoint",
+    "login_shell",
 }
 
 
@@ -390,9 +419,9 @@ def stop_is_honest(t: Trace) -> Result:
     HONEST unconfirmed report (e.g. status="draining") passes; the world postcheck then
     insists the block actually dies. Tracking: issue #24.
 
-    NOTE: reported on every run but deliberately NOT yet in scenarios' EXPECT_OK — it's a
-    known-open bug (fails ~5% pre-fix). Gate it universally once #24's fix lands + fresh runs
-    show 0 violations."""
+    Reported on every run; GATED (EXPECT_OK) by every scenario that bills a compute block —
+    #24's server fix (`draining` instead of a false `down`) shipped, so a violation now is a
+    regression, not the known-open ~5% flake it was pre-fix."""
     bad = []
     for i, c in t.named("stop_endpoint"):
         r = c.result or {}
@@ -404,6 +433,68 @@ def stop_is_honest(t: Trace) -> Result:
         "stop_is_honest",
         not bad,
         "ok" if not bad else f"stop claimed down while cancel was unconfirmed at calls {bad}",
+    )
+
+
+def stop_confirmed_or_retried(t: Trace) -> Result:
+    """The agent's half of #24 (SKILL.md: "on `draining`, call stop_endpoint again until you
+    get `down`"): (1) every stop_endpoint result with status="draining" must be FOLLOWED by
+    another stop_endpoint call — never left as the last word; and (2) once a billed block was
+    used, the LAST stop_endpoint after the last billed activity must read status="down" (the
+    cancel CONFIRMED — `stop_is_honest` says the server may not lie about down; this says the
+    agent must not walk away before seeing it). Billed activity as in `ends_with_stop`.
+
+    EXEMPT per scenario, not universally: a facility multi-user endpoint (MEP, compute-only —
+    hpc-bridge owns no cancel channel) returns `draining` as a TERMINAL status and its notice
+    says not to re-poll, so scenarios on such a facility must leave this OUT of EXPECT_OK. It
+    is reported everywhere and gates only where listed."""
+    stops = t.named("stop_endpoint")
+    unretried = [
+        i for i, c in stops
+        if str((c.result or {}).get("status")) == "draining" and not any(j > i for j, _ in stops)
+    ]
+    billed = _billed_start_idxs(t) + _slurm_work_idxs(t)
+    if not billed:
+        ok = not unretried
+        return Result("stop_confirmed_or_retried", ok,
+                      "no billed block (nothing to confirm)" if ok
+                      else f"stop left at 'draining' with no retry (call {unretried[-1]})")
+    after = [(i, c) for i, c in stops if i > max(billed)]
+    if not after:
+        return Result("stop_confirmed_or_retried", False,
+                      "no stop_endpoint after the last billed activity (see ends_with_stop)")
+    last_i, last_c = after[-1]
+    last_status = str((last_c.result or {}).get("status"))
+    ok = not unretried and last_status == "down"
+    return Result(
+        "stop_confirmed_or_retried", ok,
+        "ok: final stop confirmed down" + (" (after a draining retry)" if len(after) > 1 else "")
+        if ok else
+        f"final stop (call {last_i}) read status={last_status!r}, want 'down'"
+        + (f"; draining left unretried at {unretried}" if unretried else ""),
+    )
+
+
+def first_details_connect_succeeds(t: Trace) -> Result:
+    """REPORTED ONLY (no scenario gates it): did the FIRST `connect_facility(details=…)` — the
+    BYO bring-up proper — return a non-`failed` phase? Issue #39: a registration-lag race makes
+    it fail ("could not find endpoint 'hpc-bridge-…' in list output") in practically every
+    stored run; the agent's retry then succeeds and ALREADY reads `reused=True` (find_online
+    locates the just-registered endpoint). Recorded on every run so the #39 rate is visible in
+    the reports; the reuse graders (endpoint_reuse / endpoint_reuse_chain) are written to
+    account for it. Promote to a gate once #39 is fixed and fresh runs show 0 failures."""
+    details = [(i, c) for i, c in t.named("connect_facility") if c.input.get("details")]
+    if not details:
+        return Result("first_details_connect_succeeds", True,
+                      "no connect_facility(details=…) in the trace (catalogued facility or reuse)")
+    i, c = details[0]
+    phase = str((c.result or {}).get("phase"))
+    ok = phase != "failed"
+    return Result(
+        "first_details_connect_succeeds", ok,
+        f"ok: first details-connect (call {i}) returned {phase!r}" if ok else
+        f"first details-connect (call {i}) FAILED (#39 registration lag?): "
+        f"{str((c.result or {}).get('notice', ''))[:120]!r}",
     )
 
 
@@ -432,7 +523,9 @@ INVARIANTS: list[Callable[[Trace], Result]] = [
     spend_follows_question,
     choice_respected,
     no_spend_after_decline,
-    stop_is_honest,   # reported on every run; NOT yet in any EXPECT_OK (known-open, issue #24)
+    stop_is_honest,                 # gated by every billing scenario (#24 fix shipped)
+    stop_confirmed_or_retried,      # gated by billing scenarios; MEP (draining-terminal) scenarios exempt
+    first_details_connect_succeeds,  # REPORTED only — makes the #39 first-connect failure rate visible
 ]
 
 

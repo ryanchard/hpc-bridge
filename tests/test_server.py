@@ -165,6 +165,75 @@ def test_pilot_status_cmd_and_summarize():
     assert late[0] == "rejected" and "REJECTED" in late[1] and "qstat" in late[1]
 
 
+_REJECTED = CanaryResult(ok=False, error="GlobusAPIError: 400 user_endpoint_config failed validation")
+
+
+async def test_rejected_submit_marks_runner_stale_and_surfaces_error():
+    # A NON-timeout canary failure (the web service refused the submit — e.g. a user_endpoint_config
+    # the endpoint's schema rejects) leaves the SDK Executor shut down; the runner must be marked
+    # stale so the next call REBUILDS it rather than re-raising `Executor is shutdown` forever, and the
+    # refusal must reach the caller — not vanish into a silent "allocating nodes…".
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    built = []
+
+    def factory(eid, user_endpoint_config=None, **_kw):
+        if not (user_endpoint_config or {}).get("compute"):  # the pilot-query login runner: warm, ignore
+            return _FakeRunner(eid, _Res(0, "", ""))
+        r = _FakeRunner(eid, _Res(0, "", ""), canary_result=_REJECTED)
+        built.append(r)
+        return r
+
+    app.runner_factory = factory
+    res = await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
+    assert res.status == "provisioning"
+    assert "failed validation" in (res.notice or ""), f"the refusal must be surfaced; got {res.notice!r}"
+    assert "not a queue wait" in (res.notice or "").lower()
+    rt = _shape_runtime(app, "compute")
+    assert rt.last_canary is _REJECTED  # failures are kept, not dropped
+    assert rt.runner_stale is True
+    # next call: the bricked runner is closed and a fresh one built (not the same shut-down Executor)
+    await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
+    assert len(built) == 2 and built[0].closed is True
+
+
+async def test_timeout_canary_stays_a_quiet_cold_start():
+    # a plain timeout IS the normal cold-start wait: no error suffix, no runner rebuild
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    built = []
+
+    def factory(eid, user_endpoint_config=None, **_kw):
+        if not (user_endpoint_config or {}).get("compute"):  # the pilot-query login runner: warm, ignore
+            return _FakeRunner(eid, _Res(0, "", ""))
+        r = _FakeRunner(eid, _Res(0, "", ""), canary_result=CanaryResult(ok=False, error="timeout"))
+        built.append(r)
+        return r
+
+    app.runner_factory = factory
+    res = await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
+    assert res.status == "provisioning"
+    assert "last dispatch failed" not in (res.notice or "")
+    assert _shape_runtime(app, "compute").runner_stale is False
+    await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
+    assert len(built) == 1  # same runner reused — a cold block is not a broken runner
+
+
+async def test_run_shell_cold_outcome_carries_dispatch_error():
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(
+        eid, _Res(0, "", ""), canary_result=_REJECTED
+    )
+    _shape_runtime(app, "compute").spend_confirmed = True
+    out = await _run_shell(app, "echo hi", shape="compute")
+    assert out.phase == "cold_start"
+    assert "failed validation" in (out.notice or "")
+
+
 def _split_shape_factory(login_res):
     """A runner_factory whose COMPUTE runner fails the canary (-> provisioning) while its LOGIN
     runner is warm and returns `login_res` from run() — so the #32 pilot query has something to read."""
@@ -1307,3 +1376,34 @@ async def test_running_task_short_circuits_the_canary():
     res = await _ensure_endpoint_up(app, confirm_spend=True)
     assert res.status == "up" and res.block_state == "warm"
     assert runner.canaries == canaries  # no extra canary behind the busy worker
+
+
+async def test_drain_keeps_finished_handles_drops_running():
+    # review nit: a stale-runner rebuild / stop dropped DONE-but-unpolled handles too, losing a delivered
+    # result. Only still-running futures are moot when the block goes away.
+    from hpc_bridge import server as srv
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    done_id = srv._register_task(app, "compute", "s1", "echo", _DoneFuture(_Res(0, "out", "")), 100.0)
+    live_id = srv._register_task(app, "compute", "s2", "sleep", _PendingFuture(), 100.0)
+    srv._drain_shape_tasks(app, "compute")
+    assert done_id in app.tasks and live_id not in app.tasks
+
+
+async def test_ssh_teardown_reports_the_spend_it_ended(monkeypatch):
+    # review nit: teardown cleared app.shapes and THEN summed session spend -> always 0.0
+    from hpc_bridge import server as srv
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, "", ""))
+    await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
+    _shape_runtime(app, "compute").spend_accrued = 3.5
+
+    async def _released(app_, eid):
+        return True, "released"
+
+    monkeypatch.setattr(srv, "_release_blocks_over_login", _released)
+    res = await srv._teardown_endpoint(app)
+    assert res.status == "down" and res.session_spend >= 3.5

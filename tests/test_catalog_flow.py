@@ -4,7 +4,7 @@ from hpc_bridge.models import FacilityDetails
 from hpc_bridge.profile import Profile
 from hpc_bridge.runner import CanaryResult
 from hpc_bridge.server import AppCtx, _ensure_endpoint_up, _list_facilities, mcp
-from tests.fakes import FakeCatalog, FakeFacility, fake_entry
+from tests.fakes import MEP_UUID, FakeCatalog, FakeFacility, fake_entry, fake_mep_entry
 
 
 class _Res:
@@ -278,6 +278,26 @@ async def test_connect_facility_moves_scratch_root_to_the_facility(monkeypatch):
     monkeypatch.setattr(server, "_facility_from_entry", lambda entry, *, account: f)
     await server._connect_facility(app, "anvil")
     assert app.scratch_root == "/anvil/scratch/me/.hpc-bridge"
+
+
+def test_resolve_scratch_root_expands_home_only_for_local(monkeypatch):
+    # A remote facility's `~/…` root must stay VERBATIM — expanding it client-side would bake this
+    # machine's home (/Users/…) into a command that runs as another user on another host. The worker
+    # expands it (Session.quoted_state_dir). A LocalFacility's worker IS this machine, so expand.
+    from pathlib import Path
+
+    from hpc_bridge import server
+    from hpc_bridge.facility.local import LocalFacility
+
+    monkeypatch.delenv("HPC_BRIDGE_SCRATCH", raising=False)
+    remote = FakeFacility()  # no scratch_root attr -> the "~/.hpc-bridge" default
+    assert server._resolve_scratch_root(remote) == "~/.hpc-bridge"
+    remote.scratch_root = "$HOME/.hpc-bridge"  # a MEP-style home-relative root: untouched
+    assert server._resolve_scratch_root(remote) == "$HOME/.hpc-bridge"
+    local = LocalFacility(cli=None)
+    assert server._resolve_scratch_root(local) == str(Path.home() / ".hpc-bridge")
+    monkeypatch.setenv("HPC_BRIDGE_SCRATCH", "/explicit/root")  # env wins on either kind
+    assert server._resolve_scratch_root(remote) == "/explicit/root"
 
 
 # --- agentic fallback: connect_facility elicits an un-indexed facility (session-local) -----------
@@ -641,3 +661,66 @@ def test_ssh_host_env_is_scoped_to_the_pin_path(monkeypatch):
     assert _facility_from_entry(entry, account="").alias == "globus1.example.edu"
     # startup-pin path (pinned_host set from the env): the env host overrides the catalog's host
     assert _facility_from_entry(entry, account="", pinned_host="aurora").alias == "aurora"
+
+
+# --- M1: a compute_mep_uuid entry builds a MEPFacility (zero SSH) ----------------------------------
+
+
+def test_mep_entry_is_supported_unless_it_lists_allocations():
+    from hpc_bridge.server import _unsupported_entry_reason
+    assert _unsupported_entry_reason(fake_mep_entry()) is None  # the old "not wired yet" reject is gone
+    # an allocation LISTING needs the free login node, which a MEP doesn't have -> refuse, clearly
+    reason = _unsupported_entry_reason(
+        fake_mep_entry(allocation={"command": "mybalance", "parser": "mybalance"})
+    )
+    assert reason and "allocation" in reason and "login" in reason
+
+
+def test_facility_from_mep_entry_builds_mepfacility_with_no_ssh(monkeypatch):
+    from hpc_bridge.facility.mep import MEPFacility
+    from hpc_bridge.server import _facility_from_entry
+    # if the SSH user lookup ran we'd see it; a MEP must never consult ~/.ssh/config
+    monkeypatch.setattr("hpc_bridge.server._ssh_config_user", lambda alias: (_ for _ in ()).throw(AssertionError("SSH lookup on a MEP")))
+    fac = _facility_from_entry(fake_mep_entry(), account="")
+    assert isinstance(fac, MEPFacility)
+    assert fac.endpoint_id == MEP_UUID
+    assert fac.supported_shapes == ("compute",)
+    assert fac.scratch_root == "$HOME/.hpc-bridge"  # worker-side, untouched
+    assert fac.account_required is False
+    _, uec = fac.config_template(Profile())
+    # the entry's compute/defaults split maps onto the MEP schema; no account seeded (per-user)
+    assert uec["worker_init"].endswith("==4.15.0") and uec["interface"] == "enP7s7"
+    assert uec["partition"] == "main" and uec["init_blocks"] == 1 and uec["walltime"] == "02:00:00"
+    assert "account" not in uec and "compute" not in uec  # shape_config('compute') adds compute=True
+
+
+def test_mep_wins_when_an_entry_carries_both_reaches(monkeypatch):
+    from hpc_bridge.facility.mep import MEPFacility
+    from hpc_bridge.server import _facility_from_entry
+    monkeypatch.setenv("HPC_BRIDGE_SSH_USER", "u")
+    both = fake_mep_entry(ssh_host="globus1.example.edu", compute={
+        "scheduler": "slurm", "interface": "enP7s7", "env_setup": "x", "scratch_root": "/s/{user}",
+    })
+    assert isinstance(_facility_from_entry(both, account=""), MEPFacility)
+
+
+async def test_startup_pin_on_a_mep_entry(monkeypatch):
+    # HPC_BRIDGE_MACHINE=<mep entry>: no HPC_BRIDGE_ACCOUNT needed when the entry says so, and a stray
+    # HPC_BRIDGE_ENDPOINT_ID that disagrees with the entry's UUID is refused (not silently preferred)
+    import pytest
+
+    from hpc_bridge import server
+    from hpc_bridge.facility.mep import MEPFacility
+    monkeypatch.setattr(server, "make_catalog", lambda: FakeCatalog([fake_mep_entry()]))
+    monkeypatch.delenv("HPC_BRIDGE_ACCOUNT", raising=False)
+    monkeypatch.delenv("HPC_BRIDGE_ENDPOINT_ID", raising=False)
+    assert isinstance(await server._catalog_facility("globus1"), MEPFacility)
+    monkeypatch.setenv("HPC_BRIDGE_ENDPOINT_ID", "11111111-2222-3333-4444-555555555555")
+    with pytest.raises(RuntimeError, match="conflicts"):
+        await server._catalog_facility("globus1")
+    monkeypatch.setenv("HPC_BRIDGE_ENDPOINT_ID", MEP_UUID)  # equal -> fine
+    assert isinstance(await server._catalog_facility("globus1"), MEPFacility)
+    # an account-REQUIRED MEP entry still insists on HPC_BRIDGE_ACCOUNT at startup
+    monkeypatch.setattr(server, "make_catalog", lambda: FakeCatalog([fake_mep_entry(account_required=True)]))
+    with pytest.raises(RuntimeError, match="HPC_BRIDGE_ACCOUNT"):
+        await server._catalog_facility("globus1")

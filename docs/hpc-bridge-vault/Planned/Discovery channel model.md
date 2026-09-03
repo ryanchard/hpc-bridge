@@ -39,7 +39,8 @@ The load-bearing reference. "→ human" is the implicit terminal fallback everyw
 | Fact | Happiest channel | Falls back to | Tier |
 |---|---|---|---|
 | facility selection | index (`search`/browse) | human names it | choice |
-| **`ssh_host`** | **index** | **human** | T3 w/ index · T1 without |
+| **`compute_mep_uuid`** | **index** (administered/public) | human pastes it — **never login-probe** | T3 (curated) |
+| **`ssh_host`** | **index** | **human** | T3 w/ index · T1 without · **absent for MEP entries** |
 | `ssh_key` | human (local file) | — | T1 (secret) |
 | login name | human | — | T1 |
 | `auth_method` | index | human / assume key-only | T3 → bootstrap |
@@ -61,6 +62,9 @@ Two facts — **`ssh_host` and `interface`** — are the reason the index earns 
 
 > [!note] Built — the raw-SSH pre-endpoint sweep
 > For an **un-indexed** facility the login-probe column now runs over **raw SSH *before* the endpoint exists** ([[discovery]] · [[Globus index discovery channel]]), answering `scheduler` / `interface` / `scratch_root` / `partition` / allocation to *propose* a draft the user confirms. This resolves the chicken-and-egg the cascade implied — you need `interface`/`env_setup` to stand up the endpoint, but those are exactly what discovery finds — and `interface` stays canary-validated, never trusted.
+
+> [!note] Administered MEPs resolve via the index, never the SSH sweep
+> The raw-SSH sweep above is the **un-indexed personal-endpoint (BYO)** fallback — it exists *only* because a personal endpoint we bootstrap has no public record, so we must go onto the machine to learn its shape. A **facility MEP is the opposite: administered and public** — the facility runs it and publishes its UUID + config, and there is **no bootstrap to probe**. So a MEP's config comes from the **Globus index alone** ([[Globus index discovery channel]]), `provenance: curated`, and the login-probe **never touches it** — probing a MEP over SSH would reintroduce the very SSH dependency the MEP exists to remove. A MEP entry is a normal catalog entry that carries `compute_mep_uuid` and **no `ssh_host`**. First target: `globus-cluster-mep` on globus1 (see [[Endpoint reuse and MEP integration]]).
 
 ## Principles that make the cascade work
 

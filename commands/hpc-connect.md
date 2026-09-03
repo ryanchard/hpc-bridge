@@ -11,3 +11,5 @@ Bring up an HPC endpoint the user can run on, then report its status.
 3. **Only** if a facility is pinned by env (`HPC_BRIDGE_MACHINE`), or you are running on the target Linux login node itself, is `ensure_endpoint_up(shape="login")` the direct path.
 
 Then report: the facility, its login node + worker state, and the allocations/partitions available. For the full **select → discover → gate → provision → wait** flow (and how reuse/pre-auth/discovery are decided), follow the `driving-hpc` skill.
+
+If `connect_facility` says the facility is **compute-only** (a facility-run multi-user endpoint: `needs_account` at once, `reused=True`, zero SSH), there is no login node to warm and nothing to list — report that, whether an account is needed (the notice says), and the catalog's default partition; the next step is `ensure_endpoint_up(partition=…, confirm_spend=True)` after the user okays spend. See the skill's *Compute-only facilities* section.

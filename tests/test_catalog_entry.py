@@ -60,6 +60,47 @@ def test_summary_is_agent_safe_subset():
     }
 
 
+_MEP_COMPUTE = {
+    "scheduler": "slurm",
+    "interface": "enP7s7",
+    "env_setup": "uv pip install -q globus-compute-endpoint==4.15.0",
+    "scratch_root": "$HOME/.hpc-bridge",  # worker-side form: the mapped user's shell expands it
+}
+
+
+def test_mep_entry_omits_ssh_host():
+    # a facility-MEP entry dispatches over AMQP only — no SSH host, and `compute_mep_uuid` is its reach
+    e = CatalogEntry.model_validate(_entry(ssh_host=None, compute_mep_uuid=VALID_UUID, compute=_MEP_COMPUTE))
+    assert e.ssh_host is None
+    assert e.compute_mep_uuid == VALID_UUID
+
+
+def test_mep_only_entry_rejects_client_side_templating():
+    # no SSH login name / client venv exists to resolve {user}/{venv} on a MEP — they'd reach the
+    # worker literally, so the seed must be caught at validation (ingest), not at first run_shell
+    for field, bad in (("scratch_root", "/scratch/{user}/.hpc-bridge"), ("env_setup", "source {venv}/bin/activate")):
+        with pytest.raises(ValidationError, match="client-side templating"):
+            CatalogEntry.model_validate(_entry(
+                ssh_host=None, compute_mep_uuid=VALID_UUID, compute={**_MEP_COMPUTE, field: bad},
+            ))
+    # an entry that ALSO has ssh_host keeps the SSH path's templating (resolved from the login name)
+    CatalogEntry.model_validate(_entry(compute_mep_uuid=VALID_UUID))  # default fixture uses {user}/{venv}
+
+
+def test_entry_without_reach_rejected():
+    # neither a MEP to dispatch to nor an SSH host to bootstrap ⇒ unreachable, must fail at validation
+    with pytest.raises(ValidationError, match="needs a reach"):
+        CatalogEntry.model_validate(_entry(ssh_host=None))
+
+
+def test_init_blocks_defaults_zero_and_overridable():
+    assert CatalogEntry.model_validate(_entry()).defaults.init_blocks == 0
+    e = CatalogEntry.model_validate(_entry(defaults={"partition": "main", "init_blocks": 1}))
+    assert e.defaults.init_blocks == 1
+    # init_blocks is a MEP-UEC knob, not a MachineProfile field — stays out of the binding seam
+    assert "init_blocks" not in e.profile_kwargs()
+
+
 def test_bad_uuid_rejected():
     with pytest.raises(ValidationError):
         CatalogEntry.model_validate(_entry(transfer_endpoint_uuid="not-a-uuid"))
@@ -93,3 +134,17 @@ def test_profile_kwargs_maps_every_machineprofile_field():
     assert "worker_init" not in kw
     assert kw["interface"] == "ib0"
     assert kw["name"] == "anvil"
+
+
+def test_mep_only_scratch_root_must_expand_on_the_worker():
+    # only a LEADING $HOME (or ${HOME}/, ~/) expands in the session wrapper; $USER or any other $VAR
+    # would be quoted literal (a directory literally named '$USER') — reject at validation
+    for sr in ("$HOME/.hpc-bridge", "${HOME}/x/.hpc-bridge", "~/.hpc-bridge", "/scratch/shared/.hpc-bridge"):
+        CatalogEntry.model_validate(_entry(ssh_host=None, compute_mep_uuid=VALID_UUID,
+                                           compute={**_MEP_COMPUTE, "scratch_root": sr}))
+    for sr in ("/scratch/$USER/.hpc-bridge", "$HOME/scratch/$USER/.hpc-bridge", "$SCRATCH/.hpc-bridge", "rel/.hpc-bridge"):
+        with pytest.raises(ValidationError, match="scratch_root"):
+            CatalogEntry.model_validate(_entry(ssh_host=None, compute_mep_uuid=VALID_UUID,
+                                               compute={**_MEP_COMPUTE, "scratch_root": sr}))
+    # an SSH entry keeps {user} templating (resolved client-side from the login name) — unchanged
+    CatalogEntry.model_validate(_entry(compute={**_MEP_COMPUTE, "scratch_root": "/scratch/{user}/.hpc-bridge"}))

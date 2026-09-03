@@ -31,6 +31,39 @@ def test_session_state_dir():
     assert s.state_dir == "/scratch/.hpc-bridge/sessions/abc"
 
 
+def test_quoted_state_dir_expands_home_relative_roots_only():
+    # a plain root goes through shlex.quote exactly as before (a safe path needs no quotes at all;
+    # one with metachars is quoted whole)
+    assert Session("s", "/scratch/u/.hpc-bridge").quoted_state_dir() == "/scratch/u/.hpc-bridge/sessions/s"
+    assert Session("s", "/scr atch/.hpc-bridge").quoted_state_dir() == "'/scr atch/.hpc-bridge/sessions/s'"
+    # a $HOME-relative root (a facility whose local user we can't know client-side — a multi-user
+    # endpoint) must let $HOME expand on the WORKER: "$HOME" unquoted, the remainder quoted
+    for root in ("$HOME/.hpc-bridge", "${HOME}/.hpc-bridge", "~/.hpc-bridge"):
+        assert Session("s", root).quoted_state_dir() == '"$HOME"/.hpc-bridge/sessions/s', root
+    # …and the remainder is still shlex-quoted when it needs to be
+    assert Session("s", "$HOME/my dir").quoted_state_dir() == '"$HOME"\'/my dir/sessions/s\''
+    # an embedded (non-leading) $HOME is NOT special — quoted whole like any literal
+    assert Session("s", "/x/$HOME/y").quoted_state_dir() == "'/x/$HOME/y/sessions/s'"
+
+
+@bash_only
+def test_behaviour_home_relative_root_resolves_on_the_worker(tmp_path):
+    # Prove it end-to-end under bash: with HOME pointed at tmp, a "$HOME/…" root lands the session
+    # state under tmp (the worker's home), not under a literal '$HOME' directory — the exact failure
+    # a whole-quoted root produces ("mkdir -p '$HOME/…'" → a dir literally named '$HOME').
+    sess = Session("default", "$HOME/.hpc-bridge")
+    r = subprocess.run(
+        ["bash", "-c", wrap("echo HB_OK; pwd", sess)], capture_output=True, text=True,
+        env={**os.environ, "HOME": str(tmp_path)},
+    )
+    assert r.returncode == 0 and "HB_OK" in r.stdout, r.stderr
+    assert os.path.isfile(tmp_path / ".hpc-bridge" / "sessions" / "default" / ".cwd")
+    assert not os.path.exists(tmp_path / "$HOME") and not os.path.exists("$HOME")
+    # reset_command uses the same quoting, so it clears the same (expanded) location
+    subprocess.run(["bash", "-c", reset_command(sess)], env={**os.environ, "HOME": str(tmp_path)})
+    assert not os.path.exists(tmp_path / ".hpc-bridge" / "sessions" / "default" / ".cwd")
+
+
 def test_session_rejects_path_traversal_and_metachars():
     # session_id is an untrusted MCP parameter; must not allow escaping the sessions root.
     for bad in ("../../etc", "a/b", "..", "", "a b", "x;rm -rf /", "a" * 65):
@@ -143,3 +176,23 @@ def test_reset_command_removes_state_files():
     assert "/scratch/.hpc-bridge/sessions/abc/.cwd" in r
     assert "/scratch/.hpc-bridge/sessions/abc/.env" in r
     assert "/scratch/.hpc-bridge/sessions/abc/.env.base.*" in r  # sweep leaked snapshots
+
+
+@bash_only
+def test_behaviour_home_root_with_quoted_remainder_keeps_env_fingerprint_intact(tmp_path):
+    # Review finding: a $HOME-root whose REMAINDER needs shell quoting ("$HOME"'/sub dir/…') was spliced
+    # into `__hb_base="…"` — the single quotes went literal inside the double quotes, the baseline
+    # snapshot path broke, and EVERY ambient var got persisted (91 lines seen live). The bare assignment
+    # form fixes it: only the command's own export lands in .env, and nothing hits stderr.
+    sess = Session("default", "$HOME/sub dir/.hpc-bridge")
+    script = wrap("export HB_ONLY=1; echo HB_OK", sess)
+    assert '__hb_base="$HOME"' in script and '__hb_base=""' not in script
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                       env={**os.environ, "HOME": str(tmp_path)})
+    assert r.returncode == 0 and "HB_OK" in r.stdout
+    assert r.stderr.strip() == "", r.stderr
+    env_file = tmp_path / "sub dir" / ".hpc-bridge" / "sessions" / "default" / ".env"
+    lines = [l for l in env_file.read_text().splitlines() if l.strip()]
+    assert "export HB_ONLY=1" in lines
+    assert not any(l.startswith(("export PATH=", "export HOME=")) for l in lines), lines  # no ambient replay
+    assert len(lines) < 5, lines

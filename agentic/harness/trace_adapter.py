@@ -86,14 +86,28 @@ def build_trace(
 
 def trace_from_bundle(bundle_dir) -> Trace:
     """Rebuild a Trace from a stored provenance bundle's messages.jsonl (dict-form blocks,
-    as serialized by provenance._jsonable) — the offline re-grading path."""
+    as serialized by provenance._jsonable) — the offline re-grading path.
+
+    Chain phases are recovered from the stream itself: each agent session opens with a
+    `SystemMessage(subtype="init")` carrying its `session_id`, and a PHASES run concatenates one
+    session per phase (run.py `_combine`), so the k-th DISTINCT session id marks phase k. Keyed
+    on the id, not a bare init count — a single session can re-emit `init` (same id) mid-stream,
+    which must not split a one-phase run in two. Mirrors the live stamp in `_combine`."""
     from pathlib import Path
 
     calls: list[ToolCall] = []
     by_id: dict[str, ToolCall] = {}
+    sessions: list[str] = []   # distinct session ids, in order of first appearance
+    phase = 0
     with (Path(bundle_dir) / "messages.jsonl").open() as fh:
         for line in fh:
             m = json.loads(line)
+            if m.get("__type__") == "SystemMessage" and m.get("subtype") == "init":
+                sid = str((m.get("data") or {}).get("session_id") or "")
+                if sid not in sessions:
+                    sessions.append(sid)
+                    phase = len(sessions) - 1
+                continue
             content = m.get("content")
             if not isinstance(content, list):
                 continue
@@ -101,7 +115,7 @@ def trace_from_bundle(bundle_dir) -> Trace:
                 if not isinstance(b, dict):
                     continue
                 if b.get("__type__") == "ToolUseBlock":
-                    tc = ToolCall.of(b.get("name", "") or "", dict(b.get("input") or {}))
+                    tc = ToolCall.of(b.get("name", "") or "", dict(b.get("input") or {}), phase=phase)
                     calls.append(tc)
                     if b.get("id"):
                         by_id[b["id"]] = tc

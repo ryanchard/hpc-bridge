@@ -50,6 +50,33 @@ def fake_entry(*, id: str, facility_key: str, description: str = "a machine") ->
     })
 
 
+MEP_UUID = "da3df250-4013-4d69-942c-eef1568f860c"
+
+
+def fake_mep_entry(*, id: str = "globus1", facility_key: str = "globus", **over) -> CatalogEntry:
+    """A facility-MEP entry (the globus1 testbed shape): compute_mep_uuid, NO ssh_host, NO allocation,
+    worker-side $HOME scratch, the unconditional version-pinned worker_init, a warm block."""
+    raw = {
+        "id": id,
+        "facility_key": facility_key,
+        "facility": "Globus Labs cluster",
+        "description": "lab DGX Spark cluster via its multi-user endpoint",
+        "display_name": "HPC-Bridge globus1 (MEP)",
+        "compute_mep_uuid": MEP_UUID,
+        "ssh_host": None,
+        "account_required": False,
+        "compute": {
+            "scheduler": "slurm", "interface": "enP7s7",
+            "env_setup": "uv pip install -q globus-compute-endpoint==4.15.0",
+            "scratch_root": "$HOME/.hpc-bridge",
+        },
+        "defaults": {"partition": "main", "walltime": "02:00:00", "init_blocks": 1},
+        "last_validated": "2026-08-18",
+    }
+    raw.update(over)
+    return CatalogEntry.model_validate(raw)
+
+
 class FakeCatalog:
     """In-memory CatalogProvider for unit tests (mirrors FakeFacility)."""
 

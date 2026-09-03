@@ -23,6 +23,13 @@ A `Protocol` with `get(machine)` (exact → provisioning) and `discover(query)` 
 
 `make_catalog()` ([[server]]) **requires** `HPC_BRIDGE_SEARCH_INDEX` — the index is the only runtime catalog. No index (or no search scope) is a hard failure.
 
+> [!info] The index — `6ff95fb8-1113-42be-a811-3d1cb5a67bd5`
+> Our Globus Search index (display name `hpc-bridge-test`), owned by the maintainer's Globus identity. Set `HPC_BRIDGE_SEARCH_INDEX=6ff95fb8-1113-42be-a811-3d1cb5a67bd5` for the server (locally it lives in `.claude/settings.local.json`, which is gitignored — so an interactive shell does **not** have it; pass the UUID literally to `hpc-bridge-catalog`). Curated entries ingested so far (subject → seed):
+> - `purdue:anvil` ← `catalog/seed/anvil.yaml` (SSH-bootstrap, personal endpoint; 2026-06)
+> - `globus:globus1` ← `catalog/seed/globus-cluster.yaml` (the **MEP** entry for `globus-cluster-mep`, zero SSH; ingested 2026-08-19 — see [[Endpoint reuse and MEP integration]])
+>
+> Ingest is idempotent (keyed by subject): `hpc-bridge-catalog 6ff95fb8-1113-42be-a811-3d1cb5a67bd5 src/hpc_bridge/catalog/seed/<file>.yaml` (needs the one-time `search:all` consent). All entries are currently `visible_to: public` — `ingest.py` hardcodes it; per-entry visibility is a curator TODO. **Seed `aliases` are NOT indexed** (the loader resolves them; `ingest.py` drops them and `SearchCatalog` matches only `id`/subject) — at runtime use the `id` (`globus1`) or subject, as `list_facilities` shows. Verified live 2026-08-19: `get("globus1")` → the MEP entry → `MEPFacility`, and a real status read of the MEP returned online.
+
 > [!note] Auth — reuse the Compute identity
 > Reads use `SearchClient(app=Client().app)` — the same Globus identity Compute already holds — needing a one-time search-scope consent (`hpc-bridge-catalog`); until granted, catalog discovery **hard-fails** (no bundled fallback). This unlocks `visible_to`-restricted entries. See [[Globus index discovery channel]].
 
