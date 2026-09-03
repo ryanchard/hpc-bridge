@@ -1407,3 +1407,49 @@ async def test_ssh_teardown_reports_the_spend_it_ended(monkeypatch):
     monkeypatch.setattr(srv, "_release_blocks_over_login", _released)
     res = await srv._teardown_endpoint(app)
     assert res.status == "down" and res.session_spend >= 3.5
+
+
+async def test_poll_on_a_dead_endpoint_is_terminal_not_running():
+    # 2026-08-19: another process deleted the endpoint under a running task; the agent polled 25× for
+    # 20 minutes because a pending future always read 'running'. A pending task whose endpoint is
+    # offline/gone can never resolve -> terminal failed (ORPHANED), handle dropped.
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, "", ""), pending=True)
+    _shape_runtime(app, "compute").spend_confirmed = True
+    out = await _run_shell(app, "sleep 3000", shape="compute")
+    assert out.phase == "running" and out.task_id
+    # endpoint alive, block merely slow -> still running (Parsl would relaunch a killed block; keep polling)
+    still = await _poll_task_for_test(app, out.task_id)
+    assert still.phase == "running" and out.task_id in app.tasks
+    # the endpoint goes away (torn down / facility outage) -> orphaned, terminal, handle gone
+    f.workers = 0
+    dead = await _poll_task_for_test(app, out.task_id)
+    assert dead.phase == "failed" and "ORPHANED" in dead.notice and "stop polling" in dead.notice
+    assert out.task_id not in app.tasks
+    # a second poll is the benign 'no task' miss, not another 20-minute loop
+    again = await _poll_task_for_test(app, out.task_id)
+    assert again.phase == "failed" and "no task" in again.notice
+
+
+async def test_poll_status_hiccup_does_not_orphan_a_live_task():
+    # a status-API error must not condemn a live task (best-effort: keep polling)
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, "", ""), pending=True)
+    _shape_runtime(app, "compute").spend_confirmed = True
+    out = await _run_shell(app, "sleep 3000", shape="compute")
+
+    async def boom(eid):
+        raise RuntimeError("status API 503")
+
+    f.manager_online = boom
+    assert (await _poll_task_for_test(app, out.task_id)).phase == "running"
+    assert out.task_id in app.tasks
+
+
+async def _poll_task_for_test(app, task_id, wait=0.0):
+    from hpc_bridge.server import _poll_task
+    return await _poll_task(app, task_id, wait)

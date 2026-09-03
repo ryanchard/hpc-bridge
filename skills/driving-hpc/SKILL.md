@@ -64,6 +64,8 @@ This is a *policy gate*: discovery surfaces the options + the budget, the human 
 
 Once the block is up, run work through `run_shell(shape="compute")`. **Long work is a foreground task, not a detached process.** A command that outruns the sync-wait comes back `phase="running"` with a `task_id` — it was **not** cut; retrieve its result with `poll_task(task_id)` (which returns `running` until it finishes, then `complete` with the full output). The task runs up to the **block walltime** and keeps the block warm the entire time, so it is never idle-released.
 
+**A `poll_task` result of `failed` saying the task is ORPHANED** means the endpoint behind it went offline or was torn down — the result can never arrive, so stop polling; if that wasn't you, `connect_facility` again and re-run. (A merely cold or relaunching block still reads `running` — keep polling that.)
+
 **Never background/detach long work** (`setsid`, `nohup … &`, a trailing `&`) to "escape" a timeout — a detached process is *not* a Compute task, so the block idle-releases out from under it and the work dies (issue #21). Run it in the foreground and poll instead. For work that must outlast the block walltime, submit a real batch job (`sbatch`/`qsub`) and watch the scheduler with `run_shell(shape="login")`.
 
 **One task per session.** A `session_id` whose task is still running is busy — issue the next command in a **different `session_id`** (or `poll_task` the running one first); two commands can't share one session's cwd/env at once.

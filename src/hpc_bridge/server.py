@@ -1817,9 +1817,41 @@ async def _reset_session(
     return out
 
 
+async def _endpoint_gone(app: AppCtx) -> bool:
+    """True when nothing can resolve a pending task any more: the endpoint the task was dispatched
+    to is unbound, or its manager reports offline/deleted. A KILLED BLOCK under a LIVE endpoint is
+    not this — Parsl relaunches the block and the task eventually runs, so polling stays correct."""
+    eid = app.state.endpoint_id
+    if eid is None:
+        return True
+    try:
+        return not await app.facility.manager_online(eid)
+    except Exception:  # noqa: BLE001 - a status hiccup must not condemn a live task; keep polling
+        return False
+
+
+def _orphaned_outcome(app: AppCtx, task_id: str) -> ShellOutcome:
+    return _with_spend(app, ShellOutcome(
+        phase="failed", block_state="cold", exit_code=None,
+        notice=(
+            f"task {task_id!r} is ORPHANED: the endpoint it was dispatched to is offline or gone, so its "
+            "result can never arrive — stop polling. Its block state is unknown (a stopped/deleted "
+            "endpoint takes its blocks with it; a facility outage may leave one billing). If you "
+            "stopped or tore down the endpoint, this is expected; otherwise connect_facility again "
+            "and re-run the command."
+        ),
+    ))
+
+
 async def _poll_task(app: AppCtx, task_id: str, wait: float = 0.0) -> ShellOutcome:
     """Retrieve a running task's result (or report it still running). Optionally block up to `wait`
-    seconds for it OFF the lock, then re-check under the lock."""
+    seconds for it OFF the lock, then re-check under the lock.
+
+    A pending future is only 'running' if something can still resolve it. If the endpoint behind the
+    task is offline/gone (torn down by us or by someone else, a facility outage), the future never
+    resolves and an agent would poll forever — seen live 2026-08-19: 25 polls over 20 minutes after
+    another process deleted the endpoint. So a pending task on a dead endpoint is reported as a
+    terminal `failed` (orphaned) and its handle dropped."""
     wait = max(0.0, min(wait, 600.0))  # a bounded courtesy wait; never an unbounded tool hang
     async with app.lock:
         resolved = _resolve_task(app, task_id)
@@ -1839,6 +1871,14 @@ async def _poll_task(app: AppCtx, task_id: str, wait: float = 0.0) -> ShellOutco
             handle = app.tasks.get(task_id)
             if handle is not None:
                 ceiling_s = handle.ceiling_s
+    # Still pending: can anything resolve it? (web call — off the lock; then claim under the lock)
+    if await _endpoint_gone(app):
+        async with app.lock:
+            resolved = _resolve_task(app, task_id)  # it may have raced to done in the meantime
+            if resolved is not None:
+                return resolved
+            if app.tasks.pop(task_id, None) is not None:
+                return _orphaned_outcome(app, task_id)
     return _running_outcome(app, task_id, ceiling_s)
 
 
