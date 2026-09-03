@@ -121,7 +121,7 @@ python3 agentic/run_suite.py --scenarios happy_path --repeat 3 --concurrency 3
 
 1. **General code review of the branch** (the M1 diff), then merge the draft PR. _(Not yet done — the last planned step before merge.)_
 2. **Clean regression re-run** of `gated_provision`, `long_task_via_handle`, `spend_gate_enforced` when globus1 is quiet (`sinfo -N` to check; another user was saturating it 08-19→08-21).
-3. **Follow-up A — long-task block-thrashing** (pre-existing, SSH path, `#21` area): under load a compute block was CANCELLED at 24–142 s repeatedly before a 180 s task finished, orphaning the `poll_task` handle (the agent then polls forever). See `docs/hpc-bridge-vault/` (`detached-process-idle-release`). Worth its own investigation; not M1-specific.
+3. **Follow-up A — (was) long-task block-thrashing — RESOLVED as a harness artifact (2026-09-03):** two concurrent `run_suite` invocations shared pool user `test-00` and one run's user-wide teardown `scancel`led the other's blocks. Fixed in the harness (cross-process pool claims, run-scoped teardown, endpoint-log capture — `agentic/harness/pool.py`, `cluster_ops.py`). The surviving *product* item: `poll_task` must detect a block killed externally instead of hanging (Tier 2 in `Planned/V1 release.md`).
 4. **Follow-up B — `spend_refusal` grader** (`agentic/scenarios/spend_refusal.py`): `refusal_exercised` should also count a *proactive* refusal ("I won't spend without asking"), not only a declined question. Cheap fix.
 
 ## Open decision

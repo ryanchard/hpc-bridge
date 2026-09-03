@@ -21,6 +21,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from cluster_ops import capture_logs_cmd, delete_endpoint_cmd, endpoint_uuid_cmd, scoped_cancel_cmd
 from invariants import Result, Trace, check_all
 from provenance import write_run_record
 from runner import RunResult, run_scenario
@@ -159,37 +160,56 @@ def _postchecks(scen) -> list[Result]:
     return results
 
 
-def _teardown(scen) -> None:
-    """Delete THIS pool user's hpc-bridge endpoints AND scancel its remaining jobs (harness
-    sleepers, finished experiments), unless the scenario keeps state for a reuse chain
-    (TEARDOWN != 'delete' skips both). Runs AFTER postchecks so cleanup can't mask agent failures.
-    Best-effort: never fails the run.
+_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
-    Name-AGNOSTIC on purpose: since #27 the server keys the endpoint name on the ssh_host, so a
-    computed hpc-bridge-<facility id> would MISS the real endpoint (a silent strand). Enumerating the
-    config dirs (~/.globus_compute/<name>/) and deleting every hpc-bridge-* the user owns can't miss,
-    and self-heals anything a prior crashed run stranded. Parse the DIRS, not `gce list` — its table
-    WRAPS long names across rows, so line parsing silently drops them. The test user is
-    harness-dedicated, so deleting all its endpoints is safe; concurrent runs use DISTINCT users."""
+
+def _run_endpoint_ids(res) -> list[str]:
+    """The endpoint uuid(s) THIS run dispatched to, read off its own tool results (`endpoint_id`)."""
+    out: list[str] = []
+    for c in (res.trace.calls if res is not None else []):
+        eid = str((c.result or {}).get("endpoint_id") or "")
+        if _UUID_RE.fullmatch(eid) and eid not in out:
+            out.append(eid)
+    return out
+
+
+def _teardown(scen, res=None) -> str:
+    """Tear down THIS RUN's endpoint and blocks — and nothing else the pool user owns — unless the
+    scenario keeps state for a reuse chain (TEARDOWN != 'delete'). Runs AFTER postchecks so cleanup
+    can't mask agent failures. Best-effort: never fails the run. Returns the captured endpoint logs
+    (manager + UEPs + block stdout/stderr), which the caller files into the provenance bundle.
+
+    Scoped on purpose (2026-09-03). The old form deleted every `hpc-bridge-*` endpoint the user had
+    and ran `scancel -u $(whoami)`, assuming concurrent runs use DISTINCT users. Two `run_suite`
+    invocations both allocated test-00 (see pool.py), and one run's teardown killed the other's live
+    blocks mid-task — the "block-thrashing bug" that wasn't. Now: the endpoint is deleted BY NAME
+    (this run's HPC_BRIDGE_ENDPOINT_NAME) and blocks are cancelled by the `uep.<eid>` StdOut marker
+    for this run's uuid(s) only (the server's own scope); with no uuid known, nothing is cancelled.
+    Stranded leftovers from a crashed run are swept by hand: agentic/sweep_pool_user.sh."""
     if getattr(scen, "TEARDOWN", "delete") != "delete":
         print("teardown: KEEP — leaving endpoint(s) + jobs for the chain", file=sys.stderr, flush=True)
-        return
-    gce = "$HOME/hpc-bridge/gce-venv/bin/globus-compute-endpoint"
-    # Cancel any leftover pilot jobs with the facility's scheduler (Slurm scancel vs PBS qdel).
-    cancel = (
-        'qdel $(qselect -u "$(whoami)" 2>/dev/null) 2>/dev/null'
-        if getattr(scen, "SCHEDULER", "slurm") == "pbs"
-        else 'scancel -u "$(whoami)" 2>/dev/null'
+        return ""
+    scheduler = getattr(scen, "SCHEDULER", "slurm")
+    name = os.environ.get("HPC_BRIDGE_ENDPOINT_NAME", "").strip()
+    eids = _run_endpoint_ids(res)
+    if name:  # the registered uuid, from the endpoint's own endpoint.json (works even if the agent never saw it)
+        _rc, out = _ssh_run(endpoint_uuid_cmd(name), timeout=30)
+        m = _UUID_RE.search(out)
+        if m and m.group(0) not in eids:
+            eids.append(m.group(0))
+    logs = ""
+    if name or eids:  # capture BEFORE delete erases the evidence
+        _rc, logs = _ssh_run(capture_logs_cmd(name or "no-endpoint-name", eids), timeout=90)
+    delete = (
+        delete_endpoint_cmd(name) if name
+        else 'echo "no HPC_BRIDGE_ENDPOINT_NAME: endpoint left in place (never enumerate-delete; see agentic/sweep_pool_user.sh)"'
     )
-    remote = (
-        f'for ep in $(ls ~/.globus_compute/ 2>/dev/null | grep "^hpc-bridge-"); do '
-        f'{gce} stop "$ep" >/dev/null 2>&1; {gce} delete "$ep" --yes >/dev/null 2>&1; done; '
-        f'{cancel}; true'
-    )
-    print("teardown: deleting this user's hpc-bridge-* endpoints + scancel'ing jobs …", file=sys.stderr, flush=True)
-    rc, out = _ssh_run(remote, timeout=90)
+    print(f"teardown: endpoint {name or '<unknown>'}; cancelling blocks of uuid(s) {eids or 'none'} …",
+          file=sys.stderr, flush=True)
+    rc, out = _ssh_run(f"{delete}; {scoped_cancel_cmd(scheduler, eids)}", timeout=90)
     tag = "ok" if rc == 0 else f"rc={rc}"
     print(f"teardown: {tag} — {out.strip().replace(chr(10), ' ')[:200]}", file=sys.stderr, flush=True)
+    return logs
 
 
 def _resolve_scenario(name: str) -> str:
@@ -331,7 +351,7 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
             print("RESULT: OK")
             rc = 0
     finally:
-        _teardown(scen)
+        endpoint_logs = _teardown(scen, res)
         # Provenance is written LAST and unconditionally — a crashed run still leaves its
         # evidence (partial messages, whatever grading completed, the resolved config).
         rec = write_run_record(
@@ -343,6 +363,10 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
             final=(res.final if res else None),
             rc=rc,
         )
+        if rec is not None and endpoint_logs:
+            # The evidence a post-mortem needs (manager + UEP logs, block stdout/stderr) — deleted on
+            # the cluster by teardown, so this file is the only copy. See cluster_ops.capture_logs_cmd.
+            (rec / "endpoint-logs.txt").write_text(endpoint_logs)
         if rec is not None:
             try:
                 shown = rec.relative_to(REPO_ROOT)
