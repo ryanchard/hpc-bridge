@@ -780,3 +780,52 @@ async def test_registry_unreachable_and_nothing_cached_asks_for_a_host(monkeypat
     app = AppCtx(facility=FakeFacility(), profile=Profile())
     res = await server._connect_facility(app, "nowhere")
     assert res.phase == "needs_facility_details" and "registry unavailable" in (res.notice or "")
+
+
+def test_control_dir_falls_back_to_a_short_path(monkeypatch, tmp_path):
+    # ssh expands %C to 40 hex chars and caps the whole socket path (~104 bytes): a deep state dir made
+    # every SSH fail with "ControlPath too long" before auth (stranger's walk, 2026-09-03).
+    from hpc_bridge import server
+    deep = tmp_path / ("d" * 60) / ("e" * 30)
+    monkeypatch.setenv("HPC_BRIDGE_STATE_DIR", str(deep))
+    monkeypatch.setenv("HPC_BRIDGE_SSH_CONTROL_PERSIST", "60")
+    cd, _persist = server._control_settings()
+    assert cd is not None and len(cd) + 1 + 40 <= 100 and str(deep) not in cd
+    assert server._short_control_dir("/short/cm") == "/short/cm"
+
+
+async def test_no_ssh_access_is_explained_not_dumped(monkeypatch):
+    # A stranger with no account/key on the facility got 'seed storage.db (mkdir) failed: u@h: Permission
+    # denied (publickey,…)' — an internal step name + a bare ssh error. Name the host, the login name and
+    # its source, and the remedies instead.
+    from types import SimpleNamespace
+    from hpc_bridge import server
+
+    f = FakeFacility()
+    f.alias = "anvil.rcac.purdue.edu"
+    f.cli = SimpleNamespace(target=SimpleNamespace(host="anvil.rcac.purdue.edu", user="hpcbridge-stranger"))
+    monkeypatch.setattr(server, "_facility_from_entry", lambda entry, *, account: f)
+    monkeypatch.setattr(server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")]))
+    monkeypatch.setenv("HPC_BRIDGE_SSH_USER", "hpcbridge-stranger")
+
+    async def refused(app, shape, **kw):
+        raise RuntimeError("seed storage.db (mkdir) failed: hpcbridge-stranger@anvil.rcac.purdue.edu: "
+                           "Permission denied (publickey,gssapi-keyex,gssapi-with-mic,keyboard-interactive,hostbased).")
+
+    monkeypatch.setattr(server, "_provision", refused)
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    res = await server._connect_facility(app, "anvil")
+    assert res.phase == "failed"
+    assert res.notice.startswith("NO SSH ACCESS to anvil.rcac.purdue.edu")
+    assert "'hpcbridge-stranger'" in res.notice and "HPC_BRIDGE_SSH_USER" in res.notice
+    assert "seed storage.db" not in res.notice and "Nothing was started" in res.notice
+
+
+def test_explain_provision_error_classes():
+    from types import SimpleNamespace
+    from hpc_bridge.server import _explain_provision_error
+    fac = SimpleNamespace(alias="h.example.edu", cli=SimpleNamespace(target=SimpleNamespace(host="h.example.edu", user=None)))
+    assert _explain_provision_error(RuntimeError("x failed: ssh: Could not resolve hostname h.example.edu"), fac).startswith("CANNOT REACH h.example.edu")
+    assert "as your local username" in _explain_provision_error(RuntimeError("u@h: Permission denied (publickey)"), fac)
+    assert "ControlMaster socket path is too long" in _explain_provision_error(RuntimeError("seed failed: ControlPath too long ('/x' >= 104 bytes)"), fac)
+    assert _explain_provision_error(NotImplementedError("provisioning needs Linux"), fac).startswith("hpc-bridge error: NotImplementedError")
