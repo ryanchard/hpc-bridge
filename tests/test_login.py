@@ -151,6 +151,7 @@ def test_expired_worker_cannot_clobber_the_rearmed_flow(monkeypatch):
     flow.start()
     time.sleep(0.1)
     assert flow.status() == "expired"
+    flow.ttl_s = 60  # the re-armed attempt must outlive the assertion window (only the FIRST was meant to expire)
     second = flow.start()  # a new generation (browser again: _browser_failed is still False)
     release.set()
     time.sleep(0.3)
