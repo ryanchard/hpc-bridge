@@ -1283,7 +1283,7 @@ async def _connect_mep(app: AppCtx, facility: str, fac) -> ConnectFacilityResult
         how = ("pass the account directly: ensure_endpoint_up(account=…, partition=…, "
                "confirm_spend=True) — no allocation listing exists on a multi-user endpoint.")
     else:
-        how = ("NO account is needed at this facility — do not look for one. Confirm spend and go: "
+        how = ("NO allocation account is needed at this facility — do not look for one. Confirm spend and go: "
                "ensure_endpoint_up(partition=…, confirm_spend=True).")
     return ConnectFacilityResult(
         phase="needs_account",

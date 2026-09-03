@@ -63,7 +63,7 @@ async def test_connect_attaches_with_zero_ssh_and_no_login_runtime(monkeypatch):
     assert app.built == []  # and no runner (no canary, no block) — warming is behind the spend gate
     assert app.scratch_root == "$HOME/.hpc-bridge"  # worker-side root, untouched
     assert "compute-only" in res.notice.lower() or "compute-only" in res.notice
-    assert "no account is needed" in res.notice.lower()  # account_required=False -> don't go hunting
+    assert "no allocation account is needed" in res.notice.lower()  # account_required=False -> don't go hunting
 
 
 async def test_connect_account_required_mep_says_pass_account(monkeypatch):
