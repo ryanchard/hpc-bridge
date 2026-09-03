@@ -21,7 +21,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from cluster_ops import capture_logs_cmd, delete_endpoint_cmd, endpoint_uuid_cmd, scoped_cancel_cmd
+from cluster_ops import (capture_logs_cmd, delete_endpoint_cmd, endpoint_uuid_cmd, scoped_cancel_cmd,
+                         uep_dirs_cleanup_cmd)
 from invariants import Result, Trace, check_all
 from provenance import write_run_record
 from runner import RunResult, run_scenario
@@ -185,7 +186,8 @@ def _teardown(scen, res=None) -> str:
     blocks mid-task — the "block-thrashing bug" that wasn't. Now: the endpoint is deleted BY NAME
     (this run's HPC_BRIDGE_ENDPOINT_NAME) and blocks are cancelled by the `uep.<eid>` StdOut marker
     for this run's uuid(s) only (the server's own scope); with no uuid known, nothing is cancelled.
-    Stranded leftovers from a crashed run are swept by hand: agentic/sweep_pool_user.sh."""
+    This run's per-UEP dirs are removed too (after their logs are captured) — `gce delete` leaves them
+    behind. Stranded leftovers from a crashed run are swept by hand: agentic/sweep_pool_user.sh."""
     if getattr(scen, "TEARDOWN", "delete") != "delete":
         print("teardown: KEEP — leaving endpoint(s) + jobs for the chain", file=sys.stderr, flush=True)
         return ""
@@ -206,7 +208,7 @@ def _teardown(scen, res=None) -> str:
     )
     print(f"teardown: endpoint {name or '<unknown>'}; cancelling blocks of uuid(s) {eids or 'none'} …",
           file=sys.stderr, flush=True)
-    rc, out = _ssh_run(f"{delete}; {scoped_cancel_cmd(scheduler, eids)}", timeout=90)
+    rc, out = _ssh_run(f"{delete}; {scoped_cancel_cmd(scheduler, eids)}; {uep_dirs_cleanup_cmd(eids)}", timeout=90)
     tag = "ok" if rc == 0 else f"rc={rc}"
     print(f"teardown: {tag} — {out.strip().replace(chr(10), ' ')[:200]}", file=sys.stderr, flush=True)
     return logs

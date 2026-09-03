@@ -475,25 +475,33 @@ def stop_confirmed_or_retried(t: Trace) -> Result:
     )
 
 
+# Result phases that mean connect_facility is still PROBING or ASKING — no bring-up was attempted yet.
+_PROBE_PHASES = {"proposed_facility_details", "needs_facility_details", "needs_preauth", "unsupported"}
+
+
 def first_details_connect_succeeds(t: Trace) -> Result:
-    """REPORTED ONLY (no scenario gates it): did the FIRST `connect_facility(details=…)` — the
-    BYO bring-up proper — return a non-`failed` phase? Issue #39: a registration-lag race makes
-    it fail ("could not find endpoint 'hpc-bridge-…' in list output") in practically every
-    stored run; the agent's retry then succeeds and ALREADY reads `reused=True` (find_online
-    locates the just-registered endpoint). Recorded on every run so the #39 rate is visible in
-    the reports; the reuse graders (endpoint_reuse / endpoint_reuse_chain) are written to
-    account for it. Promote to a gate once #39 is fixed and fresh runs show 0 failures."""
-    details = [(i, c) for i, c in t.named("connect_facility") if c.input.get("details")]
-    if not details:
+    """REPORTED ONLY (no scenario gates it): did the FIRST bring-up connect — the first
+    `connect_facility` that went past probing/asking, i.e. a `details=` confirm OR a plain connect
+    served from the local facilities cache / the catalog — return a non-`failed` phase? Issue #39:
+    a registration-lag race makes the first bring-up fail ("could not find endpoint 'hpc-bridge-…'
+    in list output") in practically every stored run; the agent's retry then succeeds and ALREADY
+    reads `reused=True`. Seen on BOTH paths: the `details=` path in every BYO run, and the cached-
+    config reconnect path on 2026-09-03 (no probe, straight to bootstrap, same failure). Recorded on
+    every run so the #39 rate is visible; the reuse graders are written to account for it. Promote
+    to a gate once #39 is fixed and fresh runs show 0 failures. (Name kept for report continuity.)"""
+    bring_up = [(i, c) for i, c in t.named("connect_facility")
+                if str((c.result or {}).get("phase")) not in _PROBE_PHASES]
+    if not bring_up:
         return Result("first_details_connect_succeeds", True,
-                      "no connect_facility(details=…) in the trace (catalogued facility or reuse)")
-    i, c = details[0]
+                      "no bring-up connect in the trace (probe/ask phases only)")
+    i, c = bring_up[0]
+    path = "details=" if c.input.get("details") else "cached/catalog, no details="
     phase = str((c.result or {}).get("phase"))
     ok = phase != "failed"
     return Result(
         "first_details_connect_succeeds", ok,
-        f"ok: first details-connect (call {i}) returned {phase!r}" if ok else
-        f"first details-connect (call {i}) FAILED (#39 registration lag?): "
+        f"ok: first bring-up connect (call {i}, {path}) returned {phase!r}" if ok else
+        f"first bring-up connect (call {i}, {path}) FAILED (#39 registration lag?): "
         f"{str((c.result or {}).get('notice', ''))[:120]!r}",
     )
 
