@@ -193,8 +193,10 @@ def test_complete_with_code_requires_a_waiting_paste_flow(monkeypatch):
 
 
 class _StubFlow:
-    def __init__(self, required):
+    def __init__(self, required, wait_result="waiting"):
         self.required, self.error, self.started = required, None, 0
+        self.wait_result, self.waited = wait_result, []
+        self._browser_failed = False
 
     def login_required(self):
         return self.required
@@ -202,7 +204,16 @@ class _StubFlow:
     def start(self, mode=None):
         self.started += 1
         from hpc_bridge.login import LoginStart
-        return LoginStart(login_url="https://auth.globus.org/v2/oauth2/authorize?x=1", mode=mode or "browser", expires_at=time.monotonic() + FLOW_TTL_S)
+        mode = mode or ("paste" if self._browser_failed else "browser")
+        return LoginStart(login_url="https://auth.globus.org/v2/oauth2/authorize?x=1", mode=mode, expires_at=time.monotonic() + FLOW_TTL_S)
+
+    def wait(self, timeout_s, poll_s=0.25):
+        self.waited.append(timeout_s)
+        if self.wait_result == "done":
+            self.required = False
+        if self.wait_result == "failed":
+            self._browser_failed = True
+        return self.wait_result
 
     def complete_with_code(self, code):
         self.required = False
@@ -312,3 +323,67 @@ async def test_authenticate_mode_override_forces_paste():
     app.login_flow = _StubFlow(required=True)
     st = await _authenticate(app, mode="paste")
     assert st.login_mode == "paste"
+
+
+def test_wait_returns_done_when_the_browser_flow_lands(monkeypatch):
+    from hpc_bridge import login_flow_manager as lfm
+    import threading as _th
+    monkeypatch.setattr(lfm.CapturingLocalServerManager, "build", staticmethod(lambda *, on_url: _FakeManager(on_url)))
+    monkeypatch.setattr(login_mod, "_browser_available", lambda: True)
+    go = _th.Event()
+
+    class _LandsLater(_FakeApp):
+        def login(self, force=False):
+            self.manager.emit("https://auth.globus.org/v2/oauth2/authorize?late=1")
+            go.wait(timeout=5)  # the redirect arrives a moment after the tool started waiting
+
+    flow = LoginFlow(app_factory=lambda m: _LandsLater(required=True, manager=m))
+    start = flow.start()
+    assert start.mode == "browser"
+    assert flow.wait(0.05) == "waiting"  # not yet
+    _th.Timer(0.1, go.set).start()
+    assert flow.wait(3) == "done"  # the wait returns as soon as the flow completes, not at the deadline
+
+
+async def test_connect_continues_in_the_same_call_when_the_login_lands(monkeypatch):
+    # the Cloudflare-plugin feel: one tool call — browser opens, user approves, the connection proceeds.
+    # (Live: with a Globus web session + prior consent the redirect landed in ~4 s; the old behaviour
+    # returned needs_login at once and the agent told the user to 'say when done'.)
+    from hpc_bridge import server
+
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    flow = app.login_flow = _StubFlow(required=True, wait_result="done")
+    monkeypatch.setenv("HPC_BRIDGE_LOGIN_WAIT_S", "42")
+    monkeypatch.setattr(server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")]))
+    monkeypatch.setattr(server, "_facility_from_entry", lambda entry, account="": (_ for _ in ()).throw(RuntimeError("past the gate")))
+    res = await server._connect_facility(app, "anvil")
+    assert res.phase != "needs_login" and "past the gate" in (res.notice or "")
+    assert flow.waited == [42.0] and flow.started == 1
+
+
+async def test_connect_reports_the_wait_when_the_login_is_still_open(monkeypatch):
+    from hpc_bridge import server
+
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    flow = app.login_flow = _StubFlow(required=True, wait_result="waiting")
+    monkeypatch.setenv("HPC_BRIDGE_LOGIN_WAIT_S", "7")
+    res = await server._connect_facility(app, "anvil")
+    assert res.phase == "needs_login" and res.login_mode == "browser"
+    assert "waited 7s" in res.notice and "SINGLE-USE" in res.notice and flow.waited == [7.0]
+
+
+async def test_connect_rearms_in_paste_mode_when_the_browser_attempt_fails_during_the_wait():
+    from hpc_bridge import server
+
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    flow = app.login_flow = _StubFlow(required=True, wait_result="failed")
+    res = await server._connect_facility(app, "anvil")
+    assert res.phase == "needs_login" and res.login_mode == "paste" and flow.started == 2
+    assert "waited" not in res.notice
+
+
+async def test_authenticate_returns_logged_in_when_the_browser_flow_lands():
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    app.login_flow = _StubFlow(required=True, wait_result="done")
+    st = await _authenticate(app)
+    assert st.phase == "logged_in" and "browser" in st.notice

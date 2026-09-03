@@ -923,9 +923,12 @@ async def _authenticate(app: AppCtx, force: bool = False, mode: str | None = Non
         flow = app.login_flow = LoginFlow()
     if not force and not await asyncio.to_thread(flow.login_required):
         return LoginStatus(phase="logged_in", notice="Globus login present with every scope hpc-bridge needs.")
-    start = await asyncio.to_thread(flow.start, mode)
+    start, status = await _start_login_and_wait(flow, mode)
+    if status == "done":
+        return LoginStatus(phase="logged_in", notice="Globus login completed in the browser; carry on.")
     return LoginStatus(phase="needs_login", login_url=start.login_url, login_mode=start.mode,
-                       notice=_login_notice(start, flow.error))
+                       notice=_login_notice(start, flow.error,
+                                            waited_s=_login_wait_s() if status == "waiting" else None))
 
 
 async def _complete_login(app: AppCtx, code: str) -> LoginStatus:
@@ -1047,8 +1050,11 @@ async def _connect_facility(
     # input() on stdin — i.e. the MCP transport. A phase, not a prompt: the agent shows the link, the
     # user's browser completes it, the next call proceeds. (login_required() is a local SQLite read.)
     if app.login_flow is not None and await asyncio.to_thread(app.login_flow.login_required):
-        start = await asyncio.to_thread(app.login_flow.start)
-        return _needs_login_result(facility, start, app.login_flow.error)
+        start, status = await _start_login_and_wait(app.login_flow)
+        if status != "done":
+            return _needs_login_result(facility, start, app.login_flow.error,
+                                       waited_s=_login_wait_s() if status == "waiting" else None)
+        # the browser flow completed while we waited — carry straight on with the connection
     # Resolve the entry: a session-local one the agent already supplied wins; else the catalog. An
     # index error is treated as "unresolved" (the agent can still supply details), not a hard fail.
     if details is not None:
@@ -1216,7 +1222,29 @@ async def _connect_mep(app: AppCtx, facility: str, fac) -> ConnectFacilityResult
     )
 
 
-def _login_notice(start: LoginStart, flow_error: str | None, *, facility: str | None = None) -> str:
+def _login_wait_s() -> float:
+    """How long a tool call waits for a browser login to land before returning needs_login. Long enough
+    for a real IdP round-trip (password + Duo), short enough to stay well under the flow's TTL and any
+    MCP tool timeout (run_shell already blocks far longer)."""
+    return _env_float("HPC_BRIDGE_LOGIN_WAIT_S", 90.0)
+
+
+async def _start_login_and_wait(flow: LoginFlow, mode: str | None = None) -> tuple[LoginStart, str]:
+    """Arm a login and, in browser mode, wait for it. Returns (start, status). A browser attempt that
+    FAILS during the wait (no browser after all, Globus rejected the redirect) is re-armed at once in
+    paste mode — the failure is remembered by the flow — so the caller shows a usable link, not an error."""
+    start = await asyncio.to_thread(flow.start, mode)
+    if start.mode != "browser":
+        return start, "waiting"  # paste mode: nothing to wait for — the user must hand us a code
+    status = await asyncio.to_thread(flow.wait, _login_wait_s())
+    if status == "failed":
+        start = await asyncio.to_thread(flow.start)  # goes to paste (browser failure remembered)
+        status = "waiting"
+    return start, status
+
+
+def _login_notice(start: LoginStart, flow_error: str | None, *, facility: str | None = None,
+                  waited_s: float | None = None) -> str:
     """The agent-facing instructions for a login, by mode. Same discipline as needs_preauth: relay
     the link, never ask for a password, never handle a token; in paste mode only a one-time code
     (not a token) passes through the chat."""
@@ -1227,11 +1255,14 @@ def _login_notice(start: LoginStart, flow_error: str | None, *, facility: str | 
             "never paste the link into a shell.")
     prefix = f"({flow_error}) " if flow_error else ""
     if start.mode == "browser":
-        return prefix + head + (
-            "A browser window should have opened to Globus; if it didn't, give the USER this link to "
-            f"open: {start.login_url}\nThey log in and approve once; the page then says they can return "
-            "here. When they confirm, call connect_facility again — nothing to paste. (The link is valid "
-            "for ~10 minutes; a new connect_facility issues a fresh one.)"
+        waited = (f"A browser window opened to Globus and I waited {waited_s:.0f}s for the login to land; it "
+                  "hasn't yet. ") if waited_s else "A browser window should have opened to Globus. "
+        return prefix + head + waited + (
+            "If the browser already shows the login finished ('you may close this window'), just call "
+            "connect_facility again — nothing to paste. If no browser opened, give the USER this link to "
+            f"open: {start.login_url}\nThe link is SINGLE-USE: once the page says they can return, do not "
+            "reopen it (it will fail — that is not an error). It is valid for ~10 minutes; a new "
+            "connect_facility issues a fresh one and waits again."
         ) + tail
     return prefix + head + (
         f"Give the USER this link to open: {start.login_url}\nAfter they log in and approve, Globus shows "
@@ -1240,13 +1271,14 @@ def _login_notice(start: LoginStart, flow_error: str | None, *, facility: str | 
     ) + tail
 
 
-def _needs_login_result(facility: str, start: LoginStart, flow_error: str | None) -> ConnectFacilityResult:
+def _needs_login_result(facility: str, start: LoginStart, flow_error: str | None,
+                        waited_s: float | None = None) -> ConnectFacilityResult:
     return ConnectFacilityResult(
         phase="needs_login",
         facility=facility,
         login_url=start.login_url,
         login_mode=start.mode,
-        notice=_login_notice(start, flow_error, facility=facility),
+        notice=_login_notice(start, flow_error, facility=facility, waited_s=waited_s),
     )
 
 

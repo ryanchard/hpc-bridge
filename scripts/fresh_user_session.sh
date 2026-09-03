@@ -37,7 +37,8 @@ echo "hpc-bridge:  $FRESH/state            (no cached facilities/endpoints)"
 if [[ -f "$FRESH/globus_compute/storage.db" ]]; then
   echo "tokens:      PRESENT -> expect NO login this run (use --reset to be a brand-new user again)"
 else
-  echo "tokens:      none    -> expect connect_facility to return needs_login (a browser opens; or paste the code back)"
+  echo "tokens:      none    -> expect a browser to open on Globus; the tool waits (~90 s) for the login and continues by itself"
+  echo "             (a browser that already holds a Globus session + this client's consent lands in seconds)"
 fi
 echo
 echo ">>> in the session, say:  connect me to globus1"

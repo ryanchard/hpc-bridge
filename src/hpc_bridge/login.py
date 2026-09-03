@@ -127,6 +127,18 @@ class LoginFlow:
             self._expire_locked()
             return self._state
 
+    def wait(self, timeout_s: float, poll_s: float = 0.25) -> str:
+        """Block until the armed login leaves 'waiting' (done/failed/expired) or `timeout_s` passes;
+        returns the status. This is what makes the browser flow feel like the Cloudflare plugin's:
+        the tool call that started it waits for the redirect and carries on — the user never has to
+        say 'done'. Found live: with a Globus web session + prior consent the redirect lands in ~4 s."""
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        while True:
+            st = self.status()
+            if st != "waiting" or time.monotonic() >= deadline:
+                return st
+            time.sleep(min(poll_s, max(0.0, deadline - time.monotonic())))
+
     def _expire_locked(self) -> None:
         if self._state == "waiting" and self._start and time.monotonic() > self._start.expires_at:
             self._state = "expired"
