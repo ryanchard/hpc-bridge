@@ -261,8 +261,14 @@ def globus_identity_label(*, fetch: bool = True) -> str | None:
         app = _default_app_factory(None)
         if app.login_required():
             return None
-        info = AuthClient(authorizer=app.get_authorizer("auth.globus.org")).userinfo()
-        _IDENTITY_LABEL = info.get("preferred_username") or info.get("sub") or None
+        ac = AuthClient(authorizer=app.get_authorizer("auth.globus.org"))
+        info = ac.userinfo()  # with `openid` alone this carries `sub` but NO preferred_username
+        label = info.get("preferred_username")
+        sub = info.get("sub")
+        if not label and sub:
+            idents = ac.get_identities(ids=sub).get("identities") or []
+            label = (idents[0].get("username") if idents else None) or sub
+        _IDENTITY_LABEL = label or None
     except Exception:  # noqa: BLE001 - a label is a courtesy, never a failure
         return None
     return _IDENTITY_LABEL

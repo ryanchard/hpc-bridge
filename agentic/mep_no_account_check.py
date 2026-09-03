@@ -67,15 +67,25 @@ def main(argv: list[str]) -> int:
     from globus_sdk import AuthClient
     from hpc_bridge.login import _default_app_factory
 
+    # The EFFECTIVE identity is what the MEP maps ("Globus effective identity" in the 422): logging in
+    # through a linked identity still resolves to the account's primary one. `openid` alone gives only
+    # `sub`, so resolve it to a username via get_identities (first run: userinfo had no username, the
+    # guard compared against "", and the check silently ran as the mapped identity).
     app_ = _default_app_factory(None)
-    info = AuthClient(authorizer=app_.get_authorizer("auth.globus.org")).userinfo()
-    me = (info.get("preferred_username") or "").lower()
-    linked = sorted({(i.get("username") or "").lower() for i in info.get("identity_set", [])} - {""})
-    print(f"2. identity: {me}   linked set: {linked or '(not returned by userinfo)'}   label={globus_identity_label()}")
-    bad = [n for n in not_ids if n == me or n in linked]
-    if bad:
-        print(f"   ABORT: {bad} is your identity or is LINKED to it — the MEP mapper would match it. "
-              "Sign in as an UNLINKED identity (or unlink first).")
+    ac = AuthClient(authorizer=app_.get_authorizer("auth.globus.org"))
+    info = ac.userinfo()
+    sub = info.get("sub") or ""
+    idents = ac.get_identities(ids=sub).get("identities") or [] if sub else []
+    me = ((idents[0].get("username") if idents else None) or info.get("preferred_username") or "").lower()
+    print(f"2. effective identity: {me or '(unresolved)'}  id={sub}  label={globus_identity_label()}")
+    if not me:
+        print("   ABORT: could not resolve the identity's username — refusing to run blind.")
+        return 3
+    if me in not_ids or sub.lower() in not_ids:
+        print(f"   ABORT: {me} is a MAPPED identity (--not) — the MEP would start a user endpoint for it. This "
+              "happens when the browser's Globus session auto-completed the login, or you signed in with an "
+              "identity LINKED to it (the effective identity is the account's primary). Use a SEPARATE Globus "
+              "account: log out at app.globus.org (or paste the URL into a private window) and sign in there.")
         return 3
 
     from hpc_bridge.endpoint import EndpointCLI

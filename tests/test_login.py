@@ -401,7 +401,8 @@ def test_globus_identity_label_uses_the_v4_userinfo_call(monkeypatch):
 
     class _Auth:
         def __init__(self, *, authorizer): pass
-        def userinfo(self): return {"preferred_username": "alice@example.edu", "sub": "x"}
+        def userinfo(self): return {"sub": "x-id"}  # openid alone: NO preferred_username (found live)
+        def get_identities(self, *, ids): return {"identities": [{"id": ids, "username": "alice@example.edu"}]}
 
     assert hasattr(globus_sdk.AuthClient, "userinfo") and not hasattr(globus_sdk.AuthClient, "oauth2_userinfo")
     monkeypatch.setattr(login_mod, "_default_app_factory", lambda m: _App())
