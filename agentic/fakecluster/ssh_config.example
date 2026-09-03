@@ -1,0 +1,13 @@
+# Host-side ssh alias for the fake cluster's login node — append to ~/.ssh/config (or `Include` it).
+# hpc-bridge shells out to `ssh` and reads ~/.ssh/config, so with this stanza a HOST-side run needs
+# only HPC_BRIDGE_SSH_HOST=hpcb-fake (HPC_BRIDGE_SSH_USER/KEY are optional overrides).
+# Host keys are regenerated on every image build, so known_hosts pinning is disabled on purpose.
+Host hpcb-fake
+    HostName localhost
+    Port 2222
+    User hpcbridge-test-00
+    IdentityFile ~/.ssh/hpcb-fake
+    IdentitiesOnly yes
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+    LogLevel ERROR

@@ -1,0 +1,15 @@
+# hpc-bridge fake cluster — slurmdbd.conf TEMPLATE. The entrypoint substitutes @@DBPASS@@ from the
+# compose env (SLURM_DB_PASS) and installs it 0600 slurm:slurm. The DB is a throwaway MariaDB inside
+# the private compose network (no published port) — the password is a local fixture, not a secret.
+AuthType=auth/munge
+DbdHost=slurmdbd
+DbdPort=6819
+SlurmUser=slurm
+DebugLevel=info
+PidFile=/var/run/slurmdbd.pid
+StorageType=accounting_storage/mysql
+StorageHost=mysql
+StoragePort=3306
+StorageUser=slurm
+StoragePass=@@DBPASS@@
+StorageLoc=slurm_acct_db
