@@ -56,8 +56,17 @@ def test_summary_is_agent_safe_subset():
     assert not hasattr(s, "env_setup")
     assert set(CatalogSummary.model_fields) == {
         "subject", "id", "facility", "description", "display_name",
-        "provenance", "last_validated",
+        "provenance", "last_validated", "access", "access_note", "scheduler",
     }
+    assert s.access == "ssh" and "anvil.rcac.purdue.edu" in s.access_note and s.scheduler == "slurm"
+
+
+def test_summary_says_how_a_mep_facility_is_reached():
+    from tests.fakes import fake_mep_entry
+    s = fake_mep_entry().summary()
+    assert s.access == "mep" and "identity mapped" in s.access_note and "NO ACCOUNT" in s.access_note
+    assert "only attaches" in s.access_note  # walk finding: the agent promised a login node + allocation list
+    assert "da3df250" not in s.model_dump_json()  # still no raw UUIDs
 
 
 _MEP_COMPUTE = {

@@ -63,7 +63,7 @@ async def test_connect_attaches_with_zero_ssh_and_no_login_runtime(monkeypatch):
     assert app.built == []  # and no runner (no canary, no block) — warming is behind the spend gate
     assert app.scratch_root == "$HOME/.hpc-bridge"  # worker-side root, untouched
     assert "compute-only" in res.notice.lower() or "compute-only" in res.notice
-    assert "no account is needed" in res.notice.lower()  # account_required=False -> don't go hunting
+    assert "no allocation account is needed" in res.notice.lower()  # account_required=False -> don't go hunting
 
 
 async def test_connect_account_required_mep_says_pass_account(monkeypatch):
@@ -351,3 +351,18 @@ async def test_new_login_forgets_the_no_account_verdict(monkeypatch):
     rt.last_canary = CanaryResult(ok=False, error=_LIVE_422)
     _forget_identity_verdicts(app)
     assert rt.no_account is None and rt.last_canary is None and rt.runner_stale is True
+
+
+async def test_attach_notice_says_it_did_not_test_the_identity_mapping(monkeypatch):
+    # walk finding: the agent inferred "no NO ACCOUNT came back, so your identity is mapped" from a clean attach
+    app = _app()
+    res = await _connect(app, monkeypatch)
+    assert "does NOT test your identity mapping" in res.notice and "first block start" in res.notice
+
+
+async def test_warm_billed_block_explains_a_zero_spend(monkeypatch):
+    # walk finding: "session_spend: 0 so far" on a warm billed block read as a free tier
+    app = _app()
+    await _connect(app, monkeypatch)
+    res = await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
+    assert res.status == "up" and "no charge factor is configured" in res.notice and "not a free tier" in res.notice

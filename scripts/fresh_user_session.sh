@@ -17,7 +17,8 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FRESH="${FRESH:-$HOME/hpcb-fresh}"
-INDEX="${HPC_BRIDGE_SEARCH_INDEX:-6ff95fb8-1113-42be-a811-3d1cb5a67bd5}"   # = the plugin's built-in default (PUBLIC_REGISTRY_INDEX); set only to use another registry
+INDEX="${REGISTRY:-}"   # a stranger has no config: the plugin's built-in registry must work on its own. REGISTRY=<uuid> overrides;
+                        # the maintainer's shell HPC_BRIDGE_SEARCH_INDEX is deliberately STRIPPED below (it must not leak in)
 
 if [[ "${1:-}" == "--reset" ]]; then
   rm -rf "$FRESH"
@@ -31,7 +32,7 @@ command -v uv >/dev/null || { echo "error: 'uv' is not on PATH (the plugin launc
 [[ -f "$REPO/.mcp.json" && -f "$REPO/.claude-plugin/plugin.json" ]] || { echo "error: $REPO is not an hpc-bridge checkout" >&2; exit 1; }
 
 echo "repo:        $REPO  (branch: $(git -C "$REPO" branch --show-current 2>/dev/null || echo '?'))"
-echo "registry:    $INDEX"
+echo "registry:    ${INDEX:-(plugin default — no config, as a stranger would have)}"
 echo "compute sdk: $FRESH/globus_compute   (tokens land here, not in ~/.globus_compute)"
 echo "hpc-bridge:  $FRESH/state            (no cached facilities/endpoints)"
 if [[ -f "$FRESH/globus_compute/storage.db" ]]; then
@@ -46,10 +47,10 @@ echo
 
 # Stray hpc-bridge overrides from this shell must not leak in (an endpoint id would even be refused for a MEP).
 CMD=(env -u HPC_BRIDGE_ENDPOINT_ID -u HPC_BRIDGE_ENDPOINT_NAME -u HPC_BRIDGE_MACHINE -u HPC_BRIDGE_ACCOUNT
-     -u HPC_BRIDGE_SSH_USER -u HPC_BRIDGE_SSH_KEY -u HPC_BRIDGE_USER_DIR
+     -u HPC_BRIDGE_SSH_USER -u HPC_BRIDGE_SSH_KEY -u HPC_BRIDGE_USER_DIR -u HPC_BRIDGE_SEARCH_INDEX
      GLOBUS_COMPUTE_USER_DIR="$FRESH/globus_compute"
      HPC_BRIDGE_STATE_DIR="$FRESH/state"
-     HPC_BRIDGE_SEARCH_INDEX="$INDEX"
+     ${INDEX:+HPC_BRIDGE_SEARCH_INDEX="$INDEX"}
      claude --plugin-dir "$REPO" "$@")
 
 cd "$FRESH"

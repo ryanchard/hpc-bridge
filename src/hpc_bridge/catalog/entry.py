@@ -58,6 +58,12 @@ class CatalogSummary(BaseModel):
     display_name: str
     provenance: Literal["curated", "community", "scraped", "plugin-validated", "session"]
     last_validated: datetime.date
+    # How a user gets in — the one thing a stranger must know before choosing (stranger's walk, 2026-09-03).
+    # Derived, never stored: mep = the facility runs the endpoint (zero SSH, but their identity mapping
+    # must include you); ssh = you need an account + key-based SSH on the login host.
+    access: Literal["mep", "ssh"]
+    access_note: str
+    scheduler: str
 
 
 class CatalogEntry(BaseModel):
@@ -144,6 +150,19 @@ class CatalogEntry(BaseModel):
         return f"{self.facility_key}:{self.id}"
 
     def summary(self) -> CatalogSummary:
+        if self.compute_mep_uuid:
+            access, note = "mep", (
+                "zero SSH — the facility runs the endpoint; you need an account there with your Globus "
+                "identity mapped to it (no account ⇒ a terminal NO ACCOUNT on first use, nothing billed). "
+                "connect_facility only attaches: no login node to warm, no allocation list — the first "
+                "billed block is where your access is actually tested"
+            )
+        else:
+            access, note = "ssh", (
+                f"SSH bootstrap on {self.ssh_host}: you need an account and key-based SSH there (login name and "
+                "key from ~/.ssh/config, or HPC_BRIDGE_SSH_USER / HPC_BRIDGE_SSH_KEY); hpc-bridge stands up a "
+                "personal endpoint once, then reuses it with no further SSH"
+            )
         return CatalogSummary(
             subject=self.subject,
             id=self.id,
@@ -152,6 +171,9 @@ class CatalogEntry(BaseModel):
             display_name=self.display_name,
             provenance=self.provenance,
             last_validated=self.last_validated,
+            access=access,
+            access_note=note,
+            scheduler=self.compute.scheduler,
         )
 
     def profile_kwargs(self) -> dict[str, Any]:

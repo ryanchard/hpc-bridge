@@ -145,10 +145,59 @@ def _control_settings() -> tuple[str | None, int]:
         return None, 60
     from .state import _state_dir
 
-    cd = str(_state_dir() / "cm")
+    cd = _short_control_dir(str(_state_dir() / "cm"))
     os.makedirs(cd, mode=0o700, exist_ok=True)
     os.chmod(cd, 0o700)  # the socket lets commands run on the master without re-auth
     return cd, persist
+
+
+# Unix socket paths are capped (104 bytes on macOS, 108 on Linux). ssh expands the `%C` in our
+# ControlPath to a 40-hex hash and checks the WHOLE path, so a long state dir fails every SSH with
+# "ControlPath too long" before authentication (found on the stranger's walk with a deep temp dir;
+# a long username under the plugin data dir gets there too). Keep the socket dir short.
+_CONTROL_PATH_BUDGET = 100 - 1 - 40  # dir + '/' + %C must stay under the cap with margin
+
+
+def _short_control_dir(preferred: str) -> str:
+    if len(preferred) <= _CONTROL_PATH_BUDGET:
+        return preferred
+    for cand in (str(Path.home() / ".hpc-bridge" / "cm"), f"/tmp/hpcb-cm-{os.getuid()}"):
+        if len(cand) <= _CONTROL_PATH_BUDGET:
+            return cand
+    return preferred  # nothing short exists; ssh will say so
+
+
+def _explain_provision_error(exc: BaseException, fac) -> str:
+    """Turn a bootstrap failure into what a newcomer can act on. The raw text names an internal step
+    ('seed storage.db (mkdir) failed: u@host: Permission denied (publickey,…)') — a stranger with no
+    account or key on the facility must instead hear WHICH host and login name were tried, where the
+    name came from, and the two remedies (found on the stranger's walk, 2026-09-03)."""
+    raw = str(exc)
+    low = raw.lower()
+    ssh_line = raw.rsplit("failed: ", 1)[-1].strip() if "failed: " in raw else raw
+    cli = getattr(fac, "cli", None)
+    target = getattr(cli, "target", None) or getattr(cli, "_target", None)
+    host = getattr(target, "host", None) or getattr(fac, "alias", None) or "the login host"
+    user = getattr(target, "user", None)
+    if "permission denied" in low or "authentication fail" in low or "too many authentication failures" in low:
+        who = f"as {user!r}" if user else "as your local username (no login name is configured for this host)"
+        src = ("HPC_BRIDGE_SSH_USER" if os.environ.get("HPC_BRIDGE_SSH_USER", "").strip()
+               else "~/.ssh/config" if user else "nowhere")
+        return (
+            f"NO SSH ACCESS to {host}: the login-node SSH {who} was refused ({ssh_line[:200]}). hpc-bridge "
+            "needs an account on this facility and key-based SSH to its login node. Put the host's User and "
+            "IdentityFile in ~/.ssh/config (or set HPC_BRIDGE_SSH_USER / HPC_BRIDGE_SSH_KEY) and call "
+            "connect_facility again; on a multi-factor facility, pre-open a session in your own terminal "
+            f"first. The login name came from {src}. Nothing was started or billed."
+        )
+    if any(k in low for k in ("could not resolve hostname", "connection timed out", "connection refused",
+                              "no route to host", "network is unreachable")):
+        return (f"CANNOT REACH {host}: {ssh_line[:200]}. Check the login host name and your network/VPN, "
+                "then call connect_facility again. Nothing was started or billed.")
+    if "controlpath too long" in low:
+        return (f"hpc-bridge error: the SSH ControlMaster socket path is too long ({ssh_line[:160]}); set "
+                "HPC_BRIDGE_STATE_DIR to a short path (e.g. ~/.hpc-bridge). Nothing was started.")
+    return f"hpc-bridge error: {type(exc).__name__}: {raw}"[:500]
 
 
 def _slurm_facility(profile, *, alias: str, user: str) -> Facility:
@@ -850,6 +899,9 @@ async def _ensure_endpoint_up(
             if billable:  # #21: name the block's bounds so a caller runs long work as a task
                 bounds = _billed_bounds_note(app, rt)
                 notice = f"{notice}. {bounds}" if notice else bounds
+                if not app.charge_factor:  # walk finding: "session_spend: 0" on a billed block misleads
+                    notice += (" (session_spend stays 0 here because no charge factor is configured for this "
+                               "facility — the block is still a billed allocation, not a free tier)")
         else:
             status = "provisioning"
             if rt.provisioning_since is None:  # start the grace clock on the first cold poll
@@ -1165,7 +1217,7 @@ async def _connect_facility(
             return ConnectFacilityResult(
                 phase="failed",
                 facility=facility,
-                notice=f"hpc-bridge error: {type(exc).__name__}: {exc}"[:500],
+                notice=_explain_provision_error(exc, fac),
             )
     reused = app.state.reused  # reattached to an already-online endpoint (zero SSH), not a fresh bootstrap
     reuse_note = "reused the already-online endpoint (zero-SSH reconnect). " if reused else ""
@@ -1234,7 +1286,7 @@ async def _connect_mep(app: AppCtx, facility: str, fac) -> ConnectFacilityResult
         how = ("pass the account directly: ensure_endpoint_up(account=…, partition=…, "
                "confirm_spend=True) — no allocation listing exists on a multi-user endpoint.")
     else:
-        how = ("NO account is needed at this facility — do not look for one. Confirm spend and go: "
+        how = ("NO allocation account is needed at this facility — do not look for one. Confirm spend and go: "
                "ensure_endpoint_up(partition=…, confirm_spend=True).")
     return ConnectFacilityResult(
         phase="needs_account",
@@ -1242,7 +1294,9 @@ async def _connect_mep(app: AppCtx, facility: str, fac) -> ConnectFacilityResult
         reused=True,  # attached to the facility's always-on endpoint: zero SSH, nothing bootstrapped
         allocations=[],
         notice=(
-            "attached to the facility's multi-user endpoint (zero SSH, nothing to bootstrap). This "
+            "attached to the facility's multi-user endpoint (zero SSH, nothing to bootstrap). Attaching "
+            "does NOT test your identity mapping — the first block start does (no account there ⇒ a "
+            "terminal NO ACCOUNT then, nothing billed). This "
             "facility is COMPUTE-ONLY: there is no free login shape — every command runs on a "
             "billed scheduler block that stays warm between calls. " + how
         ),
