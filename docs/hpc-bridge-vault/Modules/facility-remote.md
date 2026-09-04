@@ -57,3 +57,9 @@ live) so a pin can never redirect the seeded credential to a machine whose key d
 in every argv; hosts are allowlisted at the model boundary (`models.SAFE_HOST`) and again in `SshTarget.__post_init__`;
 `preauth_command` is shell-quoted. `teardown(wipe_credentials=True)` is what `teardown_endpoint` now calls.
 
+`teardown()` (2026-09-04, live): stop → cancel blocks → `delete --yes` (directory + registration) → remove the
+`uep.<uuid>.*` dirs → wipe the token store only if we seeded it → drop the endpoint record; it RETURNS what it did and
+`_teardown_endpoint` composes its notice from that. Before, it only stopped: the endpoint stayed registered and the next
+connect re-adopted it, while the tool claimed 'deleted'. The endpoint record is now written even with no routable pin,
+so the seeded-credentials flag survives connect rebuilding the facility object.
+

@@ -424,3 +424,73 @@ async def test_silent_login_path_names_the_identity(monkeypatch):
     res = await connect._connect_facility(app, "byo", details=details, run_login=_no_login_runner)
     assert res.notice.startswith("Globus login landed as alice@uni.edu. "), res.notice
 
+
+# ---- teardown really deletes, and the tool reports what happened (live 2026-09-04) ------------------------------
+
+async def test_teardown_deletes_the_endpoint_and_its_worker_dirs_and_reports(tmp_path, monkeypatch):
+    from hpc_bridge.facility.remote import SlurmFacility
+    from hpc_bridge.state import EndpointRecord, LoginNodeStore
+    from tests.test_remote_facility import _FakeRemoteCLI, _kinds, _profile
+
+    cli = _FakeRemoteCLI()
+    store = LoginNodeStore(tmp_path / "e.json")
+    store.put(EndpointRecord(endpoint_id="eid-1", login_host=None, alias="a", user="u", key_path=None,
+                             name="hpc-bridge", provisioned_at="t", seeded_credentials=True))
+    fac = SlurmFacility(_profile(), cli=cli, store=store, alias="a")
+    report = await fac.teardown("eid-1", wipe_credentials=True)
+    kinds = _kinds(cli)
+    assert kinds.index("stop") < kinds.index("delete") and ("delete", "hpc-bridge") in cli.calls
+    assert ("remove_uep_dirs", "eid-1") in cli.calls and ("wipe", "hpc-bridge") in cli.calls
+    assert report == {"deleted": True, "credentials_wiped": True}
+    assert store.get(alias="a", name="hpc-bridge") is None  # the record goes with the endpoint
+
+
+async def test_bootstrap_persists_the_seeded_flag_even_without_a_routable_pin(tmp_path, monkeypatch):
+    from hpc_bridge.facility.remote import SlurmFacility
+    from hpc_bridge.profile import Profile
+    from hpc_bridge.state import LoginNodeStore
+    from tests.test_remote_facility import _BootstrapCLI, _no_endpoints, _profile
+
+    class _NoPinCLI(_BootstrapCLI):
+        async def start(self, name):
+            self.calls.append(("start", name))
+            return ("fake-eid", None)  # e.g. `hostname -f` is a single label: nothing routable to pin
+
+    cli = _NoPinCLI(status=None, remote_db_present=False)
+    made = tmp_path / "trimmed.db"
+    made.write_bytes(b"db")
+    monkeypatch.setattr(remote, "build_minimal_storage_db", lambda **kw: made)
+    store = LoginNodeStore(tmp_path / "e.json")
+    fac = SlurmFacility(_profile(), cli=cli, client_factory=_no_endpoints, store=store, alias="globus1")
+    await fac.bootstrap(Profile(mode="interactive"))
+    rec = store.get(alias="globus1", name=fac.profile.endpoint_name)
+    assert rec is not None and rec.login_host is None and rec.seeded_credentials is True
+    # a NEW facility object (connect rebuilds one per call) still knows we seeded it
+    fac2 = SlurmFacility(_profile(), cli=_BootstrapCLI(status="running", remote_db_present=True),
+                         client_factory=_no_endpoints, store=store, alias="globus1")
+    assert fac2._seeded_by_us() is True
+
+
+async def test_teardown_tool_notice_reflects_the_report(monkeypatch):
+    from hpc_bridge import server
+    from hpc_bridge.context import AppCtx, EndpointState, ShapeRuntime
+    from hpc_bridge.models import ShellOutcome
+    from hpc_bridge.profile import Profile
+    from tests.fakes import FakeFacility
+
+    async def fake_run_shell(a, command, session_id="default", shape="compute"):
+        return ShellOutcome(phase="complete", exit_code=0, stdout="released 1\n", block_state="warm")
+
+    monkeypatch.setattr(server, "_run_shell", fake_run_shell)
+
+    for report, expect in (({"deleted": True, "credentials_wiped": True}, ("deleted", "removed")),
+                           ({"deleted": False, "credentials_wiped": False}, ("DELETE FAILED", "no token store of ours"))):
+        class _F(FakeFacility):
+            async def teardown(self, eid, *, wipe_credentials=False, _r=report):
+                return _r
+
+        app = AppCtx(facility=_F(), profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
+        app.shapes["login"] = ShapeRuntime(user_endpoint_config={"provider_type": "LocalProvider"})
+        res = await server._teardown_endpoint(app)
+        assert all(e in (res.notice or "") for e in expect), res.notice
+

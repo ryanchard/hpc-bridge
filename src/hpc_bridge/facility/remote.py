@@ -478,6 +478,23 @@ class RemoteEndpointCLI:
         # a fresh SSH to a loaded login node is slow — don't let it hold teardown hostage.
         await self._gce("stop", name, timeout=_TEARDOWN_SSH_S)
 
+    async def delete(self, name: str) -> bool:
+        """`globus-compute-endpoint delete --yes <name>`: remove the endpoint's directory and its web
+        registration. True when the CLI reported success. (Teardown used to stop only: the endpoint dir
+        and registration stayed behind and the next connect silently re-adopted it — live 2026-09-04.)"""
+        rc, _out, _err = await self._gce("delete", "--yes", name, timeout=_TEARDOWN_SSH_S)
+        return rc == 0
+
+    async def remove_uep_dirs(self, endpoint_id: str) -> None:
+        """Remove this endpoint's per-worker `uep.<uuid>.*` dirs, which `gce delete` leaves behind.
+        UUID-gated like `clean_uep_pidfiles`; best-effort."""
+        if not _UUID_RE.match(endpoint_id):
+            return
+        try:
+            await ssh_exec(self.target, f'rm -rf "{self.remote_dir}"/uep.{endpoint_id}.*', timeout=_TEARDOWN_SSH_S)
+        except Exception:  # noqa: BLE001 - cleanup must never break teardown
+            pass
+
     async def clean_uep_pidfiles(self, endpoint_id: str) -> None:
         """Remove stale per-UEP daemon.pid files left by force-killed workers, so a later rebuild's
         fresh user-endpoints don't hit "Another instance is running. Refusing to start." -> exit 73
@@ -805,7 +822,10 @@ class SlurmFacility:
             seeded = True
         self._seeded_credentials = seeded  # remembered for teardown in THIS process; the store keeps it across sessions
         handle = await self.provision(hpc)
-        if handle.login_host is not None and self.store is not None and self.alias is not None:
+        if self.store is not None and self.alias is not None:
+            # written even with no routable pin (login_host None): the record also carries WHO seeded the
+            # remote token store, which teardown in a later call/session needs (live 2026-09-04: the flag
+            # lived on a facility object connect rebuilds every call, so teardown never wiped)
             self.store.put(
                 EndpointRecord(
                     endpoint_id=handle.endpoint_id,
@@ -873,19 +893,29 @@ class SlurmFacility:
             self.cli.rebind(host)
         return EndpointHandle(endpoint_id=eid, name=name, login_host=host)
 
-    async def teardown(self, endpoint_id: str, *, wipe_credentials: bool = False) -> None:
-        """Stop the endpoint and cancel its scheduler block(s) — the cost-control exit. Both ops run
-        over SSH, each bounded by `_TEARDOWN_SSH_S`. `wipe_credentials=True` also removes the remote
-        storage.db — but ONLY if hpc-bridge seeded it (`_seeded_by_us`): a token store that was already on
-        the login node (a shared account the facility's own endpoint uses, say) is never ours to delete."""
-        await self.cli.stop(self.profile.endpoint_name)
+    async def teardown(self, endpoint_id: str, *, wipe_credentials: bool = False) -> dict[str, bool]:
+        """Stop the endpoint, cancel its scheduler block(s), DELETE it (directory + registration + its
+        `uep.*` dirs) and drop its record — the explicit destroy. Every op runs over SSH, bounded by
+        `_TEARDOWN_SSH_S`. `wipe_credentials=True` also removes the remote storage.db — but ONLY if
+        hpc-bridge seeded it (`_seeded_by_us`): a token store that was already on the login node (a shared
+        account the facility's own endpoint uses, say) is never ours to delete. Returns what was done so
+        the tool's notice can tell the truth: {"deleted": bool, "credentials_wiped": bool}."""
+        name = self.profile.endpoint_name
+        await self.cli.stop(name)
         # `stop` kills the manager, but an ungraceful stop leaves Parsl's block holding the
         # allocation until walltime (no manager left to scale it in). Explicitly cancel this
         # endpoint's blocks so "teardown released the compute" actually holds.
         await self.cli.cancel_blocks(endpoint_id, self.profile.scheduler)
+        deleted = await self.cli.delete(name)  # the directory + registration — else the next connect re-adopts it
+        await self.cli.remove_uep_dirs(endpoint_id)
+        wiped = False
         if wipe_credentials and self._seeded_by_us():
             await self.cli.wipe_storage_db()
+            wiped = True
+        if self.store is not None and self.alias is not None:
+            self.store.remove(alias=self.alias, name=name)  # no endpoint, no pin, no seeded-flag to carry
         await self.cli.close()  # drop the shared SSH master; the endpoint is gone
+        return {"deleted": deleted, "credentials_wiped": wiped}
 
     async def login_exec(self, command: str) -> tuple[int, str, str]:
         """Read-only login-node command for discovery — no block, no allocation (delegates
