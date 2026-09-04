@@ -1,0 +1,62 @@
+"""The Globus login GATE as the tools see it (split step 9, 2026-09-03): arm a login and wait for it
+(`_start_login_and_wait`: browser mode waits up to HPC_BRIDGE_LOGIN_WAIT_S and continues in the same call;
+a browser attempt that fails during the wait is re-armed in paste mode), and the two tool bodies
+`_authenticate` / `_complete_login`. A new login may be a different identity, so both forget the sticky
+no-account verdicts and mark the runners stale (warmth._forget_identity_verdicts).
+
+The flow itself — loopback listener, paste-back, the SDK's own client id and token store — is `login.py`,
+kept free of any import of the server or the runtime; this module is the seam between the two.
+"""
+from __future__ import annotations
+
+import asyncio
+
+from .context import AppCtx
+from .login import LoginFlow, LoginStart
+from .models import LoginStatus
+from .notices import (  # noqa: F401 - _needs_login_result is used by connect
+    _login_notice,
+    _login_wait_s,
+    _needs_login_result,
+)
+from .warmth import _forget_identity_verdicts
+
+
+async def _start_login_and_wait(flow: LoginFlow, mode: str | None = None) -> tuple[LoginStart, str]:
+    """Arm a login and, in browser mode, wait for it. Returns (start, status). A browser attempt that
+    FAILS during the wait (no browser after all, Globus rejected the redirect) is re-armed at once in
+    paste mode — the failure is remembered by the flow — so the caller shows a usable link, not an error."""
+    start = await asyncio.to_thread(flow.start, mode)
+    if start.mode != "browser":
+        return start, "waiting"  # paste mode: nothing to wait for — the user must hand us a code
+    status = await asyncio.to_thread(flow.wait, _login_wait_s())
+    if status == "failed":
+        start = await asyncio.to_thread(flow.start)  # goes to paste (browser failure remembered)
+        status = "waiting"
+    return start, status
+
+async def _authenticate(app: AppCtx, force: bool = False, mode: str | None = None) -> LoginStatus:
+    flow = app.login_flow
+    if flow is None:
+        flow = app.login_flow = LoginFlow()
+    if not force and not await asyncio.to_thread(flow.login_required):
+        return LoginStatus(phase="logged_in", notice="Globus login present with every scope hpc-bridge needs.")
+    start, status = await _start_login_and_wait(flow, mode)
+    if status == "done":
+        _forget_identity_verdicts(app)
+        return LoginStatus(phase="logged_in", notice="Globus login completed in the browser; carry on.")
+    return LoginStatus(phase="needs_login", login_url=start.login_url, login_mode=start.mode,
+                       notice=_login_notice(start, flow.error,
+                                            waited_s=_login_wait_s() if status == "waiting" else None))
+
+async def _complete_login(app: AppCtx, code: str) -> LoginStatus:
+    flow = app.login_flow
+    if flow is None:
+        return LoginStatus(phase="failed", notice="no login is waiting — call authenticate() first")
+    try:
+        await asyncio.to_thread(flow.complete_with_code, code)
+    except Exception as exc:  # noqa: BLE001 - a bad/expired code is a structured outcome, not a crash
+        return LoginStatus(phase="failed", notice=f"login code not accepted: {type(exc).__name__}: {exc}"[:300]
+                           + " — call authenticate() for a fresh link.")
+    _forget_identity_verdicts(app)
+    return LoginStatus(phase="logged_in", notice="Globus login complete. Continue: connect_facility again.")
