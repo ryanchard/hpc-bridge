@@ -645,10 +645,12 @@ async def test_teardown_endpoint_stops_manager_and_clears_state(monkeypatch):
     from hpc_bridge.server import ShapeRuntime, _teardown_endpoint
 
     torn = []
+    wiped = []
 
     class _F(FakeFacility):
-        async def teardown(self, eid):
+        async def teardown(self, eid, *, wipe_credentials=False):
             torn.append(eid)
+            wiped.append(wipe_credentials)
 
     app = AppCtx(facility=_F(), profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
     slurm_runner = _FakeRunner("eid-1", _Res(0, "", ""))
@@ -661,6 +663,7 @@ async def test_teardown_endpoint_stops_manager_and_clears_state(monkeypatch):
     monkeypatch.setattr(server, "_run_shell", fake_run_shell)
     res = await _teardown_endpoint(app)
     assert torn == ["eid-1"]  # the facility teardown (gce stop + delete) was invoked
+    assert wiped == [True]  # and the seeded Globus token copy on the login node goes with it (review 2026-09-04, B-03)
     assert res.status == "down" and "torn down" in (res.notice or "")
     assert app.shapes == {} and app.state.endpoint_id is None  # ALL state cleared (no stale revive)
     assert slurm_runner.closed

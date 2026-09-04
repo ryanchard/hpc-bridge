@@ -3,6 +3,12 @@
 Asking *What HPC facilities can I use?* answers from a public registry. Each entry says how it is
 reached, and that decides what you need before you connect.
 
+A registry entry is trusted configuration: for an SSH facility it names the login host hpc-bridge will
+connect to as you and the shell line it runs there to set up the endpoint. Entries are curated by review
+in this repository (see [Adding a facility](../adding-a-facility.md)), and on first contact the agent
+shows you the host and that line. hpc-bridge only ever connects to a host your own `ssh` already trusts:
+an unknown host key is refused with **"UNKNOWN HOST KEY"** until you have connected to it once yourself.
+
 ## What each access kind needs from you
 
 | Access | You need | hpc-bridge does |

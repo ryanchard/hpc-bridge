@@ -620,7 +620,7 @@ def test_entry_from_details_builds_session_local_entry():
     assert bare.allocation is None
     assert bare.display_name == "hpc-bridge-zeta"  # UI title = the ssh-host-keyed endpoint name (not the id "x")
     # facility id is slugified into the endpoint name; an explicit name is preserved (override)
-    assert _entry_from_details("x", _details(ssh_host="uchicago:globus")).compute.endpoint_name == "hpc-bridge-uchicago-globus"
+    assert _entry_from_details("x", _details(ssh_host="uchicago_globus")).compute.endpoint_name == "hpc-bridge-uchicago-globus"
     assert _entry_from_details("frontier", _details(endpoint_name="my-ep")).compute.endpoint_name == "my-ep"
     # PBS facility with an explicit cpus_per_node flows through to defaults (full-node compute blocks)
     pbs = _entry_from_details(

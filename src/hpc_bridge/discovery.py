@@ -14,12 +14,24 @@ from typing import Literal
 from .facility.remote import NeedsPreauth, SshTarget, is_interactive_auth_failure, ssh_exec
 from .models import FacilityDetails
 
+
 # uv-bootstrap env_setup (validated live on globus1): idempotent create-venv + install, so the FIRST
 # connect provisions the toolchain and every later call (and the compute worker, which replays
 # env_setup) short-circuits to a bare activate. `{venv}` is templated by profile_from_catalog_entry.
+def _gce_pin() -> str:
+    """`globus-compute-endpoint==<the installed SDK's version>` (the two are released in lockstep), so the
+    login-node install is pinned like the client side; unpinned only if the SDK isn't importable here."""
+    try:
+        from importlib.metadata import version
+
+        return f"'globus-compute-endpoint=={version('globus-compute-sdk')}'"
+    except Exception:  # noqa: BLE001 - no SDK in this environment (hermetic tests): leave it unpinned
+        return "globus-compute-endpoint"
+
+
 _UV_ENV_SETUP = (
     "[ -d {venv} ] || uv venv {venv}; . {venv}/bin/activate; "
-    "command -v globus-compute-endpoint >/dev/null 2>&1 || uv pip install -q globus-compute-endpoint"
+    f"command -v globus-compute-endpoint >/dev/null 2>&1 || uv pip install -q {_gce_pin()}"
 )
 
 # Dedicated HPC high-speed fabrics — a strong `interface` signal vs a management eth. Ordered by

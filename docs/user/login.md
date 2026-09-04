@@ -42,9 +42,16 @@ login link into a shell. If an agent ever asks you for a password, do not give i
 ## Where the login lives, and logging out
 
 Tokens are stored in Globus Compute's standard token store, `~/.globus_compute/storage.db`, and
-refreshed automatically, so later sessions never prompt. To switch Globus identity, log out at
-app.globus.org in your browser and ask the agent to force a fresh Globus login. Deleting the token
-store logs you out entirely.
+refreshed automatically, so later sessions never prompt. When the agent tells you the login landed it
+names the identity it landed as; if that is not you, say so before anything else happens: the login
+link is single-use and whoever completes it first becomes the identity, so keep it to yourself.
+
+On an SSH-bootstrap facility a trimmed copy of this token store is also placed in your home directory
+on the login node (mode 600, readable only by you), because the endpoint running there registers with
+Globus as you. Asking the agent for a *teardown* removes that copy along with the endpoint; deleting
+the local store alone does not. To switch Globus identity, log out at
+app.globus.org in your browser and ask the agent to force a fresh Globus login. Deleting the local token
+store logs this machine out; any copy on a login node stays until you tear that endpoint down.
 
 If you quit Claude Code in the middle of a login, the listener waiting for your browser goes with it.
 A login that had already completed is unaffected.

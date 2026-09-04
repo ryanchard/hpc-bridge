@@ -954,31 +954,29 @@ def test_argv_unchanged_without_control_dir():
         "-o", "IdentitiesOnly=yes",
         "-o", "BatchMode=yes",
         "-o", "ConnectTimeout=20",
-        "-o", "StrictHostKeyChecking=accept-new",
-        "u@h", "CMD",
+        "--", "u@h", "CMD",  # no StrictHostKeyChecking override: your ssh's trust decides (review 2026-09-04)
     ]
 
 
 def test_argv_adds_controlmaster_when_control_dir_set():
     argv = SshTarget("h", "u", "/k", control_dir="/cm", control_persist=45).argv("CMD")
-    assert argv[:11] == [  # base options unchanged...
+    assert argv[:9] == [  # base options unchanged...
         "ssh", "-i", "/k",
         "-o", "IdentitiesOnly=yes",
         "-o", "BatchMode=yes",
         "-o", "ConnectTimeout=20",
-        "-o", "StrictHostKeyChecking=accept-new",
     ]
-    assert argv[-8:] == [  # ...then the three multiplexing options (%C-keyed), then the target
+    assert argv[-9:] == [  # ...then the three multiplexing options (%C-keyed), then the target
         "-o", "ControlMaster=auto",
         "-o", "ControlPath=/cm/%C",
         "-o", "ControlPersist=45",
-        "u@h", "CMD",
+        "--", "u@h", "CMD",
     ]
 
 
 def test_control_argv_builds_exit_request():
     argv = SshTarget("h", "u", "/k", control_dir="/cm").control_argv("exit")
-    assert argv == ["ssh", "-O", "exit", "-o", "ControlPath=/cm/%C", "u@h"]
+    assert argv == ["ssh", "-O", "exit", "-o", "ControlPath=/cm/%C", "--", "u@h"]
 
 
 async def test_close_sends_ssh_o_exit_when_multiplexed(monkeypatch):
@@ -1031,8 +1029,7 @@ def test_argv_defers_to_ssh_config_when_user_and_key_absent():
         "ssh",
         "-o", "BatchMode=yes",
         "-o", "ConnectTimeout=20",
-        "-o", "StrictHostKeyChecking=accept-new",
-        "globus1", "CMD",
+        "--", "globus1", "CMD",
     ]
 
 
@@ -1044,7 +1041,7 @@ def test_argv_user_without_key_defers_identity():
 
 def test_control_argv_bare_host_when_user_absent():
     assert SshTarget("globus1", control_dir="/cm").control_argv("exit") == [
-        "ssh", "-O", "exit", "-o", "ControlPath=/cm/%C", "globus1",
+        "ssh", "-O", "exit", "-o", "ControlPath=/cm/%C", "--", "globus1",
     ]
 
 

@@ -44,6 +44,19 @@ class CapturingLocalServerManager:
                     def log_message(self, format, *args):  # noqa: A002 - BaseHTTPRequestHandler's signature
                         return None
 
+                    def do_GET(self):
+                        # Only a redirect carrying an auth `code` (or an OAuth `error`) belongs to the flow. Any
+                        # other local GET (a browser preflight, a favicon, a probe) used to fail the flow and demote
+                        # the process to paste mode for its lifetime (security review 2026-09-04, B-05).
+                        from urllib.parse import parse_qs, urlparse
+
+                        q = parse_qs(urlparse(self.path).query)
+                        if "code" not in q and "error" not in q:
+                            self.send_response(404)
+                            self.end_headers()
+                            return
+                        super().do_GET()
+
                 server = RedirectHTTPServer(
                     server_address=self.server_address,
                     handler_class=_QuietHandler,
@@ -100,7 +113,9 @@ def store_paste_tokens(client, code: str) -> None:
     token_response = client.oauth2_exchange_code_for_tokens(code)
     storage = None
     try:
-        storage = getattr(_default_app_factory(None), "_token_storage", None)
+        app = _default_app_factory(None)
+        # the VALIDATING storage first (unchanging-identity / scope checks), the raw one only as a fallback (B-01)
+        storage = getattr(app, "token_storage", None) or getattr(app, "_token_storage", None)
     except Exception:  # noqa: BLE001
         storage = None
     if storage is None or not hasattr(storage, "store_token_response"):

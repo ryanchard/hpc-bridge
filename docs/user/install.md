@@ -67,7 +67,7 @@ privileges, and this one is the repository you can read.
 ```
 
 That removes the plugin. To remove what it made: ask the agent for a *teardown* first if you stood up an
-endpoint on an SSH facility (it removes the endpoint from the login node; `~/hpc-bridge/` in your home
+endpoint on an SSH facility (it removes the endpoint and the Globus token copy from the login node; `~/hpc-bridge/` in your home
 there holds its Python environment and can be deleted after), then delete `~/.hpc-bridge/` locally, and
 `~/.globus_compute/storage.db` to log out of Globus. The consent you gave can be revoked at
 [app.globus.org/settings/consents](https://app.globus.org/settings/consents).

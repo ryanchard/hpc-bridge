@@ -8,6 +8,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, field_validator, model_validator
 
+from ..models import validate_host
+
 
 class Allocation(BaseModel):
     """How to LIST a user's allocations on this machine — not the allocations themselves.
@@ -80,6 +82,9 @@ class CatalogSummary(BaseModel):
     scheduler: str
 
 
+_SAFE_SLUG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")  # the derived endpoint name is hpc-bridge-<id>
+
+
 class CatalogEntry(BaseModel):
     """One machine. A superset of MachineProfile; `profile_kwargs()` is the binding seam."""
 
@@ -109,6 +114,19 @@ class CatalogEntry(BaseModel):
     # trust / provenance
     provenance: Literal["curated", "community", "scraped", "plugin-validated", "session"] = "curated"
     last_validated: datetime.date
+
+    @field_validator("ssh_host")
+    @classmethod
+    def _safe_host(cls, v: str | None) -> str | None:
+        return None if v is None else validate_host(v)  # a registry entry's host reaches ssh's argv (review 2026-09-04)
+
+    @field_validator("id", "facility_key")
+    @classmethod
+    def _safe_slug(cls, v: str) -> str:
+        if not _SAFE_SLUG.match(v or ""):
+            raise ValueError(f"invalid id/facility_key {v!r}: letters, digits, '.', '_', '-' only "
+                             "(it names the endpoint)")
+        return v
 
     @field_validator("compute_mep_uuid", "transfer_endpoint_uuid")
     @classmethod
