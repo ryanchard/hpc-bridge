@@ -23,6 +23,28 @@ Honest behaviour tally once the outage and the false positive are removed: **Opu
 - A grader calibration (negation) and a world-check label (UNVERIFIABLE) that make the next sweep's numbers honest.
 - The first quantified look at weaker-model behaviour: Haiku's failure mode is *not using the tool*, not misusing it.
 
+## Round 2 — 29/30 (2026-09-03 evening, after the fail2ban ban lifted)
+
+Same five cheap scenarios × Opus 5 / Sonnet 5 / Haiku 4.5 × 2, with the round-1 fixes in (serial identities, the
+transient-conflict cap, the negation-aware password grader, `no_ssh_access` serialised with an 11-min cooldown):
+
+| scenario | Opus 5 | Sonnet 5 | Haiku 4.5 |
+|---|---|---|---|
+| zero_config_list | 2/2 | 2/2 | 2/2 |
+| needs_login_paste | 2/2 | 2/2 | **1/2** |
+| mep_no_account | 2/2 | 2/2 | 2/2 |
+| no_ssh_access | 2/2 | 2/2 | 2/2 |
+| registry_over_cache | 2/2 | 2/2 | 2/2 |
+
+The single failure is the same Haiku mode as round 1: `agent_engaged` false — after the deferred-tool `ToolSearch`
+step Haiku never called `connect_facility` at all (no link surfaced, run not completed). Opus 10/10, Sonnet 10/10,
+Haiku 9/10. Every round-1 failure that was the cluster or the harness is gone; the one product hardening the sweep
+produced (the transient-conflict cap) was exercised by no cell this round — the serial identities removed its trigger.
+
+**Standing finding:** Haiku's only failure mode across both rounds is *not calling the loaded MCP tool*. The skill
+now says the tools are callable directly after `ToolSearch`; whether that closes it is a question for the next sweep.
+
 ## Next
+The block tier (`stranger_mep_walk`, serial, three models; `happy_path` + `gated_provision` on Sonnet/Haiku).
 Re-run the outage-affected cells when globus1's sshd is back; then the block tier (`stranger_mep_walk`, serial, all
 three models) and the SSH classics on Sonnet/Haiku. Update this note with round 2.
