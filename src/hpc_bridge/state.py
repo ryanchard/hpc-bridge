@@ -25,7 +25,7 @@ def _state_dir() -> Path:
 @dataclass(frozen=True)
 class EndpointRecord:
     endpoint_id: str
-    login_host: str  # resolved FQDN (hostname -f) the manager daemon runs on
+    login_host: str | None  # resolved FQDN (hostname -f) the manager daemon runs on; None when not routable/known
     alias: str  # the round-robin SSH alias originally connected to
     user: str | None  # None => ~/.ssh/config decides (SshTarget.user)
     key_path: str | None  # None => the config's IdentityFile

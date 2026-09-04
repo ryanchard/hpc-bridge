@@ -277,6 +277,13 @@ class _FakeRemoteCLI:
     async def wipe_storage_db(self):
         self.calls.append(("wipe", "hpc-bridge"))
 
+    async def delete(self, name):
+        self.calls.append(("delete", name))
+        return True
+
+    async def remove_uep_dirs(self, endpoint_id):
+        self.calls.append(("remove_uep_dirs", endpoint_id))
+
     async def cancel_blocks(self, endpoint_id, scheduler="slurm"):
         self.calls.append(("cancel_blocks", endpoint_id, scheduler))
         return []

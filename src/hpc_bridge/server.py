@@ -588,13 +588,21 @@ async def _teardown_endpoint(app: AppCtx) -> EndpointStatus:
             ),
         )
     await scheduler_ops._release_blocks_over_login(app, eid, _login_runner(app))  # halt spend first (a confirmed stop is stop_endpoint's job)  # noqa: E501
-    notice = "endpoint fully torn down (block released; manager gce-stopped + deleted; a Globus token copy hpc-bridge had placed on the login node removed)"  # noqa: E501
+    notice = "endpoint fully torn down (block released; manager gce-stopped + deleted)"
     teardown = getattr(app.facility, "teardown", None)
     if teardown is not None:
         try:
-            await teardown(eid, wipe_credentials=True)  # the seeded token store leaves with the endpoint (B-03)
+            # the seeded token store leaves with the endpoint (B-03)
+            report = await teardown(eid, wipe_credentials=True)
         except Exception as exc:  # noqa: BLE001 - report, don't crash the tool
             notice = f"block released; manager teardown reported {type(exc).__name__}: {exc}"[:280]
+        else:
+            if isinstance(report, dict):  # say what actually happened, not what was intended (live 2026-09-04)
+                deleted = ("manager gce-stopped + deleted" if report.get("deleted") else
+                           "manager gce-stopped, but DELETE FAILED: the endpoint directory remains on the login node")
+                creds = ("the Globus token copy hpc-bridge placed on the login node removed"
+                         if report.get("credentials_wiped") else "no token store of ours on the login node to remove")
+                notice = f"endpoint fully torn down (block released; {deleted}; {creds})"
     async with app.lock:  # clear everything so a stray run_shell can't silently revive a stale endpoint
         spent = _drop_all_shapes(app, bank=True)
     return EndpointStatus(
