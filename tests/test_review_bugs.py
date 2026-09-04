@@ -336,6 +336,7 @@ async def test_byo_details_cached_only_once_the_login_shape_is_proven_warm(monke
 
 async def test_unreachable_pinned_login_node_drops_the_pin(monkeypatch, tmp_path):
     from types import SimpleNamespace
+
     from hpc_bridge import server
     from hpc_bridge.state import EndpointRecord, LoginNodeStore
     from tests.fakes import FakeCatalog
