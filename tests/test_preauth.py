@@ -8,7 +8,7 @@ import stat
 import pytest
 
 from hpc_bridge import preauth
-from hpc_bridge.facility.remote import NeedsPreauth, SshTarget, offers_one_time_code
+from hpc_bridge.facility.remote import NeedsPreauth, RemoteEndpointCLI, SshTarget, offers_one_time_code
 from hpc_bridge.notices import _needs_preauth_result
 
 FAKE_SSH = r'''#!/bin/sh
@@ -180,4 +180,27 @@ async def test_registry_stranger_on_a_2fa_site_is_no_ssh_access_not_a_handoff(mo
     res, app, _ = await _registry_connect(
         monkeypatch, "Permission denied (publickey,gssapi-keyex,gssapi-with-mic,keyboard-interactive,hostbased).")
     assert res.phase == "failed" and res.notice.startswith("NO SSH ACCESS") and app.pending_preauth is None
+
+
+def test_preauth_argv_carries_the_host_key_alias_for_a_pinned_node():
+    # after `rebind` the pinned FQDN is verified against the alias the user trusted — the code-opener too
+    cli = RemoteEndpointCLI(SshTarget(host="login.expanse.sdsc.edu", user="u", control_dir="/tmp/cm"), "true")
+    cli.rebind("login02.expanse.sdsc.edu")
+    argv = cli.target.preauth_argv()
+    assert "HostKeyAlias=login.expanse.sdsc.edu" in argv and argv[-1] == "u@login02.expanse.sdsc.edu"
+    assert "HostKeyAlias" not in " ".join(SshTarget(host="h", user="u", control_dir="/tmp/cm").preauth_argv())
+
+
+def test_host_key_prompt_is_refused_and_explained(tmp_path, fake_ssh, monkeypatch):
+    monkeypatch.setenv("FAKE_PROMPT", "The authenticity of host 'login02 (1.2.3.4)' can't be established. Are you sure you want to continue connecting (yes/no)?")
+    ok, why = preauth.open_master_with_code(_target(tmp_path), "123456", state_dir=tmp_path, ssh_bin=fake_ssh)
+    assert not ok and why.startswith("UNKNOWN HOST KEY for login.expanse.sdsc.edu") and "fresh code" in why
+
+
+def test_needs_preauth_notice_explains_the_pinned_node_second_connection():
+    cli = RemoteEndpointCLI(SshTarget(host="login.expanse.sdsc.edu", user="u", control_dir="/tmp/cm"), "true")
+    cli.rebind("login02.expanse.sdsc.edu")
+    res = _needs_preauth_result("expanse", cli.target, otp_ok=True)
+    assert res.notice.startswith("The endpoint runs on login node login02.expanse.sdsc.edu")
+    assert "one more code, once per session" in res.notice and "complete_preauth" in res.notice
 

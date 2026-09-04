@@ -122,6 +122,8 @@ class SshTarget:
         ControlPath `argv()` uses, so `ControlMaster=auto` joins it. Requires `control_dir`."""
         opts = ["ssh", "-fN", "-o", "ControlMaster=yes",
                 "-o", f"ControlPath={self._control_path()}", "-o", "ControlPersist=1h"]
+        if self.host_key_alias:  # a pinned login node: verify against the alias the user trusted (live 2026-09-04:
+            opts += ["-o", f"HostKeyAlias={self.host_key_alias}"]  # without it the pin's name is an UNKNOWN host)
         if self.key_path:
             opts += ["-i", self.key_path]
         opts += ["--", self._destination()]
