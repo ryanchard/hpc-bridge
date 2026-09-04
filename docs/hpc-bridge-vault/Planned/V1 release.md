@@ -45,5 +45,5 @@
 Live state, gotchas, and how-to-run: `HANDOFF.md` (repo root). M1 design: [[Endpoint reuse and MEP integration]]. The regression harness: `agentic/README.md`.
 
 ## Beta cut (2026-09-04)
-CHANGELOG.md written; plugin/project version 0.1.1 (0.1.0 was what the marketplace served during development — Claude Code only updates an installed plugin when the manifest version changes); README status 'Public beta'; tag `v0.1.1-beta.1`. Remaining for V1 proper: the org transfer and the production registry index (one coordinated release), the beta feedback round, then a third review round on what test users hit.
+CHANGELOG.md written; plugin/project version 0.1.1 (0.1.0 was what the marketplace served during development — Claude Code only updates an installed plugin when the manifest version changes); README status 'Public beta'; tag `v0.1.1-beta.1`. **0.1.2 / `v0.1.2-beta.1`** followed the same day: the in-session one-time code ([[MFA and interactive SSH auth]], update section) and the three facilities from the ACCESS campaign ([[MEP facilities survey]]). Remaining for V1 proper: the org transfer and the production registry index (one coordinated release), the beta feedback round, then a third review round on what test users hit.
 
