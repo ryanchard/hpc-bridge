@@ -13,6 +13,10 @@ mapping; ask the facility's support and quote the identity the agent shows. If y
 but logged in with a different, unlinked identity, log out of Globus in your browser and log in with
 the one the facility knows; see [The Globus login](login.md).
 
+**The agent asks for a one-time code.** A facility that requires a TOTP or Duo passcode at SSH login is
+asking hpc-bridge for it, and the agent relays the request; give it the current code from your authenticator.
+It is single-use and expires within a minute. The agent must never ask for a *password*; if it does, see below.
+
 **"UNKNOWN HOST KEY for <host>"**. hpc-bridge connects only to hosts your own `ssh` already trusts.
 Open your own terminal, run `ssh <user>@<host>` once, check the fingerprint the facility publishes and
 accept it, then ask the agent to connect again. If the message says the key *changed*, stop and check

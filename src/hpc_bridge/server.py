@@ -80,6 +80,7 @@ from .models import (
     FacilityDetails,
     LoginShellResult,
     LoginStatus,
+    PreauthStatus,
     ShellOutcome,
 )
 from .notices import (  # noqa: F401 - re-exported
@@ -394,6 +395,45 @@ async def complete_login(code: str, ctx: Context) -> LoginStatus:
     the page Globus showed after they approved). Single-use and short-lived — not a password, not a
     token. Only needed when authenticate()/connect_facility reported login_mode="paste"."""
     return await login_gate._complete_login(ctx.request_context.lifespan_context, code)
+
+
+@mcp.tool()
+async def complete_preauth(code: str, ctx: Context) -> PreauthStatus:
+    """Open the shared SSH connection to a facility that asked for a ONE-TIME CODE (TOTP / Duo passcode) — the
+    step after connect_facility returned needs_preauth with preauth_code_ok=true. Ask the USER for the current
+    code from their authenticator and pass it here; it is single-use and expires in seconds. NEVER pass a
+    password: this tool refuses password prompts and then the user opens the session in their own terminal
+    with the preauth_command. On success, call connect_facility again."""
+    return await _complete_preauth(ctx.request_context.lifespan_context, code)
+
+
+async def _complete_preauth(app: AppCtx, code: str) -> PreauthStatus:
+    from . import preauth as _pre
+    from .state import _state_dir
+
+    pending = app.pending_preauth
+    if pending is None:
+        return PreauthStatus(phase="failed",
+                             notice="no facility is waiting for a code — call connect_facility first (it reports "
+                                    "needs_preauth with the host).")
+    facility, target = pending
+    if not _pre.looks_like_code(code):
+        return PreauthStatus(phase="failed", preauth_command=target.preauth_command(),
+                             notice="that is not a one-time code (4–16 letters/digits). hpc-bridge never sends "
+                                    "passwords; ask the user for the CURRENT authenticator code, or have them open "
+                                    "the session in their own terminal with preauth_command.")
+    state = _state_dir()
+    state.mkdir(parents=True, exist_ok=True)
+    ok, why = await asyncio.to_thread(_pre.open_master_with_code, target, code, state_dir=state)
+    if ok:
+        app.pending_preauth = None
+        return PreauthStatus(phase="opened",
+                             notice=f"{why}. Call connect_facility({facility!r}) again — the bootstrap rides this "
+                                    "connection with no further auth.")
+    if "PASSWORD" in why:
+        return PreauthStatus(phase="needs_terminal", preauth_command=target.preauth_command(),
+                             notice=why + f"\n    {target.preauth_command()}")
+    return PreauthStatus(phase="failed", preauth_command=target.preauth_command(), notice=why)
 
 
 @mcp.tool()

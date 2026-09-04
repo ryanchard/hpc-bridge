@@ -210,7 +210,7 @@ def _needs_login_result(facility: str, start: LoginStart, flow_error: str | None
         notice=_login_notice(start, flow_error, facility=facility, waited_s=waited_s),
     )
 
-def _needs_preauth_result(facility: str, target) -> ConnectFacilityResult:
+def _needs_preauth_result(facility: str, target, *, otp_ok: bool = False) -> ConnectFacilityResult:
     """Surface a one-time interactive-auth handoff (password / MFA / Duo). The user opens a
     ControlMaster in THEIR OWN terminal (entering the secret there); hpc-bridge then multiplexes
     over it. The agent relays the command and NEVER handles the secret — see the credential-handling
@@ -224,18 +224,25 @@ def _needs_preauth_result(facility: str, target) -> ConnectFacilityResult:
             "then call connect_facility again.",
         )
     cmd = target.preauth_command()
-    return ConnectFacilityResult(
-        phase="needs_preauth",
-        facility=facility,
-        preauth_command=cmd,
-        notice=(
+    if otp_ok:
+        notice = (
+            f"{target.host} needs a one-time login step: the facility accepts a ONE-TIME CODE (TOTP / Duo "
+            "passcode). Ask the USER for the CURRENT code from their authenticator and call "
+            "complete_preauth(code) — the code is single-use and expires in seconds. NEVER ask for a password; if the "
+            "facility asks for one, complete_preauth refuses and the user runs this in THEIR OWN terminal instead:\n"
+            f"    {cmd}\nOnce the connection is open, call connect_facility again — the session rides it with no "
+            "further auth."
+        )
+    else:
+        notice = (
             f"{target.host} needs a one-time interactive login (a password and/or MFA/Duo). Ask the "
             "USER to run this in THEIR OWN terminal — they enter the secret directly; never ask for, "
             f"type, or run it with their password yourself:\n    {cmd}\n"
             "It authenticates once and opens a reusable connection. When they confirm it's connected, "
             "call connect_facility again — the session then rides that connection with no further auth."
-        ),
-    )
+        )
+    return ConnectFacilityResult(phase="needs_preauth", facility=facility, preauth_command=cmd,
+                                 preauth_code_ok=otp_ok, notice=notice)
 
 def _dispatch_error_suffix(canary: CanaryResult | None) -> str:
     """A suffix naming a NON-timeout canary failure, else ''. A timeout is the normal cold-start wait

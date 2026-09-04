@@ -117,18 +117,22 @@ class SshTarget:
             "--", self._destination(),
         ]
 
-    def preauth_command(self) -> str:
-        """The command the USER runs in THEIR OWN terminal to open a ControlMaster interactively —
-        entering any password + approving MFA/Duo **once**. hpc-bridge's BatchMode calls then
-        multiplex over it, so the secret never reaches hpc-bridge or the agent. Deliberately **no
-        BatchMode** (so ssh prompts) and the **same `%C` ControlPath** `argv()` uses (so
-        `ControlMaster=auto` joins this master). Requires `control_dir` (multiplexing on)."""
+    def preauth_argv(self) -> list[str]:
+        """argv that opens a ControlMaster INTERACTIVELY (no BatchMode, so ssh prompts) on the same `%C`
+        ControlPath `argv()` uses, so `ControlMaster=auto` joins it. Requires `control_dir`."""
         opts = ["ssh", "-fN", "-o", "ControlMaster=yes",
                 "-o", f"ControlPath={self._control_path()}", "-o", "ControlPersist=1h"]
         if self.key_path:
             opts += ["-i", self.key_path]
         opts += ["--", self._destination()]
-        return " ".join(shlex.quote(o) for o in opts)  # pasted into the user's shell: every token quoted (A4)
+        return opts
+
+    def preauth_command(self) -> str:
+        """The command the USER runs in THEIR OWN terminal to open a ControlMaster interactively —
+        entering any password + approving MFA/Duo **once**. hpc-bridge's BatchMode calls then
+        multiplex over it, so the secret never reaches hpc-bridge or the agent. Same argv as
+        `preauth_argv`, quoted for a shell (A4)."""
+        return " ".join(shlex.quote(o) for o in self.preauth_argv())  # pasted into the user's shell: every token quoted
 
 
 # Teardown SSH ops (gce stop, squeue, scancel) hit a possibly-loaded login node with *fresh*
@@ -197,12 +201,21 @@ def is_interactive_auth_failure(rc: int, stderr: str) -> bool:
     return rc != 0 and denied and offers_interactive
 
 
-class NeedsPreauth(Exception):
-    """An SSH op needs a one-time interactive pre-auth (password/MFA) the agent must NOT handle.
-    Carries the target so a caller can surface the user's pre-open command (`preauth_command`)."""
+def offers_one_time_code(stderr: str) -> bool:
+    """The denial lists `keyboard-interactive` — the method TOTP / Duo-passcode prompts arrive on. With a key
+    in place the only prompt left is the code, which the user may hand to `complete_preauth(code)`; a
+    plain-password site is not this (passwords never enter the session)."""
+    return "keyboard-interactive" in (stderr or "").lower()
 
-    def __init__(self, target: SshTarget) -> None:
+
+class NeedsPreauth(Exception):
+    """An SSH op needs a one-time interactive pre-auth (password/MFA). Carries the target so a caller can
+    surface the user's pre-open command (`preauth_command`), and `otp_ok`: whether a one-time CODE would
+    do (keyboard-interactive offered) — the in-session `complete_preauth(code)` path (2026-09-04)."""
+
+    def __init__(self, target: SshTarget, otp_ok: bool = False) -> None:
         self.target = target
+        self.otp_ok = otp_ok
         super().__init__(f"{target.host} needs interactive pre-authentication (password/MFA)")
 
 

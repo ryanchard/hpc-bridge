@@ -39,6 +39,15 @@ password and expires in minutes.
 It never asks for a Globus password, an SSH password, or a multi-factor code, and it never types a
 login link into a shell. If an agent ever asks you for a password, do not give it one and report it.
 
+## Facilities that ask for a one-time code at SSH login
+
+Some facilities (SDSC Expanse, TACC) require a code from your authenticator at every SSH login, even with a
+key installed. When hpc-bridge meets that prompt it asks you for the *current* code and opens the shared
+connection itself; the code is single-use and expires in seconds, which is why it may pass through the
+chat, exactly like the Globus one-time code above. A **password** is different and never goes through the
+chat: if a facility asks for one, hpc-bridge refuses and gives you an `ssh` command to run in your own
+terminal instead, after which the session continues over that connection.
+
 ## Where the login lives, and logging out
 
 Tokens are stored in Globus Compute's standard token store, `~/.globus_compute/storage.db`, and

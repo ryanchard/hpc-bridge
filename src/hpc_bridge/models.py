@@ -181,6 +181,9 @@ class ConnectFacilityResult(BaseModel):
     # open a reusable master (entering the password/MFA there). The agent relays it — never runs or
     # fills it, and never handles the secret.
     preauth_command: str | None = None
+    # phase="needs_preauth": True when the facility accepts a ONE-TIME CODE (TOTP / Duo passcode) at the prompt —
+    # the agent may ask the user for the CURRENT code and call complete_preauth(code). Never a password.
+    preauth_code_ok: bool = False
     # phase="needs_login": Globus credentials are missing/under-scoped. `login_url` is the Globus
     # authorize link for the USER to open; `login_mode` says how it completes — "browser": a loopback
     # listener in this process receives the code (nothing to paste; call connect_facility again),
@@ -201,3 +204,12 @@ class LoginStatus(BaseModel):
     login_url: str | None = None
     login_mode: Literal["browser", "paste"] | None = None
     notice: str | None = None
+
+
+class PreauthStatus(BaseModel):
+    """Result of complete_preauth(code): whether the shared SSH connection is open."""
+
+    phase: Literal["opened", "failed", "needs_terminal"]
+    preauth_command: str | None = None  # needs_terminal: the user opens it themselves (a password was asked)
+    notice: str | None = None
+

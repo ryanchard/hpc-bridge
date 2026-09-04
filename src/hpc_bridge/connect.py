@@ -162,15 +162,13 @@ async def _connect_facility(
             return await _propose_or_ask(
                 facility, ssh_host,
                 f"registry unavailable ({type(registry_error).__name__}); give me this facility's SSH "
-                "host (ssh_host=… or HPC_BRIDGE_SSH_HOST) to probe it, or supply details= directly.",
-            )
+                "host (ssh_host=… or HPC_BRIDGE_SSH_HOST) to probe it, or supply details= directly.", app=app)
         if entry is None:
             return await _propose_or_ask(
                 facility, ssh_host,
                 f"{facility!r} isn't in the catalog. Give me its SSH host (ssh_host=… or "
                 "HPC_BRIDGE_SSH_HOST) and I'll probe the login node to propose a config, or supply "
-                "details= directly (or list_facilities() if you meant a catalogued one).",
-            )
+                "details= directly (or list_facilities() if you meant a catalogued one).", app=app)
     reason = binding._unsupported_entry_reason(entry)
     if reason is None and entry.allocation is not None and entry.allocation.parser not in PARSERS:
         reason = (
@@ -307,7 +305,7 @@ async def _connect_mep(app: AppCtx, facility: str, fac) -> ConnectFacilityResult
 
 async def _propose_or_ask(
     facility: str, ssh_host: str | None, ask_notice: str
-) -> ConnectFacilityResult:
+, *, app: AppCtx | None = None) -> ConnectFacilityResult:
     """Index miss + no details: if we have an SSH host, probe the login node and PROPOSE a draft
     config; otherwise ask the agent for the host (SSH access is the one irreducible input). The
     discovery target carries the same ControlMaster socket as the later bootstrap, so probing warms
@@ -330,7 +328,9 @@ async def _propose_or_ask(
         )
         draft, notes = await discover_facility_details(target)
     except NeedsPreauth as pre:  # host wants an interactive login (password/MFA) — hand off to the user
-        return _needs_preauth_result(facility, pre.target)
+        if app is not None:
+            app.pending_preauth = (facility, pre.target)  # what complete_preauth(code) will open
+        return _needs_preauth_result(facility, pre.target, otp_ok=pre.otp_ok)
     except Exception as exc:  # noqa: BLE001 - probe/connect/creds failure -> structured result
         # The same first-contact explanation the bootstrap gives (stranger's walk): a refused SSH is
         # "NO SSH ACCESS to <host> as <user>" with the remedies, not a raw rc=255 dump.
