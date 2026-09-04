@@ -7,3 +7,16 @@ Split step 10 (2026-09-03) — the last. The login-shape channel is injected (`r
 
 ## See also
 [[server]] · [[binding]] · [[warmth]] · [[login_gate]] · [[notices]]
+
+## Consent is per conversation; a fresh bootstrap is proven (live findings, 2026-09-04)
+
+Three fresh-user sessions on globus1 showed: (1) the connect right after our own `bootstrap` re-finds the endpoint online
+and reads as `reused` — which skipped the proven-cache commit forever and told the agent it had "reused an already-online
+endpoint" seconds after a fresh start. `AppCtx.bootstrapped_facilities` records the facilities THIS session bootstrapped;
+`_commit_proven_facility` skips only a reuse of an endpoint from before the session, `_reuse_note` says "reconnected to
+the endpoint this session started", and the result's `reused` flag is False for our own start. (2) Claude Code's
+auto-memory carried a previous session's "confirmed config" into the next one and the agent registered the facility
+without asking — the proposal notice now says the confirmation must come from the user in THIS conversation and that the
+probe must not be re-run over the agent's own ssh. (3) On the silent (wait-and-continue) login path nothing named the
+identity that landed; `_connect_facility` now prefixes "Globus login landed as <identity>" to the result.
+

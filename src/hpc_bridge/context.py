@@ -93,6 +93,10 @@ class AppCtx:
     # BYO configs supplied this session but not yet PROVEN (login-shape canary answered) — written to
     # facilities.json only then (decision 2026-09-03: "proven", not "accepted"): facility id -> (ssh_host, details)
     pending_facility_cache: dict[str, tuple[str, dict]] = field(default_factory=dict)
+    # Facilities THIS session bootstrapped over SSH (a fresh start, not a reattach). The very next connect
+    # re-finds that endpoint online and reads as `reused` — which used to (a) skip the proven-cache commit
+    # forever and (b) tell the agent it 'reused an already-online endpoint' (live, 2026-09-04).
+    bootstrapped_facilities: set[str] = field(default_factory=set)
     runner_factory: Callable[..., GlobusRunner] = GlobusRunner
     # The in-terminal Globus login (login.py). None ⇒ no login gating (hermetic tests / unbound dev);
     # lifespan installs the real one, which rides the Compute SDK's own client id + token storage.
