@@ -63,6 +63,15 @@ echo
 echo ">>> in the session, say:  connect me to globus1"
 echo
 
+# Claude Code's AUTO-MEMORY persists across sessions in a config dir: a previous run's note ("connect via the
+# alias; config confirmed") let the next run register the facility WITHOUT asking (seen live 2026-09-04). A fresh
+# user has no memory — wipe it for this scratch project in both config dirs unless KEEP_MEMORY=1.
+if [[ -z "${KEEP_MEMORY:-}" ]]; then
+  PROJ_KEY="$(printf '%s' "$FRESH" | sed 's#/#-#g')"
+  rm -rf "$FRESH/claude-config/projects/$PROJ_KEY/memory" "$HOME/.claude/projects/$PROJ_KEY/memory"
+  echo "auto-memory: wiped for this scratch project (KEEP_MEMORY=1 keeps it)"
+fi
+
 # Stray hpc-bridge overrides from this shell must not leak in (an endpoint id would even be refused for a MEP).
 # Strip EVERY hpc-bridge variable from this shell (a leaked HPC_BRIDGE_SSH_HOST would probe the maintainer's
 # host instead of asking a stranger for one — review 2), then set only the scratch dirs.

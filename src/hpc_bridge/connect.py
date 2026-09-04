@@ -38,12 +38,21 @@ def _commit_proven_facility(app: AppCtx, facility: str) -> None:
     pending = app.pending_facility_cache.pop(facility, None)
     if pending is None:
         return
-    if app.state.reused:
+    if app.state.reused and facility not in app.bootstrapped_facilities:
         # The canary ran on an endpoint that was ALREADY online under an earlier config — it proves nothing
         # about these details (review 2: a bogus interface got committed this way). Leave the old proven
-        # entry as it is.
+        # entry as it is. An endpoint THIS session bootstrapped and then re-found online is ours: the
+        # canary did run on these details (live 2026-09-04: a fresh BYO bring-up was never cached).
         return
     binding._facility_store().put(*pending)
+
+
+def _reuse_note(app: AppCtx, facility: str, reused: bool, fac) -> str:
+    if reused and facility in app.bootstrapped_facilities:
+        return "reconnected to the endpoint this session started (zero-SSH). "
+    if reused:
+        return "reused the already-online endpoint (zero-SSH reconnect). "
+    return _first_contact_note(fac)
 
 def _tcp_answers(host: str, port: int = 22, timeout_s: float = 3.0) -> bool:
     import socket
@@ -99,7 +108,11 @@ async def _connect_facility(
         if status != "done":
             return _needs_login_result(facility, start, app.login_flow.error,
                                        waited_s=config.login_wait_s() if status == "waiting" else None)
-        # the browser flow completed while we waited — carry straight on with the connection
+        # the browser flow completed while we waited — carry straight on with the connection, but NAME the
+        # identity that landed: on this (most common) path nothing else would (security review B-02)
+        login_note = "Globus login landed" + await login_gate._as_identity() + ". "
+    else:
+        login_note = ""
     entry: CatalogEntry | None = None
     # Resolve the entry: a session-local one the agent already supplied wins; else the catalog. An
     # index error is treated as "unresolved" (the agent can still supply details), not a hard fail.
@@ -186,9 +199,12 @@ async def _connect_facility(
             res = await _connect_mep(app, facility, fac)
             if prior_spend > 0:  # a re-bind released a warm block: the number must not vanish (review 2)
                 res.notice = f"the previous facility's shapes were released (session spend so far ≈ {prior_spend:.2f}). " + (res.notice or "")  # noqa: E501
+            res.notice = login_note + (res.notice or "")
             return res
         try:
             block = await warmth._provision(app, "login", force_canary=True)
+            if not app.state.reused:  # a FRESH bootstrap: later calls re-find it online and read as reused
+                app.bootstrapped_facilities.add(facility)
         except Exception as exc:  # noqa: BLE001 - provisioning unavailable (e.g. non-Linux host)
             notice = _explain_provision_error(exc, fac)
             if notice.startswith(("CANNOT REACH", "UNKNOWN HOST KEY")) and await asyncio.to_thread(_drop_dead_pin, fac):
@@ -196,9 +212,10 @@ async def _connect_facility(
             return ConnectFacilityResult(phase="failed", facility=facility, notice=notice)
         if block == "warm":
             _commit_proven_facility(app, facility)
-    reused = app.state.reused  # reattached to an already-online endpoint (zero SSH), not a fresh bootstrap
-    reuse_note = ("reused the already-online endpoint (zero-SSH reconnect). " if reused
-                  else _first_contact_note(fac))
+    reuse_note = login_note + _reuse_note(app, facility, app.state.reused, fac)
+    # `reused` in the RESULT means "reattached to an endpoint from before this session" — our own
+    # just-started endpoint re-found online is not a reuse the agent should report as one
+    reused = app.state.reused and facility not in app.bootstrapped_facilities
     if prior_spend > 0:  # a re-bind released a warm block: say what it cost rather than lose the number
         reuse_note = f"the previous facility's shapes were released (session spend so far ≈ {prior_spend:.2f}). " + reuse_note  # noqa: E501
     if block != "warm":  # login node still coming up — nothing to read yet
@@ -321,6 +338,8 @@ async def _propose_or_ask(
     notice = (
         "probed the login node and proposed this config — review/correct it WITH THE USER "
         "(confirm the flagged fields, above all `interface`), then call connect_facility(details=…). "
+        "The probe has already run: do NOT re-probe the host over your own ssh. The confirmation must come "
+        "from the user in THIS conversation — a remembered or previously cached confirmation is not consent. "
         "Notes: " + " | ".join(notes)
     )
     return ConnectFacilityResult(

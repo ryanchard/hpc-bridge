@@ -327,3 +327,100 @@ def test_old_endpoint_records_load_without_the_new_field(tmp_path):
     rec = LoginNodeStore(p).get(alias="a", name="n")
     assert rec is not None and rec.seeded_credentials is False  # unknown ⇒ never wipe
 
+
+# ---- consent is per conversation; a fresh bootstrap is proven and is not a "reuse" (live 2026-09-04) ----------
+
+def _app():
+    from hpc_bridge.context import AppCtx
+    from hpc_bridge.profile import Profile
+    from tests.fakes import FakeFacility
+
+    return AppCtx(facility=FakeFacility(), profile=Profile())
+
+
+def test_proven_commit_counts_an_endpoint_this_session_bootstrapped(monkeypatch, tmp_path):
+    from hpc_bridge import binding, connect
+    from hpc_bridge.models import FacilityDetails
+    from hpc_bridge.state import FacilityStore
+
+    store = FacilityStore(tmp_path / "facilities.json")
+    monkeypatch.setattr(binding, "_facility_store", lambda: store)
+    details = FacilityDetails(ssh_host="h.example.edu", interface="ib0", env_setup="true",
+                              scratch_root="/s/{user}", partition="main").model_dump(mode="json")
+    app = _app()
+    app.state.reused = True  # the just-started endpoint was re-found online on the next connect
+    app.bootstrapped_facilities.add("byo")  # …but THIS session started it
+    app.pending_facility_cache["byo"] = ("h.example.edu", details)
+    connect._commit_proven_facility(app, "byo")
+    assert store.get("h.example.edu") is not None  # proven: the canary ran on these details
+    app2 = _app()
+    app2.state.reused = True  # reattached to an endpoint from BEFORE this session: proves nothing
+    app2.pending_facility_cache["x"] = ("other.example.edu", details)
+    connect._commit_proven_facility(app2, "x")
+    assert store.get("other.example.edu") is None
+
+
+def test_reuse_note_distinguishes_our_own_fresh_start_from_a_real_reuse():
+    from hpc_bridge import connect
+
+    app = _app()
+    assert connect._reuse_note(app, "f", True, object()).startswith("reused the already-online endpoint")
+    app.bootstrapped_facilities.add("f")
+    assert connect._reuse_note(app, "f", True, object()).startswith("reconnected to the endpoint this session started")
+    assert connect._reuse_note(app, "f", False, object()) == ""  # no cli on a bare object: no first-contact note
+
+
+async def test_proposal_notice_forbids_reprobing_and_remembered_consent(monkeypatch):
+    from hpc_bridge import connect
+    from hpc_bridge.models import FacilityDetails
+
+    draft = FacilityDetails(ssh_host="h.example.edu", interface="ib0", env_setup="true",
+                            scratch_root="/s/{user}", partition="main")
+
+    async def fake_discover(target):
+        return draft, ["interface: guessed"]
+
+    monkeypatch.setattr(connect, "discover_facility_details", fake_discover)
+    res = await connect._propose_or_ask("f", "h.example.edu", "ask")
+    assert res.phase == "proposed_facility_details"
+    assert "do NOT re-probe" in res.notice and "THIS conversation" in res.notice
+
+
+async def test_silent_login_path_names_the_identity(monkeypatch):
+    from hpc_bridge import binding, connect, login_gate, warmth
+    from tests.fakes import FakeFacility
+
+    class _Flow:
+        error = None
+
+        def login_required(self):
+            return True
+
+    async def landed(flow, mode=None):
+        return object(), "done"
+
+    async def ident():
+        return " as alice@uni.edu"
+
+    monkeypatch.setattr(login_gate, "_start_login_and_wait", landed)
+    monkeypatch.setattr(login_gate, "_as_identity", ident)
+    f = FakeFacility()
+    monkeypatch.setattr(binding, "_facility_from_entry", lambda entry, *, account: f)
+
+    async def provision(app, shape, **kw):
+        return "provisioning"
+
+    monkeypatch.setattr(warmth, "_provision", provision)
+    from hpc_bridge.models import FacilityDetails
+
+    details = FacilityDetails(ssh_host="h.example.edu", interface="ib0", env_setup="true",
+                              scratch_root="/s/{user}", partition="main")
+    app = _app()
+    app.login_flow = _Flow()
+
+    async def _no_login_runner(*a, **k):
+        raise AssertionError("not reached")
+
+    res = await connect._connect_facility(app, "byo", details=details, run_login=_no_login_runner)
+    assert res.notice.startswith("Globus login landed as alice@uni.edu. "), res.notice
+
