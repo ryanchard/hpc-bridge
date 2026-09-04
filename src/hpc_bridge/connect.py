@@ -23,7 +23,7 @@ from .catalog.entry import CatalogEntry
 from .catalog.parsers import PARSERS
 from .context import AppCtx, _has_login_shape
 from .discovery import discover_facility_details
-from .facility.remote import NeedsPreauth, SshTarget
+from .facility.remote import NeedsPreauth, SshTarget, key_accepted_second_factor_pending
 from .lifecycle import ensure_warm
 from .models import ConnectFacilityResult, FacilityDetails, validate_host
 from .notices import _explain_provision_error, _first_contact_note, _needs_login_result, _needs_preauth_result
@@ -53,6 +53,19 @@ def _reuse_note(app: AppCtx, facility: str, reused: bool, fac) -> str:
     if reused:
         return "reused the already-online endpoint (zero-SSH reconnect). "
     return _first_contact_note(fac)
+
+def _master_alive(target) -> bool:
+    """Is a shared SSH connection (ControlMaster) already open for `target`? `ssh -O check` against its socket."""
+    import subprocess
+
+    if not getattr(target, "control_dir", None):
+        return False
+    try:
+        r = subprocess.run(target.control_argv("check"), capture_output=True, text=True, timeout=10, check=False)
+    except Exception:  # noqa: BLE001 - no ssh / odd target: treat as no master
+        return False
+    return r.returncode == 0
+
 
 def _tcp_answers(host: str, port: int = 22, timeout_s: float = 3.0) -> bool:
     import socket
@@ -199,11 +212,24 @@ async def _connect_facility(
                 res.notice = f"the previous facility's shapes were released (session spend so far ≈ {prior_spend:.2f}). " + (res.notice or "")  # noqa: E501
             res.notice = login_note + (res.notice or "")
             return res
+        # An MFA facility (curated `auth_method: mfa-otp`) with no shared connection yet: don't burn a failing
+        # SSH attempt (and a fail2ban strike) to learn what the entry already says — hand off first.
+        target = getattr(getattr(fac, "cli", None), "target", None)
+        if getattr(entry, "auth_method", None) == "mfa-otp" and target is not None \
+                and not await asyncio.to_thread(_master_alive, target):
+            app.pending_preauth = (facility, target)
+            return _needs_preauth_result(facility, target, otp_ok=True)
         try:
             block = await warmth._provision(app, "login", force_canary=True)
             if not app.state.reused:  # a FRESH bootstrap: later calls re-find it online and read as reused
                 app.bootstrapped_facilities.add(facility)
         except Exception as exc:  # noqa: BLE001 - provisioning unavailable (e.g. non-Linux host)
+            # A denial that OFFERS an interactive method is the pre-auth handoff, not "no access": the
+            # discovery probe knew this; the registry/cached bootstrap path did not (Expanse, live 2026-09-04 —
+            # a curated MFA entry came back NO SSH ACCESS and the agent went hunting in ~/.ssh/config).
+            if target is not None and key_accepted_second_factor_pending(str(exc)):
+                app.pending_preauth = (facility, target)
+                return _needs_preauth_result(facility, target, otp_ok=True)
             notice = _explain_provision_error(exc, fac)
             if notice.startswith(("CANNOT REACH", "UNKNOWN HOST KEY")) and await asyncio.to_thread(_drop_dead_pin, fac):
                 notice += " (The remembered login-node pin was dropped: the next connect resolves the facility's host afresh.)"  # noqa: E501
