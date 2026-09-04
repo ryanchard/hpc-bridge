@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from hpc_bridge import binding, config, warmth
+from hpc_bridge import binding, config, connect, warmth
 from hpc_bridge.models import FacilityDetails
 from hpc_bridge.profile import Profile
 from hpc_bridge.runner import CanaryResult
@@ -407,7 +407,7 @@ async def test_connect_unknown_with_ssh_host_proposes_discovered_details(monkeyp
         assert target.host == "login.newfac.edu"  # bare SshTarget built from ssh_host
         return draft, ["interface: proposed `ib0` — CONFIRM"]
 
-    monkeypatch.setattr(server, "discover_facility_details", fake_discover)
+    monkeypatch.setattr(connect, "discover_facility_details", fake_discover)
     monkeypatch.setenv("HPC_BRIDGE_SSH_USER", "u")
     monkeypatch.setenv("HPC_BRIDGE_SSH_KEY", "/k")
     monkeypatch.setattr(config, "_control_settings", lambda: (None, 60))  # no real socket dir in tests
@@ -434,7 +434,7 @@ async def test_connect_unknown_needs_preauth_when_host_wants_a_password(monkeypa
     async def fake_discover(target):
         raise NeedsPreauth(target)
 
-    monkeypatch.setattr(server, "discover_facility_details", fake_discover)
+    monkeypatch.setattr(connect, "discover_facility_details", fake_discover)
     res = await server._connect_facility(app, "midway", ssh_host="midway.rcc.uchicago.edu")
     assert res.phase == "needs_preauth"
     assert res.preauth_command and res.preauth_command.startswith("ssh -fN ")
@@ -457,7 +457,7 @@ async def test_connect_needs_preauth_flags_multiplexing_off(monkeypatch):
     async def fake_discover(target):
         raise NeedsPreauth(target)
 
-    monkeypatch.setattr(server, "discover_facility_details", fake_discover)
+    monkeypatch.setattr(connect, "discover_facility_details", fake_discover)
     res = await server._connect_facility(app, "midway", ssh_host="midway.rcc.uchicago.edu")
     assert res.phase == "needs_preauth" and res.preauth_command is None
     assert "multiplexing is off" in (res.notice or "").lower()
@@ -528,7 +528,7 @@ async def test_local_discovery_reuses_cached_config_without_probing(monkeypatch)
     async def no_probe(target):
         raise AssertionError("must not probe — the config is cached (local discovery)")
 
-    monkeypatch.setattr(server, "discover_facility_details", no_probe)
+    monkeypatch.setattr(connect, "discover_facility_details", no_probe)
     app2 = AppCtx(facility=FakeFacility(), profile=Profile())
     app2.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, MYBALANCE, ""))
     res = await server._connect_facility(app2, "midway3", ssh_host="midway3")
@@ -554,7 +554,7 @@ async def test_connect_unknown_uses_ssh_host_from_env(monkeypatch):
             [],
         )
 
-    monkeypatch.setattr(server, "discover_facility_details", fake_discover)
+    monkeypatch.setattr(connect, "discover_facility_details", fake_discover)
     monkeypatch.setenv("HPC_BRIDGE_SSH_USER", "u")
     monkeypatch.setenv("HPC_BRIDGE_SSH_KEY", "/k")
     monkeypatch.setenv("HPC_BRIDGE_SSH_HOST", "envhost")
@@ -596,7 +596,7 @@ async def test_connect_unknown_discovery_defers_creds_to_ssh_config(monkeypatch)
             [],
         )
 
-    monkeypatch.setattr(server, "discover_facility_details", fake_discover)
+    monkeypatch.setattr(connect, "discover_facility_details", fake_discover)
     monkeypatch.setattr(config, "_control_settings", lambda: (None, 60))
     for v in ("HPC_BRIDGE_SSH_USER", "HPC_BRIDGE_SSH_KEY"):
         monkeypatch.delenv(v, raising=False)
@@ -845,7 +845,7 @@ async def test_probe_path_ssh_refusal_is_explained(monkeypatch):
                            "accessible: No such file or directory.\nhpcbridge-stranger@h.example.edu: "
                            "Permission denied (publickey).")
 
-    monkeypatch.setattr(server, "discover_facility_details", refused)
+    monkeypatch.setattr(connect, "discover_facility_details", refused)
     app = AppCtx(facility=FakeFacility(), profile=Profile())
     res = await server._connect_facility(app, "byo", ssh_host="h.example.edu")
     assert res.phase == "failed" and res.notice.startswith("NO SSH ACCESS to h.example.edu")
