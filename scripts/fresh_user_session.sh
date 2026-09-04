@@ -67,7 +67,8 @@ echo
 # Strip EVERY hpc-bridge variable from this shell (a leaked HPC_BRIDGE_SSH_HOST would probe the maintainer's
 # host instead of asking a stranger for one — review 2), then set only the scratch dirs.
 STRIP=(); for v in $(env | grep -oE '^HPC_BRIDGE_[A-Z_]+'); do STRIP+=(-u "$v"); done
-CMD=(env "${STRIP[@]}"
+# ${STRIP[@]+"${STRIP[@]}"}: bash 3.2 (macOS) treats an EMPTY array as unbound under `set -u` (seen live 2026-09-04)
+CMD=(env ${STRIP[@]+"${STRIP[@]}"}
      GLOBUS_COMPUTE_USER_DIR="$FRESH/globus_compute"
      HPC_BRIDGE_STATE_DIR="$FRESH/state"
      ${INDEX:+HPC_BRIDGE_SEARCH_INDEX="$INDEX"}
