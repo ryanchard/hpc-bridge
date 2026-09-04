@@ -14,6 +14,11 @@ from .entry import CatalogEntry, CatalogSummary
 PUBLIC_REGISTRY_INDEX = "6ff95fb8-1113-42be-a811-3d1cb5a67bd5"
 
 
+def _not_found(exc: BaseException) -> bool:
+    """Globus Search answers a missing subject with HTTP 404 (it does NOT return an empty list)."""
+    return getattr(exc, "http_status", None) == 404 or "404" in str(exc)
+
+
 class SearchCatalog:
     """Globus Search backed — the runtime catalog. There is **no bundled fallback**: a subject the
     index can't resolve returns ``None`` (a hard failure; the soft agent-discovery fallback is a
@@ -33,30 +38,50 @@ class SearchCatalog:
         return self._cache_dir / f"{safe}.json"
 
     async def get(self, machine_id: str) -> CatalogEntry | None:
+        """Resolve a subject or a bare id. Returns None only when the registry answered "no such
+        entry"; a TRANSPORT failure (network, 5xx, auth) is raised — after the offline cache has had
+        its chance — so the caller can say "registry unavailable" instead of "not in the catalog"
+        (found in review: every exception used to read as a miss)."""
+        transport: Exception | None = None
         try:
             resp = await asyncio.to_thread(self._client.get_subject, self._index_id, machine_id)
             entries = resp.get("entries") or []
-        except Exception:
-            # the Search API 404s on a missing subject (it does NOT return empty); a transient
-            # error lands here too. Either way, fall through to the id search, then the cache.
+        except Exception as exc:  # noqa: BLE001 - a 404 is "no such subject"; anything else is transport
+            if not _not_found(exc):
+                transport = exc
             entries = []
         if entries:
             entry = CatalogEntry.model_validate(entries[0]["content"])  # re-validate on read
-            self._cache_file(machine_id).write_text(entry.model_dump_json())  # write-through
+            self._remember(entry, machine_id)
             return entry
         # subject didn't resolve: try a bare id (e.g. "anvil" -> "purdue:anvil"), else offline cache
-        by_id = await self._by_id(machine_id)
-        return by_id if by_id is not None else self._from_cache(machine_id)
+        try:
+            by_id = await self._by_id(machine_id)
+        except Exception as exc:  # noqa: BLE001 - transport again; the cache may still serve
+            transport = transport or exc
+            by_id = None
+        if by_id is not None:
+            return by_id
+        cached = self._from_cache(machine_id)
+        if cached is not None:
+            return cached
+        if transport is not None:
+            raise transport
+        return None
+
+    def _remember(self, entry: CatalogEntry, *keys: str) -> None:
+        # write-through under EVERY name it was asked by (bare id, subject) so the offline cache hits
+        # the same names the live registry resolves (found in review: id hits were cached under the
+        # subject only, so a later offline get("anvil") missed)
+        for k in {*keys, entry.subject, entry.id}:
+            self._cache_file(k).write_text(entry.model_dump_json())
 
     async def _by_id(self, machine_id: str) -> CatalogEntry | None:
         # connect_facility("anvil") should work, not only the full subject "purdue:anvil" — match
         # the BundledCatalog/FakeCatalog convention (id resolves too). Search, then match the id.
-        try:
-            resp = await asyncio.to_thread(
-                self._client.post_search, self._index_id, {"q": machine_id, "limit": 20}
-            )
-        except Exception:
-            return None
+        resp = await asyncio.to_thread(  # transport errors propagate: get() decides (cache, then raise)
+            self._client.post_search, self._index_id, {"q": machine_id, "limit": 20}
+        )
         for gmeta in resp.get("gmeta", []):
             for e in gmeta.get("entries") or []:
                 try:
@@ -64,7 +89,7 @@ class SearchCatalog:
                 except Exception:  # noqa: BLE001 - a hit this client's schema can't parse: skip, don't abort
                     continue
                 if entry.id == machine_id:
-                    self._cache_file(entry.subject).write_text(entry.model_dump_json())
+                    self._remember(entry, machine_id)
                     return entry
         return None
 

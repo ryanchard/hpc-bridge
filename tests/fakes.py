@@ -13,6 +13,7 @@ class FakeFacility:
         self.provisioned = False
         self.provisioned_profile: Profile | None = None
         self.reused = False  # set True to simulate reattaching to an already-online endpoint (#20)
+        self.manager_up: bool | None = None  # override manager liveness apart from worker warmth (None = workers >= 1)
 
     async def provision(self, profile: Profile) -> EndpointHandle:
         self.provisioned = True
@@ -20,7 +21,7 @@ class FakeFacility:
         return EndpointHandle(endpoint_id="fake-eid", name="fake", reused=self.reused)
 
     async def manager_online(self, endpoint_id: str) -> bool:
-        return self.workers >= 1
+        return self.manager_up if self.manager_up is not None else self.workers >= 1
 
     def config_template(self, profile: Profile) -> dict:
         return {}

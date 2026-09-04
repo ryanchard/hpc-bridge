@@ -522,6 +522,7 @@ async def test_stop_is_honest_when_release_channel_is_cold(monkeypatch):
 
     monkeypatch.setenv("HPC_BRIDGE_RELEASE_BACKOFF_S", "0")  # no real sleeps in the retry loop
     app = AppCtx(facility=FakeFacility(), profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
+    app.facility.manager_up = True  # the MANAGER is online; only the login WORKER is cold (not a gone endpoint)
     slurm_runner = _FakeRunner("eid-1", _Res(0, "", ""))
     app.shapes["compute"] = ShapeRuntime(user_endpoint_config={"compute": True}, runner=slurm_runner)
     app.shapes["login"] = ShapeRuntime(user_endpoint_config={"provider_type": "LocalProvider"})

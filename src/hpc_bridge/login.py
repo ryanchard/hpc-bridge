@@ -154,7 +154,12 @@ class LoginFlow:
         with self._lock:
             self._expire_locked()
             if self._state == "waiting" and self._start is not None:
-                return self._start
+                if mode is None or mode == self._start.mode:
+                    return self._start
+                # An explicit different mode re-arms (e.g. authenticate(mode="paste") while a browser
+                # flow nobody can complete is waiting — found in review). Abort the listener first.
+                self._stop_listener_locked("mode switch")
+                self._state = "idle"
             if mode is None:
                 mode = self.mode_override or (
                     "paste" if (self._browser_failed or not _browser_available()) else "browser"
@@ -190,8 +195,11 @@ class LoginFlow:
                 if self._gen == gen and self._state == "waiting":
                     self._state = "done"
             except Exception as exc:  # noqa: BLE001 - browser missing / remote / Globus error
-                self._browser_failed = True  # next start() goes straight to paste
                 if self._gen == gen and self._state == "waiting":
+                    # A GENUINE browser failure while we were still waiting: remember it (next start()
+                    # goes to paste). An abort from TTL expiry / a mode switch raises here too and must
+                    # NOT demote every later login to paste (found in review).
+                    self._browser_failed = True
                     self._state = "failed"
                     self.error = f"{type(exc).__name__}: {exc}"[:300]
             finally:

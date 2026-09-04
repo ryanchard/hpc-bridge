@@ -92,8 +92,11 @@ def test_mep_only_entry_rejects_client_side_templating():
             CatalogEntry.model_validate(_entry(
                 ssh_host=None, compute_mep_uuid=VALID_UUID, compute={**_MEP_COMPUTE, field: bad},
             ))
-    # an entry that ALSO has ssh_host keeps the SSH path's templating (resolved from the login name)
-    CatalogEntry.model_validate(_entry(compute_mep_uuid=VALID_UUID))  # default fixture uses {user}/{venv}
+    # an entry that ALSO has ssh_host is still CONSUMED as a MEP (MEP wins in _facility_from_entry), so
+    # client-side templating is rejected there too (review 2026-09-03: it shipped literally to the worker)
+    with pytest.raises(ValidationError, match="client-side templating"):
+        CatalogEntry.model_validate(_entry(compute_mep_uuid=VALID_UUID))  # default fixture uses {user}/{venv}
+    CatalogEntry.model_validate(_entry(compute_mep_uuid=VALID_UUID, compute=_MEP_COMPUTE))  # worker-side forms: fine
 
 
 def test_entry_without_reach_rejected():

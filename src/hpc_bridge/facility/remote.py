@@ -43,6 +43,9 @@ _UUID_RE = re.compile(r"^[0-9a-fA-F-]{36}$")
 # ---------------------------------------------------------------- SSH transport
 
 
+_SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")  # endpoint names spliced into remote shell paths
+
+
 @dataclass(frozen=True)
 class SshTarget:
     host: str
@@ -343,6 +346,8 @@ class RemoteEndpointCLI:
         return None
 
     async def write_config(self, name: str, manager_yaml: str, uep_yaml: str) -> None:
+        if not _SAFE_NAME.match(name):  # the path is double-quoted for $HOME, so `$(…)` would EXECUTE remotely
+            raise ValueError(f"unsafe endpoint name {name!r}: must match [A-Za-z0-9][A-Za-z0-9_.-]{{0,63}}")
         base = f"{self.remote_dir}/{name}"
         await self._write_file(f"{base}/config.yaml", manager_yaml)
         await self._write_file(f"{base}/user_config_template.yaml.j2", uep_yaml)
