@@ -48,5 +48,5 @@ agent gives you an `ssh` command to run in your own terminal, which opens a sess
 shares, so you authenticate once. The confirmed configuration is cached locally, and later sessions
 reconnect with no probe and no SSH.
 
-To make a cluster available to everyone, add it to the registry: see "Add your facility" in the
-project README.
+To make a cluster available to everyone, add it to the registry: see
+[Adding a facility](../adding-a-facility.md).
