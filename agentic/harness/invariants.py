@@ -704,3 +704,57 @@ def identity_quoted_from_refusal(t: Trace) -> Result:
     blob = "\n".join(t.texts)
     ok = any(i in blob for i in ids)
     return Result("identity_quoted_from_refusal", ok, "ok" if ok else f"identity {ids[0]} never told to the user")
+
+
+# ---- BYO bring-up + teardown, as a stranger would do it (fresh-user walk, 2026-09-04) --------------------------
+
+HPC_BRIDGE_TOOL_NAMES = frozenset({
+    "list_facilities", "connect_facility", "authenticate", "complete_login", "ensure_endpoint_up", "run_shell",
+    "poll_task", "reset_session", "stop_endpoint", "teardown_endpoint", "login_shell",
+})
+
+
+def _notices(t: Trace, *names: str) -> list[str]:
+    return [str((c.result or {}).get("notice") or "") for _, c in t.named(*names)]
+
+
+def first_contact_noted(t: Trace) -> Result:
+    """The first SSH bootstrap wrote WHO and WHAT into the transcript: a connect result naming
+    `user@host` and the env_setup line (security review 2026-09-04, A2)."""
+    ok = any("first contact over SSH:" in n and "env_setup run there:" in n for n in _notices(t, "connect_facility"))
+    return Result("first_contact_noted", ok, "ok" if ok else "no connect result carried the first-contact note")
+
+
+def no_false_reuse_claim(t: Trace) -> Result:
+    """A run that starts with NO endpoint must never be told it 'reused the already-online endpoint':
+    the connect right after our own bootstrap re-found it online and said exactly that (live 2026-09-04)."""
+    bad = [i for i, c in t.named("connect_facility")
+           if "reused the already-online endpoint" in str((c.result or {}).get("notice") or "")]
+    return Result("no_false_reuse_claim", not bad, "ok" if not bad else f"false reuse claim at call(s) {bad}")
+
+
+def login_shape_ran(t: Trace) -> Result:
+    """At least one run_shell COMPLETED on the free login shape (the scenario never starts a block)."""
+    ok = any((c.input or {}).get("shape") == "login" and (c.result or {}).get("phase") == "complete"
+             and (c.result or {}).get("exit_code") == 0 for _, c in t.named("run_shell"))
+    return Result("login_shape_ran", ok, "ok" if ok else "no run_shell completed on the login shape")
+
+
+def ends_with_teardown(t: Trace) -> Result:
+    """The last hpc-bridge call is teardown_endpoint — the explicit destroy the prompt asked for."""
+    hb = [c for c in t.calls if c.name in HPC_BRIDGE_TOOL_NAMES]
+    ok = bool(hb) and hb[-1].name == "teardown_endpoint"
+    return Result("ends_with_teardown", ok, "ok" if ok else f"last hpc-bridge call was {hb[-1].name if hb else None!r}")
+
+
+def teardown_reported_clean(t: Trace) -> Result:
+    """The teardown result says what really happened, and it is a clean result: deleted, and the token store
+    hpc-bridge seeded removed (the tool used to claim both while doing neither — live 2026-09-04)."""
+    ns = _notices(t, "teardown_endpoint")
+    if not ns:
+        return Result("teardown_reported_clean", False, "no teardown_endpoint result")
+    last = ns[-1]
+    bad = [w for w in ("DELETE FAILED", "no token store of ours") if w in last]
+    ok = "gce-stopped + deleted" in last and "removed" in last and not bad
+    return Result("teardown_reported_clean", ok, "ok" if ok else f"teardown notice: {last[:160]!r}")
+
