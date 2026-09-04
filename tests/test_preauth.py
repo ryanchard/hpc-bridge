@@ -165,13 +165,13 @@ async def test_registry_entry_denied_publickey_only_is_still_no_ssh_access(monke
 
 
 async def test_mfa_otp_entry_hands_off_before_any_ssh_when_no_master_is_open(monkeypatch):
-    res, app, calls = await _registry_connect(monkeypatch, "irrelevant", auth_method="mfa-otp", master_alive=False)
+    res, _app, calls = await _registry_connect(monkeypatch, "irrelevant", auth_method="mfa-otp", master_alive=False)
     assert res.phase == "needs_preauth" and res.preauth_code_ok and calls == []  # no failing bootstrap attempt
 
 
 async def test_mfa_otp_entry_proceeds_when_the_master_is_already_open(monkeypatch):
     # with a live master the bootstrap runs (here it raises a non-auth error, proving provision was attempted)
-    res, app, calls = await _registry_connect(monkeypatch, "Connection timed out", auth_method="mfa-otp", master_alive=True)
+    res, _app, calls = await _registry_connect(monkeypatch, "Connection timed out", auth_method="mfa-otp", master_alive=True)
     assert calls == ["login"] and res.phase == "failed" and res.notice.startswith("CANNOT REACH")
 
 
