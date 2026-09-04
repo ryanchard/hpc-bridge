@@ -33,6 +33,9 @@ This vault has two halves:
 - [[Plugin packaging]] — `.mcp.json` · `plugin.json` · the `driving-hpc` skill · `hpc-connect` · the fresh-user script
 - [[Configuration]] — environment variables
 - [[MEP facilities survey]] — which real facilities run a Globus Compute MEP: registry candidates, their template keys, the unmapped-identity behaviour (2026-09-03)
+- [[Model sweep 2026-09-03]] — the cheap-tier agentic model sweep (six new-user scenarios × Opus/Sonnet/Haiku): 29/30 on round 2; what the failures actually were
+- [[Model sweep 2026-09-03 block tier]] — the block-tier sweep: stranger's MEP walk 6/6 on all three models; node starvation → the idle-node gate (#69); the human-sim fixes (#70); #39 fires on every SSH bring-up
+- Code reviews 2026-09-03 — round 1: [[Review 2026-09-03 — bugs]], [[Review 2026-09-03 — code quality]], [[Review 2026-09-03 — dependencies]]; round 2: [[Review 2 2026-09-03 — bugs]], [[Review 2 2026-09-03 — static analysis]], [[Review 2 2026-09-03 — code quality]]
 
 ## Planned — design notes (core built; deferred extras remain)
 - [[V1 release]] — **the plan of record** for the sprint (scope, tiers, what's ticked); reorient here when a task runs long
