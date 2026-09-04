@@ -602,11 +602,24 @@ async def stop_endpoint(ctx: Context) -> EndpointStatus:
     return await _stop_endpoint(ctx.request_context.lifespan_context)
 
 
+# How long ONE teardown_endpoint call waits for the login-node ops (gce stop + delete over SSH) before handing
+# back `tearing_down`. Well inside any MCP client's tool window: Expanse's stop + delete take ~3 min on its
+# filesystem (live 2026-09-04) and the call used to fall into the client's 120 s background rescue — a client
+# without one would cancel the request and could interrupt the ops half-way. The ops now run in a server-side
+# task; a later call reports the result.
+_TEARDOWN_SYNC_WAIT_S = 60.0
+
+
 async def _teardown_endpoint(app: AppCtx) -> EndpointStatus:
     """FULLY tear the endpoint down: release the billed block, then `gce stop` + delete the login
     manager over SSH (the facility's `teardown()`), and clear ALL shape/state so nothing lingers.
     The rare, explicit 'destroy it' op — normally the login endpoint STAYS ONLINE for zero-SSH reuse
-    and costs nothing; a later run_shell would re-bootstrap a fresh endpoint from scratch."""
+    and costs nothing; a later run_shell would re-bootstrap a fresh endpoint from scratch.
+
+    The SSH ops run in a task (`app.teardown_task`): this call waits `_TEARDOWN_SYNC_WAIT_S` for them and
+    otherwise returns `tearing_down`; calling again waits again / reports the finished result."""
+    if app.teardown_task is not None:  # an earlier call started the ops: report them, don't start again
+        return await _await_teardown(app)
     eid = app.state.endpoint_id
     if eid is None:
         return EndpointStatus(status="down", block_state="cold", notice="no endpoint was up")
@@ -633,6 +646,32 @@ async def _teardown_endpoint(app: AppCtx) -> EndpointStatus:
     gate = await _teardown_preauth_gate(app, eid)
     if gate is not None:
         return gate
+    app.teardown_task = asyncio.create_task(_finish_teardown(app, eid))
+    return await _await_teardown(app)
+
+
+async def _await_teardown(app: AppCtx) -> EndpointStatus:
+    """Wait a bounded time for the in-flight teardown; its result when it finished, else `tearing_down`."""
+    task = app.teardown_task
+    assert task is not None
+    done, _pending = await asyncio.wait({task}, timeout=_TEARDOWN_SYNC_WAIT_S)
+    if task in done:
+        app.teardown_task = None
+        return task.result()  # _finish_teardown never raises: every failure is folded into the notice
+    return EndpointStatus(
+        status="tearing_down",
+        block_state="cold",
+        endpoint_id=app.state.endpoint_id,
+        session_spend=_total_session_spend(app),
+        notice=("teardown is still running on the login node — the manager's stop + delete take a few minutes on a "
+                "slow filesystem; the block release already went through. Call teardown_endpoint again in about a "
+                "minute to confirm 'down'. Do NOT call run_shell or connect_facility meanwhile."),
+    )
+
+
+async def _finish_teardown(app: AppCtx, eid: str) -> EndpointStatus:
+    """The login-node half of teardown (the facility's `teardown()`), then clear ALL shape/state. Runs as
+    `app.teardown_task` so a slow login node cannot hold the MCP call — or be interrupted by its client."""
     notice = "endpoint fully torn down (block released; manager gce-stopped + deleted)"
     teardown = getattr(app.facility, "teardown", None)
     if teardown is not None:
@@ -647,9 +686,13 @@ async def _teardown_endpoint(app: AppCtx) -> EndpointStatus:
                            "manager gce-stopped, but DELETE FAILED: the endpoint directory remains on the login node")
                 creds = ("the Globus token copy hpc-bridge placed on the login node removed"
                          if report.get("credentials_wiped") else "no token store of ours on the login node to remove")
-                notice = f"endpoint fully torn down (block released; {deleted}; {creds})"
+                ssh = ("; the shared SSH connection to the login node was closed too — nothing of this session "
+                       "stays open on the user's machine" if report.get("ssh_closed") else "")
+                notice = f"endpoint fully torn down (block released; {deleted}; {creds}{ssh})"
     async with app.lock:  # clear everything so a stray run_shell can't silently revive a stale endpoint
-        spent = _drop_all_shapes(app, bank=True)
+        # — unless a connect meanwhile bound a NEW endpoint: that state is its, not this teardown's to clear
+        ours = app.state.endpoint_id in (eid, None)
+        spent = _drop_all_shapes(app, bank=True) if ours else _total_session_spend(app)
     return EndpointStatus(
         status="down",
         block_state="cold",
@@ -685,7 +728,7 @@ async def _teardown_preauth_gate(app: AppCtx, eid: str) -> EndpointStatus | None
         session_spend=_total_session_spend(app),
         notice=("block release dispatched; the login-node manager is STILL RUNNING — tearing it down needs an SSH "
                 f"connection to the login node, which is not open. {handoff.notice} Then call teardown_endpoint "
-                "again to finish."),
+                "again to finish (it may answer 'tearing_down' first: the login-node ops take a few minutes)."),
     )
 
 
@@ -695,7 +738,10 @@ async def teardown_endpoint(ctx: Context) -> EndpointStatus:
     operation. **Normally do NOT call this.** The login endpoint is DESIGNED to stay online for
     zero-SSH reuse and costs nothing (a free login-node process, no allocation); `stop_endpoint`
     already halts ALL spend by releasing the billed block. Only call this when the user EXPLICITLY
-    insists on removing the endpoint entirely. Afterwards, do not call run_shell (it re-provisions)."""
+    insists on removing the endpoint entirely. Afterwards, do not call run_shell (it re-provisions).
+    The login-node ops can take a few minutes on a slow filesystem: a `tearing_down` status means they are
+    still running — call teardown_endpoint again in about a minute to confirm `down`; call nothing else
+    meanwhile. On a one-time-code facility the first call may instead ask for a code (`complete_preauth`)."""
     return await _teardown_endpoint(ctx.request_context.lifespan_context)
 
 

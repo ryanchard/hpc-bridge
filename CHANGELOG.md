@@ -3,6 +3,15 @@
 All notable changes to hpc-bridge. The plugin version lives in `.claude-plugin/plugin.json` (Claude Code updates an
 installed plugin only when that version changes); git tags mark releases.
 
+## 0.1.4 — 2026-09-04 — teardown no longer holds the tool call
+
+### Fixed
+- **Teardown runs its login-node work in the background of the server.** Stopping and deleting the endpoint
+  took about three minutes on Expanse's filesystem, longer than a client's tool window; the call relied on the
+  client rescuing it. One call now waits up to a minute and otherwise answers `tearing_down`; calling again
+  confirms `down`. A client that times out can no longer interrupt the work half-way.
+- **Teardown's report says the shared SSH connection was closed.** The agent had told a user it was still open.
+
 ## 0.1.3 — 2026-09-04 — no code needed to reconnect
 
 ### Fixed
