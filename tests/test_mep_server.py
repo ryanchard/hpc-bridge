@@ -1,7 +1,7 @@
 # tests/test_mep_server.py — the server seams on a facility-run multi-user endpoint (MEP): zero SSH,
 # compute-only, draining-only stop. Drives a REAL MEPFacility through the real _connect_facility /
 # _ensure_endpoint_up / _run_shell / _stop_endpoint / _teardown_endpoint paths.
-from hpc_bridge import binding, server
+from hpc_bridge import binding, scheduler_ops, server
 from hpc_bridge.facility.mep import MEPFacility
 from hpc_bridge.profile import Profile
 from hpc_bridge.runner import CanaryResult
@@ -177,7 +177,7 @@ async def test_stop_is_draining_only_and_never_touches_login(monkeypatch):
     await _connect(app, monkeypatch)
     await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
     called = []
-    monkeypatch.setattr(server, "_release_blocks_over_login", lambda *a, **k: called.append(1))
+    monkeypatch.setattr(scheduler_ops, "_release_blocks_over_login", lambda *a, **k: called.append(1))
     res = await _stop_endpoint(app)
     assert res.status == "draining"  # NEVER "down": no cancel can be confirmed from here
     assert called == []  # no scancel-over-login attempt (and so no login-shape submit)
@@ -193,7 +193,7 @@ async def test_teardown_is_a_detach_not_a_destroy(monkeypatch):
     await _connect(app, monkeypatch)
     await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
     called = []
-    monkeypatch.setattr(server, "_release_blocks_over_login", lambda *a, **k: called.append(1))
+    monkeypatch.setattr(scheduler_ops, "_release_blocks_over_login", lambda *a, **k: called.append(1))
     res = await _teardown_endpoint(app)
     assert res.status == "down" and "nothing of ours" in res.notice
     assert called == []

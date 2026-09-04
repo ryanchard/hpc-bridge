@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from hpc_bridge import binding
+from hpc_bridge import binding, scheduler_ops
 from hpc_bridge.profile import Profile
 from hpc_bridge.server import (
     AppCtx,
@@ -197,13 +197,13 @@ async def test_stop_on_a_gone_endpoint_is_terminal(monkeypatch):
     app.shapes["compute"] = ShapeRuntime(user_endpoint_config={"compute": True}, runner=_FakeRunner("eid-1", _Res(0, "", "")))
     app.shapes["login"] = ShapeRuntime(user_endpoint_config={"provider_type": "LocalProvider"})
 
-    async def cold(a, eid):
+    async def cold(a, eid, *rest):
         return False, "login channel cold"
 
     async def nothing(a):
         return 0.0
 
-    monkeypatch.setattr(server, "_release_blocks_over_login", cold)
+    monkeypatch.setattr(scheduler_ops, "_release_blocks_over_login", cold)
     monkeypatch.setattr(server, "_drop_compute_shape", nothing)
     app.facility.manager_up = False  # the manager is GONE
     res = await _stop_endpoint(app)
