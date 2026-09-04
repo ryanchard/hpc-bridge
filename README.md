@@ -55,7 +55,9 @@ endpoint needs no SSH at all. Design, tool reference and module notes: the **[va
 
 ## Status and security
 
-Pre-release (v0.1.0). In the registry: **Purdue Anvil** (Slurm) and Globus Labs' cluster; also proven live through
+**Public beta** (0.1.1, tag `v0.1.1-beta.1`): tested live on four clusters, security-reviewed, and now in the hands
+of test users — expect rough edges and please [report them](https://github.com/ryanchard/hpc-bridge/issues). In the
+registry: **Purdue Anvil** (Slurm) and Globus Labs' cluster; also proven live through
 the bring-your-own path on **Midway** (Slurm) and **ALCF Polaris** (PBS). Slurm and PBS are the supported schedulers.
 Unit tests, lint and type checks run in CI. Every command after the bootstrap carries only a scoped Globus token,
 never SSH material; SSH is key-only and used once to bootstrap. A password or Duo passcode is never handled
