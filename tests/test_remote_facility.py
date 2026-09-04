@@ -607,7 +607,7 @@ async def test_cancel_blocks_targets_only_this_endpoints_jobs(monkeypatch):
 
 async def test_cancel_blocks_no_jobs_is_noop(monkeypatch):
     async def fake_ssh(target, cmd, **kw):
-        return (0, "", "") if "squeue" in cmd else (0, "", "")
+        return (0, "", "") if "squeue" in cmd else (0, "", "")  # noqa: RUF034
 
     monkeypatch.setattr(remote, "ssh_exec", fake_ssh)
     cli = remote.RemoteEndpointCLI(SshTarget("h", "u", "k"), "env")
@@ -855,28 +855,10 @@ async def test_seed_storage_db_raises_on_remote_failure(monkeypatch, tmp_path):
 
     monkeypatch.setattr(remote, "ssh_exec", fake_ssh_exec)
     cli = RemoteEndpointCLI(SshTarget("h", "u", "k"), "true")
-    with pytest.raises(RuntimeError, match="seed storage.db"):
+    with pytest.raises(RuntimeError, match="seed storage.db"):  # noqa: RUF043
         await cli.seed_storage_db(db)
 
 
-async def test_hostname_fqdn_reads_login_node(monkeypatch):
-    async def fake_ssh_exec(target, cmd, **kw):
-        assert "hostname -f" in cmd
-        return (0, "login03.anvil.rcac.purdue.edu\n", "")
-
-    monkeypatch.setattr(remote, "ssh_exec", fake_ssh_exec)
-    cli = RemoteEndpointCLI(SshTarget("anvil.rcac.purdue.edu", "u", "k"), "true")
-    assert await cli.hostname_fqdn() == "login03.anvil.rcac.purdue.edu"
-
-
-async def test_hostname_fqdn_raises_on_remote_failure(monkeypatch):
-    async def fake_ssh_exec(target, cmd, **kw):
-        return (1, "", "ssh: connect to host failed")
-
-    monkeypatch.setattr(remote, "ssh_exec", fake_ssh_exec)
-    cli = RemoteEndpointCLI(SshTarget("anvil.rcac.purdue.edu", "u", "k"), "true")
-    with pytest.raises(RuntimeError, match="hostname -f failed"):
-        await cli.hostname_fqdn()
 
 
 def test_rebind_points_cli_at_a_specific_host():

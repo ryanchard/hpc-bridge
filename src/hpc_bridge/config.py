@@ -95,6 +95,8 @@ def _short_control_dir(preferred: str) -> str:
         return preferred
     for cand in (str(Path.home() / ".hpc-bridge" / "cm"), f"/tmp/hpcb-cm-{os.getuid()}"):
         if len(cand) <= _CONTROL_PATH_BUDGET:
+            if os.path.exists(cand) and os.stat(cand).st_uid != os.getuid():
+                continue  # a shared-host squat on our predictable name: never put our socket in someone else's dir
             return cand
     return preferred  # nothing short exists; ssh will say so
 

@@ -7,11 +7,11 @@ A new machine with a new output format adds one function + a registry entry.
 """
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from ..models import AllocationOption
 
-__all__ = ["AllocationOption", "PARSERS", "parse_mybalance"]
+__all__ = ["PARSERS", "AllocationOption", "parse_mybalance"]
 
 
 def parse_mybalance(stdout: str) -> list[AllocationOption]:

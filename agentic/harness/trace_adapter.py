@@ -12,7 +12,8 @@ Named ``trace_adapter`` (not ``trace``) to avoid shadowing the stdlib ``trace``.
 from __future__ import annotations
 
 import json
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from invariants import ToolCall, Trace
 

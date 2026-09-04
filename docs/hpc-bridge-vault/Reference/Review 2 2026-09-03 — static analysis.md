@@ -267,3 +267,10 @@ Method: `import_graph.py` (AST; resolves relative and `from . import x` submodul
 4. Adopt the ruff config in §3 (94 autofixed, 39 manual incl. 13 E501).
 5. Delete `hostname_fqdn`, `config_path`; decide `CatalogProvider` and `submitted_at`.
 6. `config.py:96` `/tmp` fallback hardening.
+
+## Landed (chore/typing, 2026-09-03)
+
+- mypy is clean over `src/hpc_bridge` (36 files, no module excluded) and runs in CI as the `typecheck` job; the leaf modules (`context`, `config`, `cost`, `models`, `shapes`, `lifecycle`, `profile`) are checked strict.
+- Typing fixes of substance: `ProvisionResult` (provision can return `needs_confirmation`, which `BlockState` never could); `TaskHandle.future: Future[Any]`; optional `EndpointRecord.user/key_path`; `LoginMode` threaded through `authenticate`; the ingest `None` guard.
+- ruff expanded to the reviewer's set (B, BLE, A, RUF, UP, RET, PIE, PLE, SIM, ISC, ERA, PGH, the S-shell subset) and E501 is now enforced at 120 in `src` (tests/agentic exempt). Deliberately ignored: PLW1510 (every `subprocess.run` handles rc explicitly), RUF005 (style), SIM105.
+- Dead code removed: `RemoteEndpointCLI.hostname_fqdn`, `EndpointCLI.config_path`, the `_login_wait_s` shim.

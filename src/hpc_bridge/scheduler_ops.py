@@ -126,7 +126,7 @@ def _summarize_pilot(stdout: str, provisioning_elapsed_s: float) -> tuple[str, s
         return "starting", f"— pilot {jid} is RUNNING; the worker is starting, retry shortly."
     return "queued", f"— pilot {jid} is queued (PENDING); waiting on the scheduler."
 
-async def _pilot_status_over_login(app: AppCtx, eid: str, elapsed_s: float, run_login: LoginRunner) -> tuple[str, str] | None:
+async def _pilot_status_over_login(app: AppCtx, eid: str, elapsed_s: float, run_login: LoginRunner) -> tuple[str, str] | None:  # noqa: E501
     """Ask the scheduler (over the login shape — AMQP, no SSH) what state THIS endpoint's pilot is in.
     Best-effort: returns None when it can't tell (login worker cold, scheduler unreachable) so the
     caller leaves its notice unchanged. `elapsed_s` is how long the block has been provisioning — it
@@ -137,7 +137,7 @@ async def _pilot_status_over_login(app: AppCtx, eid: str, elapsed_s: float, run_
         return None
     return _summarize_pilot(out.stdout or "", elapsed_s)
 
-async def _augment_provisioning_notice(app: AppCtx, eid: str, notice: str, elapsed_s: float, run_login: LoginRunner) -> str:
+async def _augment_provisioning_notice(app: AppCtx, eid: str, notice: str, elapsed_s: float, run_login: LoginRunner) -> str:  # noqa: E501
     """Enrich a still-cold BILLED block's 'allocating nodes…' with the pilot's ACTUAL scheduler state,
     so a rejected/held submission isn't silently indistinguishable from a queue wait ([#32]). A
     diagnostic must never break the result it annotates, so any failure — or an empty suffix (the

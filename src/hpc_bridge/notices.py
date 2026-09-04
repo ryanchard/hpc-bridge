@@ -14,6 +14,7 @@ from . import config
 from .config import SYNC_WAIT_S, _task_ceiling_s
 from .context import AppCtx, ShapeRuntime, _has_login_shape, _idle_release_s
 from .cost import _with_spend
+from .lifecycle import BlockState
 from .login import LoginStart
 from .models import ConnectFacilityResult, ShellOutcome
 from .runner import CanaryResult
@@ -72,7 +73,7 @@ def _explain_provision_error(exc: BaseException, fac=None, *, host: str | None =
 
 def _local_dill() -> str | None:
     try:
-        import dill  # type: ignore[import-untyped]
+        import dill
 
         return dill.__version__
     except Exception:  # noqa: BLE001 - dill absent locally just means we can't compare
@@ -248,7 +249,7 @@ def _no_account_notice(app: AppCtx | None, error: str | None, identity: str | No
         "ask the facility's support, quoting that identity. Do not call ensure_endpoint_up again until they have."
     )
 
-def _cold_outcome(block: str, canary: CanaryResult | None = None) -> ShellOutcome:
+def _cold_outcome(block: BlockState, canary: CanaryResult | None = None) -> ShellOutcome:
     if canary is not None and _no_account_failure(canary.error):
         from .login import globus_identity_label
 

@@ -72,7 +72,7 @@ HPCB_PROBE_END
 
 
 def test_parse_probe_detects_pbs_and_queue():
-    draft, notes = parse_probe(_POLARIS, ssh_host="polaris")
+    draft, _notes = parse_probe(_POLARIS, ssh_host="polaris")
     assert draft.scheduler == "pbs"
     assert draft.partition == "debug"       # preferred PBS queue
 

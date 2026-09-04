@@ -47,6 +47,8 @@ def main(argv: list[str] | None = None) -> int:
     # holds neither by default — spec §8). login() grants both in one consent; after that the token
     # is cached and the server-side SearchCatalog reads work without prompting.
     app = Client().app
+    if app is None:
+        raise SystemExit("hpc-bridge-catalog: the Compute SDK returned no GlobusApp (is globus-compute-sdk installed with app support?)")  # noqa: E501
     client = SearchClient(app=app)
     app.add_scope_requirements({SearchScopes.resource_server: SearchScopes.all})
     if app.login_required():

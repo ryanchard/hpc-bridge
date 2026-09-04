@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import platform
 import threading
+from collections.abc import Callable
 from contextlib import contextmanager
-from typing import Callable
 
 
 class CapturingLocalServerManager:
@@ -23,13 +23,13 @@ class CapturingLocalServerManager:
         class _Manager(LocalServerLoginFlowManager):
             _server = None
 
-            def _get_authorize_url(self, auth_parameters, redirect_uri):  # type: ignore[override]
+            def _get_authorize_url(self, auth_parameters, redirect_uri):
                 url = super()._get_authorize_url(auth_parameters, redirect_uri)
                 on_url(url)
                 return url
 
             @contextmanager
-            def background_local_server(self):  # type: ignore[override]
+            def background_local_server(self):
                 """The SDK's server, but with a QUIET handler: BaseHTTPRequestHandler's default
                 log_message() writes the request line — `GET /?code=<one-time auth code>&state=…` — to
                 stderr, which in the MCP server flows into logs/transcripts (seen in the L4 live check).

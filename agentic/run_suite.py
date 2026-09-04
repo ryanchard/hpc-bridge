@@ -111,8 +111,10 @@ async def _run_job(scenario, model, effort, persona, ablate, claims, sem, stagge
         print(f"⏳ wait   {scenario} — every pool user is claimed ({len(claims.busy(POOL))} held, some by "
               "another invocation); retrying in 20s", flush=True)
         await asyncio.sleep(20)
-    label = f"{scenario} · {_short_model(model)}/{effort or 'default'}" \
-            f"{f'/{persona}' if persona else ''}{' ~' + ablate if ablate else ''} · {user}"
+    label = (
+        f"{scenario} · {_short_model(model)}/{effort or 'default'}"
+        f"{f'/{persona}' if persona else ''}{' ~' + ablate if ablate else ''} · {user}"
+    )
     try:
         if halt.is_set():   # a prior job hit the session/rate limit — don't burn the queue
             print(f"⏭ skip   {label} — rate-limit halt", flush=True)

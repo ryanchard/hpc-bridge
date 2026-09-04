@@ -19,6 +19,7 @@ import asyncio
 import os
 
 from . import binding, config, login_gate, warmth
+from .catalog.entry import CatalogEntry
 from .catalog.parsers import PARSERS
 from .context import AppCtx, _has_login_shape
 from .discovery import discover_facility_details
@@ -94,6 +95,7 @@ async def _connect_facility(
             return _needs_login_result(facility, start, app.login_flow.error,
                                        waited_s=config.login_wait_s() if status == "waiting" else None)
         # the browser flow completed while we waited — carry straight on with the connection
+    entry: CatalogEntry | None = None
     # Resolve the entry: a session-local one the agent already supplied wins; else the catalog. An
     # index error is treated as "unresolved" (the agent can still supply details), not a hard fail.
     if details is not None:
@@ -175,27 +177,27 @@ async def _connect_facility(
         if not _has_login_shape(app):  # a facility-run multi-user endpoint: attach, don't provision
             res = await _connect_mep(app, facility, fac)
             if prior_spend > 0:  # a re-bind released a warm block: the number must not vanish (review 2)
-                res.notice = f"the previous facility's shapes were released (session spend so far ≈ {prior_spend:.2f}). " + (res.notice or "")
+                res.notice = f"the previous facility's shapes were released (session spend so far ≈ {prior_spend:.2f}). " + (res.notice or "")  # noqa: E501
             return res
         try:
             block = await warmth._provision(app, "login", force_canary=True)
         except Exception as exc:  # noqa: BLE001 - provisioning unavailable (e.g. non-Linux host)
             notice = _explain_provision_error(exc, fac)
             if notice.startswith("CANNOT REACH") and await asyncio.to_thread(_drop_dead_pin, fac):
-                notice += " (The remembered login-node pin was dropped: the next connect resolves the facility's host afresh.)"
+                notice += " (The remembered login-node pin was dropped: the next connect resolves the facility's host afresh.)"  # noqa: E501
             return ConnectFacilityResult(phase="failed", facility=facility, notice=notice)
         if block == "warm":
             _commit_proven_facility(app, facility)
     reused = app.state.reused  # reattached to an already-online endpoint (zero SSH), not a fresh bootstrap
     reuse_note = "reused the already-online endpoint (zero-SSH reconnect). " if reused else ""
     if prior_spend > 0:  # a re-bind released a warm block: say what it cost rather than lose the number
-        reuse_note = f"the previous facility's shapes were released (session spend so far ≈ {prior_spend:.2f}). " + reuse_note
+        reuse_note = f"the previous facility's shapes were released (session spend so far ≈ {prior_spend:.2f}). " + reuse_note  # noqa: E501
     if block != "warm":  # login node still coming up — nothing to read yet
         return ConnectFacilityResult(
             phase="provisioning",
             facility=facility,
             reused=reused,
-            notice=reuse_note + "bringing up the login node; call connect_facility again shortly to read your allocations",
+            notice=reuse_note + "bringing up the login node; call connect_facility again shortly to read your allocations",  # noqa: E501
         )
     if entry.allocation is None:  # no auto-listable allocations -> the human supplies the account
         return ConnectFacilityResult(

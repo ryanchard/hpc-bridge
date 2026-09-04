@@ -57,7 +57,7 @@ class Defaults(BaseModel):
     max_workers_per_node: int = 2
     nodes_per_block: int = 1
     cpus_per_node: int | None = None  # PBSProProvider.cpus_per_node; Slurm ignores it
-    init_blocks: int = 0  # blocks to pre-spawn; 0 = lazy (block on first task). A MEP entry sets 1 for a warm, low-latency block (its login-shape replacement)
+    init_blocks: int = 0  # blocks to pre-spawn; 0 = lazy (block on first task). A MEP entry sets 1 for a warm, low-latency block (its login-shape replacement)  # noqa: E501
     max_blocks: int = 1
     available_accelerators: int | list[str] | None = None
 
@@ -118,7 +118,7 @@ class CatalogEntry(BaseModel):
         return str(uuid.UUID(v))  # normalize to canonical lowercase hyphenated form
 
     @model_validator(mode="after")
-    def _reachable(self) -> "CatalogEntry":
+    def _reachable(self) -> CatalogEntry:
         """An entry must be reachable: a facility MEP to dispatch to, or an SSH host to bootstrap.
 
         `ssh_host` is optional now (MEP entries have none), so this guards the failure mode that
@@ -167,6 +167,7 @@ class CatalogEntry(BaseModel):
         return f"{self.facility_key}:{self.id}"
 
     def summary(self) -> CatalogSummary:
+        access: Literal["mep", "ssh"]
         if self.compute_mep_uuid:
             access, note = "mep", (
                 "zero SSH — the facility runs the endpoint; you need an account there with your Globus "

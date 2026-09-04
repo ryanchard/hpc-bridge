@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from .cost import cap_output
+from .lifecycle import BlockState
 from .models import ShellOutcome
 
 
@@ -20,7 +21,7 @@ async def execute(
     command: str,
     runner: Runner,
     *,
-    block_state: str = "warm",
+    block_state: BlockState = "warm",
     max_output_chars: int = 1_000_000,
 ) -> ShellOutcome:
     """Dispatch a shell command through a Runner and shape the structured result.
@@ -36,7 +37,7 @@ async def execute(
     return complete_outcome(res, block_state, max_output_chars)
 
 
-def complete_outcome(res: ShellLike, block_state: str, max_output_chars: int) -> ShellOutcome:
+def complete_outcome(res: ShellLike, block_state: BlockState, max_output_chars: int) -> ShellOutcome:
     """Shape a successful runner result into a `complete` outcome. Shared by execute() and the
     submit/poll path (server._run_shell / poll_task) so the completion mapping lives in one place."""
     return ShellOutcome(
@@ -48,7 +49,7 @@ def complete_outcome(res: ShellLike, block_state: str, max_output_chars: int) ->
     )
 
 
-def failure_outcome(exc: Exception, block_state: str, max_output_chars: int) -> ShellOutcome:
+def failure_outcome(exc: Exception, block_state: BlockState, max_output_chars: int) -> ShellOutcome:
     name = type(exc).__name__
     if isinstance(exc, TimeoutError):
         return ShellOutcome(

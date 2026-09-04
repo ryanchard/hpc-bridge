@@ -24,6 +24,16 @@ jobs:
         with: { version: "0.12.9" }
       - run: uvx ruff@0.16.6 check .
 
+  typecheck:
+    name: mypy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with: { version: "0.12.9" }
+      - run: uv sync --extra dev --extra integration
+      - run: uv run --with mypy python -m mypy
+
   test:
     name: pytest (py${{ matrix.python }})
     runs-on: ubuntu-latest
