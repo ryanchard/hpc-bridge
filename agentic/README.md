@@ -154,7 +154,11 @@ python3 agentic/run_suite.py --scenarios zero_config_list,needs_login_paste,mep_
 # 2. block tier — every MEP run maps to glabs; SERIAL keeps them one at a time
 python3 agentic/run_suite.py --scenarios stranger_mep_walk --models claude-opus-5,claude-sonnet-5,claude-haiku-4-5-20251001 --repeat 2 --concurrency 1
 # 3. the SSH-path classics on the weaker models (3 pool users)
-python3 agentic/run_suite.py --scenarios happy_path,gated_provision --models claude-sonnet-5,claude-haiku-4-5-20251001 --repeat 2 --concurrency 3 --stagger 20
+python3 agentic/run_suite.py --scenarios happy_path,gated_provision --models claude-sonnet-5,claude-haiku-4-5-20251001 --repeat 2 --concurrency 3 --stagger 20 --node-wait-s 86400
+#    ^ happy_path/gated_provision declare NEEDS_COMPUTE_NODE: run_suite probes `ssh globus1 sinfo -p main -t idle`
+#      and launches a cell only when a node is idle (holding the gate through the cell when only one is). 2026-09-03:
+#      4/5 compute cells failed on `compute_ran` with every node held by other users' day-long jobs — an environment
+#      fact, not agent behaviour. `--node-wait-s 0` disables the gate; HPCB_NODE_PROBE_SSH / HPCB_NODE_PARTITION override.
 ```
 
 ## How grading works

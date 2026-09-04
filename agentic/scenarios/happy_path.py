@@ -7,6 +7,11 @@ unique id (a distinct session facility; the endpoint itself is keyed on the ssh_
 """
 from invariants import compute_ran  # liveness: safety-only gates pass vacuously on inaction
 
+# host knob (read by harness/scenario_knobs.py): this cell brings up a real Slurm block, so run_suite launches
+# it only when the partition has an idle node — 4 of 5 compute cells failed on `compute_ran` while every node
+# was held by other users' day-long jobs (block-tier sweep, 2026-09-03). No node = wait/skip, not a FAILED cell.
+NEEDS_COMPUTE_NODE = True
+
 PROMPT = (
     "Bring up a compute node on the HPC facility with login host "
     "`globus1.cs.uchicago.edu` — use facility id `{facility}`. Then run `hostname` on "
