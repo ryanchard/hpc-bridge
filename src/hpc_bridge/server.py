@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 
 from mcp.server.fastmcp import Context, FastMCP
 
-from . import binding, config, dispatch, scheduler_ops, session_shell, warmth
+from . import binding, config, dispatch, login_gate, scheduler_ops, session_shell, warmth
 from .binding import (  # noqa: F401 - re-exported for imports; PATCH binding.<name>, not server.<name>
     _catalog_facility,  # noqa: F401
     _entry_from_details,  # noqa: F401
@@ -64,7 +64,12 @@ from .discovery import discover_facility_details
 from .endpoint import EndpointCLI
 from .facility.local import LocalFacility
 from .lifecycle import EndpointState, ensure_warm
-from .login import LoginFlow, LoginStart
+from .login import LoginFlow
+from .login_gate import (  # noqa: F401 - re-exported for imports
+    _authenticate,  # noqa: F401
+    _complete_login,  # noqa: F401
+    _start_login_and_wait,  # noqa: F401
+)
 from .models import (
     ConnectFacilityResult,
     EndpointStatus,
@@ -361,34 +366,6 @@ async def _list_facilities(query: str = "") -> list[CatalogSummary]:
         raise
 
 
-async def _authenticate(app: AppCtx, force: bool = False, mode: str | None = None) -> LoginStatus:
-    flow = app.login_flow
-    if flow is None:
-        flow = app.login_flow = LoginFlow()
-    if not force and not await asyncio.to_thread(flow.login_required):
-        return LoginStatus(phase="logged_in", notice="Globus login present with every scope hpc-bridge needs.")
-    start, status = await _start_login_and_wait(flow, mode)
-    if status == "done":
-        _forget_identity_verdicts(app)
-        return LoginStatus(phase="logged_in", notice="Globus login completed in the browser; carry on.")
-    return LoginStatus(phase="needs_login", login_url=start.login_url, login_mode=start.mode,
-                       notice=_login_notice(start, flow.error,
-                                            waited_s=_login_wait_s() if status == "waiting" else None))
-
-
-async def _complete_login(app: AppCtx, code: str) -> LoginStatus:
-    flow = app.login_flow
-    if flow is None:
-        return LoginStatus(phase="failed", notice="no login is waiting — call authenticate() first")
-    try:
-        await asyncio.to_thread(flow.complete_with_code, code)
-    except Exception as exc:  # noqa: BLE001 - a bad/expired code is a structured outcome, not a crash
-        return LoginStatus(phase="failed", notice=f"login code not accepted: {type(exc).__name__}: {exc}"[:300]
-                           + " — call authenticate() for a fresh link.")
-    _forget_identity_verdicts(app)
-    return LoginStatus(phase="logged_in", notice="Globus login complete. Continue: connect_facility again.")
-
-
 @mcp.tool()
 async def authenticate(ctx: Context, force: bool = False, mode: str | None = None) -> LoginStatus:
     """Log in to Globus from the terminal — the ONE credential hpc-bridge needs (it covers computing,
@@ -401,7 +378,7 @@ async def authenticate(ctx: Context, force: bool = False, mode: str | None = Non
     `login_mode="paste"` (remote/headless sessions): Globus shows a one-time code — ask the user to
     paste it and call complete_login(code). `mode="paste"` forces paste mode (e.g. no browser on this
     machine). Never ask for a Globus password."""
-    return await _authenticate(ctx.request_context.lifespan_context, force=force, mode=mode)
+    return await login_gate._authenticate(ctx.request_context.lifespan_context, force=force, mode=mode)
 
 
 @mcp.tool()
@@ -409,7 +386,7 @@ async def complete_login(code: str, ctx: Context) -> LoginStatus:
     """Finish a paste-mode Globus login with the one-time authorization code the user pasted (from
     the page Globus showed after they approved). Single-use and short-lived — not a password, not a
     token. Only needed when authenticate()/connect_facility reported login_mode="paste"."""
-    return await _complete_login(ctx.request_context.lifespan_context, code)
+    return await login_gate._complete_login(ctx.request_context.lifespan_context, code)
 
 
 @mcp.tool()
@@ -460,7 +437,7 @@ async def _connect_facility(
     # input() on stdin — i.e. the MCP transport. A phase, not a prompt: the agent shows the link, the
     # user's browser completes it, the next call proceeds. (login_required() is a local SQLite read.)
     if app.login_flow is not None and await asyncio.to_thread(app.login_flow.login_required):
-        start, status = await _start_login_and_wait(app.login_flow)
+        start, status = await login_gate._start_login_and_wait(app.login_flow)
         if status != "done":
             return _needs_login_result(facility, start, app.login_flow.error,
                                        waited_s=_login_wait_s() if status == "waiting" else None)
@@ -638,20 +615,6 @@ async def _connect_mep(app: AppCtx, facility: str, fac) -> ConnectFacilityResult
             "billed scheduler block that stays warm between calls. " + how
         ),
     )
-
-
-async def _start_login_and_wait(flow: LoginFlow, mode: str | None = None) -> tuple[LoginStart, str]:
-    """Arm a login and, in browser mode, wait for it. Returns (start, status). A browser attempt that
-    FAILS during the wait (no browser after all, Globus rejected the redirect) is re-armed at once in
-    paste mode — the failure is remembered by the flow — so the caller shows a usable link, not an error."""
-    start = await asyncio.to_thread(flow.start, mode)
-    if start.mode != "browser":
-        return start, "waiting"  # paste mode: nothing to wait for — the user must hand us a code
-    status = await asyncio.to_thread(flow.wait, _login_wait_s())
-    if status == "failed":
-        start = await asyncio.to_thread(flow.start)  # goes to paste (browser failure remembered)
-        status = "waiting"
-    return start, status
 
 
 async def _propose_or_ask(

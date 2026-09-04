@@ -57,3 +57,4 @@
 > Step 5 moved facility/catalog construction to [[binding]] — callers use module attributes; tests patch `binding.*` / `config._control_settings`. `server.py` ≈ 1550 lines.
 > Step 6 moved the scheduler ops (block release, pilot status) to [[scheduler_ops]] with the login-shape runner injected (`_login_runner`).
 > Steps 7–8 moved the warmth state machine and task-handle bookkeeping to [[warmth]]; tests patch `warmth._provision` / `warmth._drop_compute_shape`.
+> Step 9 moved the login gate (`_start_login_and_wait`, `_authenticate`, `_complete_login`) to [[login_gate]].
