@@ -495,3 +495,131 @@ async def test_teardown_tool_notice_reflects_the_report(monkeypatch):
         res = await server._teardown_endpoint(app)
         assert all(e in (res.notice or "") for e in expect), res.notice
 
+
+def test_bootstrap_timeout_is_explained_not_bare():
+    # Expanse live 2026-09-04: the first connect's toolchain install exceeded the ssh timeout and the agent saw
+    # "hpc-bridge error: TimeoutError: " — nothing to act on.
+    msg = _explain_provision_error(TimeoutError(), host="login.expanse.sdsc.edu")
+    assert msg.startswith("TIMED OUT waiting for the login node login.expanse.sdsc.edu")
+    assert "toolchain install" in msg and "connect_facility again" in msg
+
+
+async def test_bootstrap_steps_use_the_long_ssh_timeout(monkeypatch):
+    from tests.test_remote_facility import LONG_NAME, WIDE_LIST
+
+    seen = []
+
+    async def fake(target, cmd, **kw):
+        seen.append((cmd.split("globus-compute-endpoint ")[-1][:12], kw.get("timeout")))
+        return (0, WIDE_LIST if "endpoint list" in cmd else "HPCB_HOST=h\n", "")
+
+    monkeypatch.setattr(remote, "ssh_exec", fake)
+    cli = RemoteEndpointCLI(SshTarget("h", "u", "k"), "true")
+    await cli.whoami()
+    await cli.configure(LONG_NAME)
+    await cli.start(LONG_NAME)
+    long = [t for c, t in seen if c.startswith(("whoami", "configure", "start"))]
+    assert long and all(t == remote._BOOTSTRAP_SSH_S for t in long), seen
+    assert [t for c, t in seen if c.startswith("list")] and all(t != remote._BOOTSTRAP_SSH_S for c, t in seen if c.startswith("list"))
+
+
+# ---- teardown/delete + seed record hardening (Expanse live, 2026-09-04) ----------------------------------------
+
+async def test_delete_waits_for_stop_to_land_then_forces(monkeypatch):
+    from tests.test_remote_facility import LONG_NAME, WIDE_LIST
+
+    calls = []
+    state = {"running": 2}  # `status` reads running twice, then stopped
+
+    async def fake(target, cmd, **kw):
+        calls.append(cmd)
+        if "endpoint list" in cmd:
+            if state["running"] > 0:
+                state["running"] -= 1
+                return (0, WIDE_LIST, "")
+            return (0, "No endpoints configured!\n", "")
+        if "delete --yes" in cmd and state["running"] > 0:
+            return (1, "", "WARNING … Endpoint 3ef7 is currently running.  To proceed with deletion, first stop the endpoint")
+        return (0, "> Endpoint deleted", "")
+
+    async def no_sleep(s):
+        pass
+
+    monkeypatch.setattr(remote, "ssh_exec", fake)
+    monkeypatch.setattr(remote, "_sleep", no_sleep)
+    cli = RemoteEndpointCLI(SshTarget("h", "u", "k"), "true")
+    assert await cli.delete(LONG_NAME) is True
+    deletes = [c for c in calls if "delete --yes" in c]
+    assert len(deletes) == 2 and "--force" not in deletes[-1]  # the daemon exited: no force needed
+
+
+async def test_delete_forces_when_the_daemon_never_exits(monkeypatch):
+    from tests.test_remote_facility import LONG_NAME, WIDE_LIST
+
+    calls = []
+
+    async def fake(target, cmd, **kw):
+        calls.append(cmd)
+        if "endpoint list" in cmd:
+            return (0, WIDE_LIST, "")
+        if "--force" in cmd:
+            return (0, "deleted", "")
+        return (1, "", "Endpoint is currently running.")
+
+    async def no_sleep(s):
+        pass
+
+    monkeypatch.setattr(remote, "ssh_exec", fake)
+    monkeypatch.setattr(remote, "_sleep", no_sleep)
+    cli = RemoteEndpointCLI(SshTarget("h", "u", "k"), "true")
+    assert await cli.delete(LONG_NAME) is True
+    assert any("--yes --force" in c for c in calls)
+
+
+async def test_seed_is_recorded_before_provision_so_an_aborted_bootstrap_cannot_orphan_it(tmp_path, monkeypatch):
+    from hpc_bridge.facility.remote import SlurmFacility
+    from hpc_bridge.profile import Profile
+    from hpc_bridge.state import LoginNodeStore
+    from tests.test_remote_facility import _BootstrapCLI, _no_endpoints, _profile
+
+    class _DiesAfterSeed(_BootstrapCLI):
+        async def configure(self, name, multi_user=False):
+            raise TimeoutError()  # the first-connect toolchain install outran the ssh timeout
+
+    cli = _DiesAfterSeed(status=None, remote_db_present=False)
+    made = tmp_path / "t.db"
+    made.write_bytes(b"db")
+    monkeypatch.setattr(remote, "build_minimal_storage_db", lambda **kw: made)
+    store = LoginNodeStore(tmp_path / "e.json")
+    fac = SlurmFacility(_profile(), cli=cli, client_factory=_no_endpoints, store=store, alias="login.expanse.sdsc.edu")
+    with pytest.raises(TimeoutError):
+        await fac.bootstrap(Profile(mode="interactive"))
+    rec = store.get(alias="login.expanse.sdsc.edu", name=fac.profile.endpoint_name)
+    assert rec is not None and rec.seeded_credentials is True and rec.endpoint_id == ""
+    # the NEXT run finds the store present (whoami ok) yet still knows it is ours
+    fac2 = SlurmFacility(_profile(), cli=_BootstrapCLI(status="running", remote_db_present=True),
+                         client_factory=_no_endpoints, store=store, alias="login.expanse.sdsc.edu")
+    await fac2.bootstrap(Profile(mode="interactive"))
+    assert fac2._seeded_by_us() is True
+
+
+def test_allocating_notice_hints_at_rejection_on_a_facility_mep_after_five_minutes():
+    from hpc_bridge.notices import _allocating_notice
+
+    assert _allocating_notice("gpu-debug", 60, facility_mep=True) == "allocating nodes on 'gpu-debug'…"
+    late = _allocating_notice("gpu-debug", 480, facility_mep=True)
+    assert "Still allocating after 480s" in late and "scheduler_options" in late
+    assert "Still allocating" not in _allocating_notice("main", 480, facility_mep=False)  # SSH facilities can read squeue
+
+
+def test_expanse_seed_validates_as_an_mfa_ssh_entry():
+    import yaml
+
+    from hpc_bridge.catalog.entry import CatalogEntry
+
+    with open("src/hpc_bridge/catalog/seed/sdsc-expanse.yaml") as fh:
+        (doc,) = yaml.safe_load(fh)
+    e = CatalogEntry.model_validate(doc)
+    assert e.ssh_host == "login.expanse.sdsc.edu" and e.auth_method == "mfa-otp" and e.compute_mep_uuid is None
+    assert "astral.sh" in e.compute.env_setup and "{venv}" in e.compute.env_setup and e.account_required
+

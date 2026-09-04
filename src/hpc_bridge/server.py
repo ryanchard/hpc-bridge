@@ -86,6 +86,7 @@ from .notices import (  # noqa: F401 - re-exported
     _GLOBUS_USERNAME_RE,
     _NO_ACCOUNT_MARKERS,
     _SSH_AUTH_DENIED,
+    _allocating_notice,
     _billed_bounds_note,
     _busy_session_outcome,
     _cold_outcome,
@@ -268,7 +269,7 @@ async def _ensure_endpoint_up(
             if rt.provisioning_since is None:  # start the grace clock on the first cold poll
                 rt.provisioning_since = time.monotonic()
             provisioning_elapsed = time.monotonic() - rt.provisioning_since
-            notice = f"allocating nodes on {active_partition!r}…" if active_partition else "allocating nodes…"
+            notice = _allocating_notice(active_partition, provisioning_elapsed, facility_mep=not _has_login_shape(app))
             if rt.transient_conflicts >= TRANSIENT_CONFLICT_LIMIT:
                 rt.provisioning_since = None
                 return EndpointStatus(

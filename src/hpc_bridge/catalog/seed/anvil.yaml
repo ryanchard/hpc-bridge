@@ -49,6 +49,9 @@
     scheduler: slurm
     interface: ib0                  # informational: the facility template pins its own address
     env_setup: 'export PATH="$HOME/.local/bin:$PATH"; command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh; V=$HOME/hpc-bridge/gce-venv-{gce_version}-py{python_version}; [ -d $V ] || uv venv $V --python {python_version}; . $V/bin/activate; uv pip install -q "globus-compute-endpoint=={gce_version}"'
+    # Anvil's template builds the USER endpoint's environment at the CLIENT's SDK version (its UEP logged
+    # 4.16.0 while the manager metadata says 4.12.0): the worker pool must match the UEP, i.e. the client.
+    worker_version: client
     scratch_root: "$HOME/.hpc-bridge"
     endpoint_name: anvil-mep
   defaults:

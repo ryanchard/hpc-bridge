@@ -12,6 +12,9 @@ from .base import EndpointHandle
 # = this client's major.minor (the task function is dill-serialised by this interpreter).
 GCE_VERSION_TOKEN = "{gce_version}"
 PYTHON_VERSION_TOKEN = "{python_version}"
+# Keys the SERVER reads from a shape's user_endpoint_config (shape discriminators): never dropped from the
+# runtime dict by a facility's schema filter; stripped only at dispatch (`dispatch_uec`).
+INTERNAL_KEYS = frozenset({"compute"})
 
 
 class MEPFacility:
@@ -76,6 +79,7 @@ class MEPFacility:
         self.endpoint_version: str | None = None
         self.display_name: str | None = None
         self.template_notes: list[str] = []
+        self.worker_version: str = "manager"  # what {gce_version} resolves to (entry.compute.worker_version)
 
     @classmethod
     def from_entry(cls, entry, *, account: str | None = None, client_factory=None) -> MEPFacility:
@@ -102,7 +106,7 @@ class MEPFacility:
             "account": account,
             **(d.extra or {}),  # the facility template's own knobs (qos, cores_per_node, scheduler_options…)
         }
-        return cls(
+        fac = cls(
             endpoint_id=entry.compute_mep_uuid,
             name=c.endpoint_name or entry.id,
             user_opts=opts,
@@ -110,6 +114,22 @@ class MEPFacility:
             account_required=entry.account_required,
             client_factory=client_factory,
         )
+        fac.worker_version = getattr(c, "worker_version", "manager") or "manager"
+        return fac
+
+    def _pinned_gce_version(self) -> str | None:
+        """The version the worker pool must run — the facility's USER endpoint's, per the entry's
+        `worker_version`: the manager's (metadata), this client's SDK, or an explicit string."""
+        if self.worker_version == "manager":
+            return self.endpoint_version
+        if self.worker_version == "client":
+            try:
+                from importlib.metadata import version
+
+                return version("globus-compute-sdk")
+            except Exception:  # noqa: BLE001 - SDK metadata unavailable: nothing to pin to
+                return None
+        return self.worker_version
 
     @staticmethod
     def _default_client():
@@ -162,23 +182,37 @@ class MEPFacility:
         out = dict(uec)
         wi = out.get("worker_init")
         if isinstance(wi, str) and (GCE_VERSION_TOKEN in wi or PYTHON_VERSION_TOKEN in wi):
-            if GCE_VERSION_TOKEN in wi and not self.endpoint_version:
+            gce = self._pinned_gce_version()
+            if GCE_VERSION_TOKEN in wi and not gce:
                 # no version to pin to: the facility's own default worker_init is the safer fallback
                 out.pop("worker_init", None)
-                self._note("facility endpoint version unknown: using the facility's default worker_init")
+                self._note("worker version unknown: using the facility's default worker_init")
             else:
                 py = f"{sys.version_info.major}.{sys.version_info.minor}"
-                out["worker_init"] = (wi.replace(GCE_VERSION_TOKEN, self.endpoint_version or "")
+                out["worker_init"] = (wi.replace(GCE_VERSION_TOKEN, gce or "")
                                       .replace(PYTHON_VERSION_TOKEN, py))
+                self._note(f"worker pool pinned to globus-compute-endpoint {gce} ({self.worker_version} version), "
+                           f"python {py}")
         sc = self.schema or {}
         if sc.get("additionalProperties") is False:
-            allowed = set((sc.get("properties") or {}).keys())
+            allowed = set((sc.get("properties") or {}).keys()) | INTERNAL_KEYS
             dropped = sorted(k for k in out if k not in allowed)
             for k in dropped:
                 out.pop(k)
             if dropped:
                 self._note(f"keys not in the facility's template schema were dropped: {', '.join(dropped)}")
         return out
+
+    def dispatch_uec(self, uec: dict) -> dict:
+        """The config actually SENT with a submit: the runtime config minus the plugin's internal markers when
+        the facility's schema forbids unknown keys. `compute: True` must stay in the runtime dict — the
+        server's account/partition logic keys on it (dropping it there silently skipped the account the user
+        confirmed; Anvil live, 2026-09-04) — but a strict schema would reject it on the wire."""
+        sc = self.schema or {}
+        if sc.get("additionalProperties") is not False:
+            return uec
+        allowed = set((sc.get("properties") or {}).keys())
+        return {k: v for k, v in uec.items() if k in allowed}
 
     def _note(self, msg: str) -> None:
         if msg not in self.template_notes:

@@ -1174,3 +1174,25 @@ async def test_39_refused_start_with_no_running_manager_is_a_real_failure(monkey
     cli = RemoteEndpointCLI(SshTarget("h", "u", "k"), "true")
     with pytest.raises(RuntimeError, match=r"rc=73.*no output"):
         await cli.start(LONG_NAME)
+
+
+async def test_gce_and_start_tolerate_an_empty_env_setup(monkeypatch):
+    # An entry with no env_setup used to produce `export COLUMNS=…;  && globus-compute-endpoint …` — a shell
+    # syntax error (Expanse, live 2026-09-04).
+    cmds: list[str] = []
+
+    async def fake(target, cmd, **kw):
+        cmds.append(cmd)
+        return (0, WIDE_LIST if "endpoint list" in cmd else "HPCB_HOST=h\n", "")
+
+    monkeypatch.setattr(remote, "ssh_exec", fake)
+    cli = RemoteEndpointCLI(SshTarget("h", "u", "k"), "")
+    await cli.status(LONG_NAME)
+    await cli.start(LONG_NAME)
+    assert cmds and all("&& globus-compute-endpoint" not in c and " && " not in c.split("globus-compute-endpoint")[0] for c in cmds)
+    assert any("export COLUMNS=400; globus-compute-endpoint list" in c for c in cmds)
+    cli2 = RemoteEndpointCLI(SshTarget("h", "u", "k"), "module load python")
+    cmds.clear()
+    await cli2.status(LONG_NAME)
+    assert any("module load python && globus-compute-endpoint list" in c for c in cmds)
+

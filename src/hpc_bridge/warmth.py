@@ -100,7 +100,8 @@ def _runner_for(app: AppCtx, shape: str) -> GlobusRunner:
         ceiling_s = _task_ceiling_s(rt.user_endpoint_config)
         sync_wait_s = max(min(SYNC_WAIT_S, ceiling_s - TASK_CEILING_MARGIN_S), 5.0)
         rt.runner = app.runner_factory(
-            eid, user_endpoint_config=rt.user_endpoint_config, walltime=ceiling_s, timeout=sync_wait_s
+            eid, user_endpoint_config=getattr(app.facility, "dispatch_uec", lambda d: d)(rt.user_endpoint_config),
+            walltime=ceiling_s, timeout=sync_wait_s
         )
         rt.runner_stale = False
         rt.warm_confirmed_at = None

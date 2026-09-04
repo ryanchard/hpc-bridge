@@ -1,0 +1,31 @@
+# src/hpc_bridge/catalog/seed/sdsc-expanse.yaml
+# SDSC Expanse (ACCESS) over SSH — an MFA facility: every login needs a TOTP code even with a key, so the first
+# contact goes through the pre-auth handoff (the user opens the ControlMaster in their own terminal; hpc-bridge
+# multiplexes). No uv / Globus Compute on the system (system Python 3.6): env_setup self-provisions uv into the
+# user's home, then the endpoint at Python 3.13. Validated 2026-09-04: probe, bootstrap and the login shape over
+# the shared master; a compute block was not run in that check.
+- id: expanse
+  facility_key: sdsc
+  facility: "SDSC / ACCESS"
+  description: "Expanse (Slurm; AMD EPYC CPU nodes, V100 GPU nodes) over SSH with a one-time code at login — hpc-bridge hands you the ssh command to open the shared session"
+  display_name: "HPC-Bridge Expanse"
+  aliases: [login.expanse.sdsc.edu, expanse.sdsc.edu]
+  compute_mep_uuid: null
+  ssh_host: login.expanse.sdsc.edu
+  auth_method: mfa-otp
+  allocation: null                  # `expanse-client user` lists balances; no parser yet — pass account= (your project id, e.g. chi152)
+  account_required: true
+  compute:
+    scheduler: slurm
+    interface: ib0
+    env_setup: 'export PATH="$HOME/.local/bin:$PATH"; command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh; [ -d {venv} ] || uv venv {venv} --python 3.13; . {venv}/bin/activate; command -v globus-compute-endpoint >/dev/null 2>&1 || uv pip install -q "globus-compute-endpoint==4.16.0"'
+    scratch_root: "/expanse/lustre/scratch/{user}/temp_project/.hpc-bridge"
+    endpoint_name: hpc-bridge-expanse
+  defaults:
+    partition: shared               # per-core charging; `debug` for short tests (30 min max); `compute` = whole node
+    walltime: "00:30:00"
+    max_workers_per_node: 2
+    nodes_per_block: 1
+    max_blocks: 1
+  provenance: curated
+  last_validated: 2026-09-04
