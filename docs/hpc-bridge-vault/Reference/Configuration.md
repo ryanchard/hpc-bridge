@@ -47,3 +47,6 @@
 
 ## See also
 [[server]] · [[login]] · [[facility-remote]] · [[state]] · [[Plugin packaging]]
+
+> [!note] Where these are read
+> Every variable above is read through `src/hpc_bridge/config.py` (split step 2, 2026-09-03) — one accessor per variable, one empty-means-unset idiom. Add a row here when you add an accessor there.
