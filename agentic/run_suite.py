@@ -87,6 +87,53 @@ def _cooldown_s(scenario: str) -> int:
     return int(_knobs(scenario).get("HPCB_KNOB_COOLDOWN_S", "0") or 0)
 
 
+def _needs_node(scenario: str) -> bool:
+    """NEEDS_COMPUTE_NODE scenarios bring up a real block: launched only when the partition has an idle node."""
+    return _knobs(scenario).get("HPCB_KNOB_NEEDS_NODE") == "1"
+
+
+def _idle_nodes() -> int | None:
+    """Idle nodes on the cluster partition, probed over the operator's own ssh alias (HPCB_NODE_PROBE_SSH,
+    default `globus1`; partition HPCB_NODE_PARTITION, default `main`). None = the probe itself failed."""
+    import subprocess
+    host = os.environ.get("HPCB_NODE_PROBE_SSH", "globus1")
+    part = os.environ.get("HPCB_NODE_PARTITION", "main")
+    try:
+        r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20", host,
+                            f"sinfo -h -p {part} -t idle -o %D"], capture_output=True, text=True, timeout=60)
+    except Exception:  # noqa: BLE001 - a transport failure just means "unknown"
+        return None
+    if r.returncode != 0:
+        return None
+    out = r.stdout.strip()
+    return int(out) if out.isdigit() else 0
+
+
+async def _await_idle_node(label: str, halt: asyncio.Event, max_wait_s: int) -> int | None:
+    """Wait until the partition has an idle node. Returns the idle count (>=1), -1 when the probe is
+    unavailable (launch unguarded rather than never), or None when `max_wait_s` passed with none idle.
+    Why: a cell whose block sits PENDING (Resources) for its whole run grades as `compute_ran` FAILED —
+    an environment fact dressed as agent behaviour. Waiting turns that into data worth having."""
+    t0 = time.monotonic()
+    last_note = -600.0
+    while not halt.is_set():
+        idle = await asyncio.to_thread(_idle_nodes)
+        if idle is None:
+            print(f"⚠ nodes  {label}: node probe unavailable (ssh/sinfo) — launching unguarded", flush=True)
+            return -1
+        if idle >= 1:
+            return idle
+        elapsed = time.monotonic() - t0
+        if elapsed >= max_wait_s:
+            return None
+        if elapsed - last_note >= 600:
+            print(f"⏳ nodes  {label}: 0 idle nodes on the partition — waiting ({int(elapsed)}s of {max_wait_s}s)",
+                  flush=True)
+            last_note = elapsed
+        await asyncio.sleep(60)
+    return None
+
+
 def _short_model(m: str) -> str:
     parts = m.split("-")
     return parts[1] if len(parts) > 1 else m
@@ -189,7 +236,15 @@ async def _main(args) -> int:
               + ", ".join(f"{s}{f' (+{cooldowns[s]}s cooldown)' if cooldowns[s] else ''}" for s in sorted(serial_locks)),
               flush=True)
 
-    async def gated(s, m, e, pe, ab):
+    # NEEDS_COMPUTE_NODE scenarios launch only when the partition has an idle node; with exactly one idle
+    # node the gate stays held for the whole cell so a second cell can't queue behind the same node.
+    node_scenarios = {s for s in scenarios if _needs_node(s)} if args.node_wait_s > 0 else set()
+    node_lock = asyncio.Lock()
+    if node_scenarios:
+        print("compute-node scenarios (launch only when a node is idle; wait up to "
+              f"{args.node_wait_s}s): " + ", ".join(sorted(node_scenarios)), flush=True)
+
+    async def serial_or_plain(s, m, e, pe, ab):
         lock = serial_locks.get(s)
         if lock is None:
             return await _run_job(s, m, e, pe, ab, claims, sem, stagger, halt)
@@ -201,6 +256,28 @@ async def _main(args) -> int:
                 await asyncio.sleep(cooldowns[s])
             return r
 
+    async def gated(s, m, e, pe, ab):
+        if s not in node_scenarios:
+            return await serial_or_plain(s, m, e, pe, ab)
+        label = f"{s} · {_short_model(m)}/{e or 'default'}"
+        await node_lock.acquire()
+        held = True
+        try:
+            idle = await _await_idle_node(label, halt, args.node_wait_s)
+            if idle is None:
+                print(f"⏭ skip   {label} — no idle compute node within {args.node_wait_s}s", flush=True)
+                return {"scenario": s, "model": m, "effort": e, "persona": pe, "ablate": ab, "user": None,
+                        "ok": False, "skipped": True,
+                        "result": f"SKIPPED (no idle compute node within {args.node_wait_s}s)", "output": ""}
+            print(f"🖥 nodes  {label}: {idle if idle >= 0 else '?'} idle at launch", flush=True)
+            if idle != 1:  # unknown or plenty: don't serialise the rest behind this cell
+                node_lock.release()
+                held = False
+            return await serial_or_plain(s, m, e, pe, ab)
+        finally:
+            if held:
+                node_lock.release()
+
     try:
         results = await asyncio.gather(*[gated(s, m, e, pe, ab) for s, m, e, pe, ab in jobs])
     finally:
@@ -210,7 +287,7 @@ async def _main(args) -> int:
     limited = [r for r in results if r.get("rate_limited")]
     graded = [r for r in results if not r.get("skipped") and not r.get("rate_limited")]
     passed = sum(1 for r in graded if r["ok"])
-    extra = f" · {len(limited)} rate-limited · {len(skipped)} skipped (halt)" if limited else ""
+    extra = (f" · {len(limited)} rate-limited" if limited else "") + (f" · {len(skipped)} skipped" if skipped else "")
     print(f"\n==== SUITE: {passed}/{len(graded)} passed{extra} ====")
     cells: dict[str, list[bool]] = {}
     for r in graded:
@@ -219,6 +296,8 @@ async def _main(args) -> int:
         cells.setdefault(key, []).append(r["ok"])
     for cell, oks in sorted(cells.items()):
         print(f"  {cell}: {sum(oks)}/{len(oks)} passed")   # the model × reasoning-level comparison
+    for r in skipped:
+        print(f"  ⏭ {r['scenario']} · {_cell(r['model'], r['effort'])} — {r['result']}")
     fails = [r for r in graded if not r["ok"]]
     if fails:
         print("\nfailures:")
@@ -248,6 +327,9 @@ def main() -> None:
     # also opens a teardown connection, and a shared office NAT / CI runner shares the budget.
     ap.add_argument("--stagger", type=float, default=2.0, help="seconds between launches (rate-limit guard)")
     ap.add_argument("--no-build", action="store_true", help="skip the one-time image build")
+    ap.add_argument("--node-wait-s", type=int, default=3600,
+                    help="NEEDS_COMPUTE_NODE scenarios: wait up to this long for an idle node before skipping the "
+                         "cell (0 = launch regardless). Probe: ssh $HPCB_NODE_PROBE_SSH sinfo -p $HPCB_NODE_PARTITION")
     args = ap.parse_args()
     sys.exit(asyncio.run(_main(args)))
 

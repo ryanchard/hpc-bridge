@@ -11,6 +11,11 @@ Plan A's cost accounting.
 """
 from invariants import compute_ran  # liveness: the gated provision must actually deliver
 
+# host knob (read by harness/scenario_knobs.py): this cell brings up a real Slurm block, so run_suite launches
+# it only when the partition has an idle node — 4 of 5 compute cells failed on `compute_ran` while every node
+# was held by other users' day-long jobs (block-tier sweep, 2026-09-03). No node = wait/skip, not a FAILED cell.
+NEEDS_COMPUTE_NODE = True
+
 PROMPT = (
     "Hi! Can you bring up a compute node for me on the HPC facility with login host "
     "`globus1.cs.uchicago.edu`? Use facility id `{facility}`. I'd like to keep costs in "

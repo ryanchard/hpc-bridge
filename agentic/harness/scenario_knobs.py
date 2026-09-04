@@ -5,6 +5,7 @@
     HPCB_KNOB_GLOBUS_DB_SECRET=HPCB_TEST_GLOBUS_DB_NOACCOUNT   # GLOBUS_DB_SECRET -> mount THAT env var's path instead
     HPCB_KNOB_SERIAL=1                             # SERIAL = True -> shares a facility-side identity; run one at a time
     HPCB_KNOB_COOLDOWN_S=660                       # COOLDOWN_S -> run_suite waits this long after each cell (fail2ban findtime)
+    HPCB_KNOB_NEEDS_NODE=1                         # NEEDS_COMPUTE_NODE = True -> run_suite launches only when a node is idle
 
 Everything else a scenario declares (EXTRA_ENV, SEED_FACILITY_CACHE, …) is applied INSIDE the container
 by run.py. Scenario modules import only `invariants` (pure), so this is importable on the host."""
@@ -43,6 +44,8 @@ def main(argv: list[str]) -> int:
     cooldown = int(getattr(mod, "COOLDOWN_S", 0) or 0)
     if cooldown > 0:
         print(f"HPCB_KNOB_COOLDOWN_S={cooldown}")
+    if getattr(mod, "NEEDS_COMPUTE_NODE", False):
+        print("HPCB_KNOB_NEEDS_NODE=1")
     return 0
 
 
