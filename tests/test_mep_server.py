@@ -1,7 +1,7 @@
 # tests/test_mep_server.py — the server seams on a facility-run multi-user endpoint (MEP): zero SSH,
 # compute-only, draining-only stop. Drives a REAL MEPFacility through the real _connect_facility /
 # _ensure_endpoint_up / _run_shell / _stop_endpoint / _teardown_endpoint paths.
-from hpc_bridge import server
+from hpc_bridge import binding, server
 from hpc_bridge.facility.mep import MEPFacility
 from hpc_bridge.profile import Profile
 from hpc_bridge.runner import CanaryResult
@@ -44,8 +44,8 @@ def _app(fac=None) -> AppCtx:
 
 
 async def _connect(app, monkeypatch, entry=None):
-    monkeypatch.setattr(server, "make_catalog", lambda: FakeCatalog([entry or fake_mep_entry()]))
-    monkeypatch.setattr(server, "_facility_from_entry", lambda e, *, account: app.facility)
+    monkeypatch.setattr(binding, "make_catalog", lambda: FakeCatalog([entry or fake_mep_entry()]))
+    monkeypatch.setattr(binding, "_facility_from_entry", lambda e, *, account: app.facility)
     return await server._connect_facility(app, "globus1")
 
 

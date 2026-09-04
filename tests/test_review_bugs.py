@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from hpc_bridge import binding
 from hpc_bridge.profile import Profile
 from hpc_bridge.server import (
     AppCtx,
@@ -166,10 +167,9 @@ async def test_offline_cache_serves_the_bare_id_that_was_asked(tmp_path):
 
 
 async def test_registry_outage_surfaces_as_unavailable(monkeypatch, tmp_path):
-    from hpc_bridge import server
     from hpc_bridge.catalog.search import SearchCatalog
     from tests.test_catalog_search import _FakeSearchClient
-    monkeypatch.setattr(server, "make_catalog", lambda: SearchCatalog(index_id="idx", client=_FakeSearchClient(fail=True), cache_dir=tmp_path))
+    monkeypatch.setattr(binding, "make_catalog", lambda: SearchCatalog(index_id="idx", client=_FakeSearchClient(fail=True), cache_dir=tmp_path))
     app = AppCtx(facility=FakeFacility(), profile=Profile())
     res = await _connect_facility(app, "nowhere")
     assert res.phase == "needs_facility_details" and "registry unavailable" in res.notice
@@ -237,7 +237,7 @@ async def test_byo_details_cached_only_after_the_bootstrap_accepts(monkeypatch):
     details = FacilityDetails(ssh_host="h.example.edu", interface="ib0", env_setup="true", scratch_root="/s/{user}", partition="main")
     f = FakeFacility()
     f.workers = 1
-    monkeypatch.setattr(server, "_facility_from_entry", lambda entry, *, account: f)
+    monkeypatch.setattr(binding, "_facility_from_entry", lambda entry, *, account: f)
 
     async def refused(app, shape, **kw):
         raise RuntimeError("seed storage.db (mkdir) failed: u@h: Permission denied (publickey)")
@@ -263,19 +263,18 @@ async def test_list_facilities_hides_transport_only(monkeypatch):
     def down():
         raise OSError("network down")
 
-    monkeypatch.setattr(server, "make_catalog", down)
+    monkeypatch.setattr(binding, "make_catalog", down)
     assert await server._list_facilities("") == []
 
     def bug():
         raise AttributeError("'NoneType' object has no attribute 'summary'")
 
-    monkeypatch.setattr(server, "make_catalog", bug)
+    monkeypatch.setattr(binding, "make_catalog", bug)
     with pytest.raises(AttributeError):
         await server._list_facilities("")
 
 
 async def test_rebind_banks_the_warm_interval_instead_of_losing_it(monkeypatch):
-    from hpc_bridge import server
     from tests.fakes import FakeCatalog
     app = _warm_app()
     app.charge_factor = 1.0
@@ -284,8 +283,8 @@ async def test_rebind_banks_the_warm_interval_instead_of_losing_it(monkeypatch):
     rt.runner = _FakeRunner("eid-1", _Res(0, "", ""))
     other = FakeFacility()
     other.workers = 1
-    monkeypatch.setattr(server, "_facility_from_entry", lambda entry, *, account: other)
-    monkeypatch.setattr(server, "make_catalog", lambda: FakeCatalog([fake_entry(id="b", facility_key="x")]))
+    monkeypatch.setattr(binding, "_facility_from_entry", lambda entry, *, account: other)
+    monkeypatch.setattr(binding, "make_catalog", lambda: FakeCatalog([fake_entry(id="b", facility_key="x")]))
     app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, "", ""))
     res = await _connect_facility(app, "b")
     assert "session spend so far" in (res.notice or "")
@@ -318,7 +317,7 @@ async def test_byo_details_cached_only_once_the_login_shape_is_proven_warm(monke
     details = FacilityDetails(ssh_host="h.example.edu", interface="ib0", env_setup="true", scratch_root="/s/{user}", partition="main")
     f = FakeFacility()
     f.workers = 1
-    monkeypatch.setattr(server, "_facility_from_entry", lambda entry, *, account: f)
+    monkeypatch.setattr(binding, "_facility_from_entry", lambda entry, *, account: f)
     outcomes = iter(["provisioning", "provisioning", "warm"])
 
     async def provision(app, shape, **kw):
@@ -346,8 +345,8 @@ async def test_unreachable_pinned_login_node_drops_the_pin(monkeypatch, tmp_path
                              key_path="/k", name="hpc-bridge-anvil", provisioned_at="2026-09-03T00:00:00Z"))
     fac = SimpleNamespace(store=store, alias="anvil", profile=SimpleNamespace(endpoint_name="hpc-bridge-anvil", scheduler="slurm"),
                           cli=SimpleNamespace(target=SimpleNamespace(host="login03.example.edu", user="u")))
-    monkeypatch.setattr(server, "_facility_from_entry", lambda entry, *, account: fac)
-    monkeypatch.setattr(server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")]))
+    monkeypatch.setattr(binding, "_facility_from_entry", lambda entry, *, account: fac)
+    monkeypatch.setattr(binding, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")]))
 
     async def unreachable(app, shape, **kw):
         raise RuntimeError("bootstrap failed: ssh: connect to host login03.example.edu port 22: Connection timed out")
