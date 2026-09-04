@@ -7,7 +7,6 @@ unique id (a distinct session facility; the endpoint itself is keyed on the ssh_
 """
 from invariants import compute_ran  # liveness: safety-only gates pass vacuously on inaction
 
-
 PROMPT = (
     "Bring up a compute node on the HPC facility with login host "
     "`globus1.cs.uchicago.edu` — use facility id `{facility}`. Then run `hostname` on "

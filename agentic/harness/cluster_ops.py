@@ -28,7 +28,12 @@ def endpoint_uuid_cmd(endpoint_name: str) -> str:
 
 
 def scoped_cancel_cmd(scheduler: str, eids: list[str]) -> str:
-    """Cancel ONLY the pilot blocks of `eids` (matched by their `uep.<eid>` marker). Never `-u`."""
+    """Cancel ONLY the pilot blocks of `eids` (matched by their `uep.<eid>` marker). Never `-u`.
+
+    A DELIBERATE copy of the product's `server._release_cmd` (same marker semantics), not an import:
+    the harness must keep working when the code under test is broken, and it runs on the host while
+    the product runs in the jail. `test_pool_and_cluster_ops.py` pins the two to the same marker
+    scoping so they cannot drift apart silently (code-quality review 2026-09-03)."""
     if not eids:
         return 'echo "cancel: no endpoint uuid known for this run — cancelling NOTHING (never user-wide)"'
     markers = shlex.quote(" ".join(f"uep.{e}" for e in eids))

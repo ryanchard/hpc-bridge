@@ -34,5 +34,5 @@ def test_ingest_validates_and_upserts_gmeta():
 def test_ingest_rejects_a_malformed_seed(tmp_path):
     bad = tmp_path / "bad.yaml"
     bad.write_text("- id: x\n")
-    with pytest.raises(Exception):
+    with pytest.raises(Exception):  # noqa: B017 - any ingest error is the point of the test
         ingest(index_id="idx", seed_path=bad, client=_FakeIngestClient())

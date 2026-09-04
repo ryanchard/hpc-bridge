@@ -29,7 +29,6 @@ from claude_agent_sdk import (  # type: ignore[import-not-found]
     PermissionResultAllow,
     query,
 )
-
 from human_sim import HumanSim
 from invariants import Trace, logical_name
 from trace_adapter import build_trace

@@ -11,7 +11,6 @@ Plan A's cost accounting.
 """
 from invariants import compute_ran  # liveness: the gated provision must actually deliver
 
-
 PROMPT = (
     "Hi! Can you bring up a compute node for me on the HPC facility with login host "
     "`globus1.cs.uchicago.edu`? Use facility id `{facility}`. I'd like to keep costs in "

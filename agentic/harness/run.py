@@ -21,8 +21,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-from cluster_ops import (capture_logs_cmd, delete_endpoint_cmd, endpoint_uuid_cmd, scoped_cancel_cmd,
-                         uep_dirs_cleanup_cmd)
+from cluster_ops import (
+    capture_logs_cmd,
+    delete_endpoint_cmd,
+    endpoint_uuid_cmd,
+    scoped_cancel_cmd,
+    uep_dirs_cleanup_cmd,
+)
 from invariants import Result, Trace, check_all
 from provenance import write_run_record
 from runner import RunResult, run_scenario

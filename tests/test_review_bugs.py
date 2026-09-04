@@ -10,11 +10,21 @@ from pathlib import Path
 import pytest
 
 from hpc_bridge.profile import Profile
-from hpc_bridge.runner import CanaryResult
 from hpc_bridge.server import (
-    AppCtx, ShapeRuntime, _confirm_worker, _connect_facility, _explain_provision_error,
-    _forget_identity_verdicts, _parse_hhmmss, _poll_task, _run_shell, _runner_for, _shape_runtime,
-    _stop_endpoint, _task_ceiling_s, _transient_dispatch_failure,
+    AppCtx,
+    ShapeRuntime,
+    _confirm_worker,
+    _connect_facility,
+    _explain_provision_error,
+    _forget_identity_verdicts,
+    _parse_hhmmss,
+    _poll_task,
+    _run_shell,
+    _runner_for,
+    _shape_runtime,
+    _stop_endpoint,
+    _task_ceiling_s,
+    _transient_dispatch_failure,
 )
 from tests.fakes import FakeFacility, fake_entry, fake_mep_entry
 from tests.test_server import _FakeRunner, _Res
@@ -30,9 +40,12 @@ def _isolate(monkeypatch, tmp_path):
 
 
 def _warm_app() -> AppCtx:
-    f = FakeFacility(); f.workers = 1
-    app = AppCtx(facility=f, profile=Profile()); app.state.endpoint_id = "eid-1"
-    rt = _shape_runtime(app, "compute"); rt.spend_confirmed = True
+    f = FakeFacility()
+    f.workers = 1
+    app = AppCtx(facility=f, profile=Profile())
+    app.state.endpoint_id = "eid-1"
+    rt = _shape_runtime(app, "compute")
+    rt.spend_confirmed = True
     return app
 
 
@@ -53,7 +66,8 @@ async def test_new_login_does_not_drop_a_live_task():
 async def test_provisioning_clock_resets_when_warm_by_any_route():
     app = _warm_app()
     app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, "", ""))
-    rt = _shape_runtime(app, "compute"); rt.provisioning_since = time.monotonic() - 9999
+    rt = _shape_runtime(app, "compute")
+    rt.provisioning_since = time.monotonic() - 9999
     assert await _confirm_worker(app, "compute", force=True) == "warm"
     assert rt.provisioning_since is None
 
@@ -80,7 +94,8 @@ class _Mgr:
         self.on_url, self.ev, self.aborted = on_url, threading.Event(), None
 
     def abort(self, why):
-        self.aborted = why; self.ev.set()
+        self.aborted = why
+        self.ev.set()
 
 
 class _App:
@@ -163,6 +178,7 @@ async def test_registry_outage_surfaces_as_unavailable(monkeypatch, tmp_path):
 # 10. endpoint names are an allowlist at both boundaries ---------------------------------------
 async def test_endpoint_name_cannot_carry_shell():
     from pydantic import ValidationError
+
     from hpc_bridge.catalog.entry import CatalogEntry
     from hpc_bridge.facility.remote import RemoteEndpointCLI, SshTarget
     with pytest.raises(ValidationError, match="endpoint_name"):
@@ -176,7 +192,8 @@ async def test_endpoint_name_cannot_carry_shell():
 # 11. stop on a GONE endpoint is terminal, not "call again" ------------------------------------
 async def test_stop_on_a_gone_endpoint_is_terminal(monkeypatch):
     from hpc_bridge import server
-    app = AppCtx(facility=FakeFacility(), profile=Profile()); app.state.endpoint_id = "eid-1"
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    app.state.endpoint_id = "eid-1"
     app.shapes["compute"] = ShapeRuntime(user_endpoint_config={"compute": True}, runner=_FakeRunner("eid-1", _Res(0, "", "")))
     app.shapes["login"] = ShapeRuntime(user_endpoint_config={"provider_type": "LocalProvider"})
 
@@ -191,7 +208,8 @@ async def test_stop_on_a_gone_endpoint_is_terminal(monkeypatch):
     app.facility.manager_up = False  # the manager is GONE
     res = await _stop_endpoint(app)
     assert res.status == "down" and "OFFLINE" in res.notice and "ORPHANED" in res.notice and "call stop_endpoint again in a few" not in res.notice
-    app.state.endpoint_id = "eid-1"; app.facility.manager_up = True  # merely cold: the honest draining path
+    app.state.endpoint_id = "eid-1"
+    app.facility.manager_up = True  # merely cold: the honest draining path
     app.shapes["compute"] = ShapeRuntime(user_endpoint_config={"compute": True}, runner=_FakeRunner("eid-1", _Res(0, "", "")))
     assert (await _stop_endpoint(app)).status == "draining"
 
@@ -217,7 +235,8 @@ async def test_byo_details_cached_only_after_the_bootstrap_accepts(monkeypatch):
     from hpc_bridge import server
     from hpc_bridge.models import FacilityDetails
     details = FacilityDetails(ssh_host="h.example.edu", interface="ib0", env_setup="true", scratch_root="/s/{user}", partition="main")
-    f = FakeFacility(); f.workers = 1
+    f = FakeFacility()
+    f.workers = 1
     monkeypatch.setattr(server, "_facility_from_entry", lambda entry, *, account: f)
 
     async def refused(app, shape, **kw):
@@ -235,3 +254,58 @@ async def test_byo_details_cached_only_after_the_bootstrap_accepts(monkeypatch):
     app2 = AppCtx(facility=FakeFacility(), profile=Profile())
     await _connect_facility(app2, "byo", details=details)
     assert server._facility_store().get("h.example.edu") is not None
+
+
+# --- code-quality quick wins (2026-09-03) ----------------------------------------------------
+async def test_list_facilities_hides_transport_only(monkeypatch):
+    from hpc_bridge import server
+
+    def down():
+        raise OSError("network down")
+
+    monkeypatch.setattr(server, "make_catalog", down)
+    assert await server._list_facilities("") == []
+
+    def bug():
+        raise AttributeError("'NoneType' object has no attribute 'summary'")
+
+    monkeypatch.setattr(server, "make_catalog", bug)
+    with pytest.raises(AttributeError):
+        await server._list_facilities("")
+
+
+async def test_rebind_banks_the_warm_interval_instead_of_losing_it(monkeypatch):
+    from hpc_bridge import server
+    from tests.fakes import FakeCatalog
+    app = _warm_app()
+    app.charge_factor = 1.0
+    rt = _shape_runtime(app, "compute")
+    rt.warm_since = time.monotonic() - 3600  # an hour of warm block
+    rt.runner = _FakeRunner("eid-1", _Res(0, "", ""))
+    other = FakeFacility()
+    other.workers = 1
+    monkeypatch.setattr(server, "_facility_from_entry", lambda entry, *, account: other)
+    monkeypatch.setattr(server, "make_catalog", lambda: FakeCatalog([fake_entry(id="b", facility_key="x")]))
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, "", ""))
+    res = await _connect_facility(app, "b")
+    assert "session spend so far" in (res.notice or "")
+
+
+def test_idle_release_prefers_the_facility_window():
+    from hpc_bridge.server import _idle_release_s
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    app.facility.max_idletime_s = 1234
+    assert _idle_release_s(app) == 1234
+    del app.facility.max_idletime_s
+    assert _idle_release_s(app) == app.profile.max_idletime_s
+
+
+async def test_warm_status_notice_never_renders_none():
+    from hpc_bridge.server import _ensure_endpoint_up
+    app = _warm_app()
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, "", ""))
+    await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
+    rt = _shape_runtime(app, "compute")
+    rt.last_canary = None  # the warm-by-live-task path leaves no canary
+    res = await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
+    assert res.notice and not res.notice.startswith("None")

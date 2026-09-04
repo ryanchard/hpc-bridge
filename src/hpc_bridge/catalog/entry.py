@@ -1,9 +1,8 @@
 # src/hpc_bridge/catalog/entry.py
 from __future__ import annotations
 
-import re
-
 import datetime
+import re
 import uuid
 from typing import Any, Literal
 

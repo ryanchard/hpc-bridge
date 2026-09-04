@@ -27,6 +27,7 @@ REPO = Path(__file__).resolve().parents[1]
 SMOKE = REPO / "agentic" / "run_smoke.sh"
 sys.path.insert(0, str(REPO / "agentic" / "harness"))
 from pool import PoolClaims  # noqa: E402  (cross-process pool-user claims — see pool.py)
+
 POOL = [f"hpcbridge-test-{i:02d}" for i in range(10)]
 DEFAULT_MODEL = "claude-opus-5"
 

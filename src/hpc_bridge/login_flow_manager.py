@@ -17,8 +17,8 @@ class CapturingLocalServerManager:
     @staticmethod
     def build(*, on_url: Callable[[str], None]):
         import globus_sdk
-        from globus_sdk.login_flows import LocalServerLoginFlowManager
         from globus_compute_sdk.sdk.auth.globus_app import DEFAULT_CLIENT_ID
+        from globus_sdk.login_flows import LocalServerLoginFlowManager
 
         class _Manager(LocalServerLoginFlowManager):
             _server = None
@@ -36,7 +36,8 @@ class CapturingLocalServerManager:
                 Nothing about a login may be logged. We also keep the server handle so abort() can
                 unblock the SDK's wait at our TTL."""
                 from globus_sdk.login_flows.local_server_login_flow_manager.local_server import (
-                    RedirectHandler, RedirectHTTPServer,
+                    RedirectHandler,
+                    RedirectHTTPServer,
                 )
 
                 class _QuietHandler(RedirectHandler):

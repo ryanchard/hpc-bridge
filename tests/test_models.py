@@ -1,4 +1,4 @@
-from hpc_bridge.models import ShellOutcome, EndpointStatus
+from hpc_bridge.models import EndpointStatus, ShellOutcome
 
 
 def test_endpoint_status_defaults_and_roundtrip():

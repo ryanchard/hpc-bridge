@@ -103,7 +103,7 @@ def _transcript_md(config: dict, messages: list[Any], dialogue: list[Any],
         for x in dialogue:
             for q in getattr(x, "questions", []):
                 lines.append(f"- **asked:** {q.get('question', '?')}")
-            for k, v in getattr(x, "answers", {}).items():
+            for _k, v in getattr(x, "answers", {}).items():
                 lines.append(f"  - **answered:** {v}")
             if getattr(x, "note", ""):
                 lines.append(f"  - *user note:* {x.note}")

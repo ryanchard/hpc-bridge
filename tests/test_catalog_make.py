@@ -75,6 +75,7 @@ def test_search_client_never_lets_the_compute_client_version_check(monkeypatch):
     # the version check is an AUTHENTICATED call: on a fresh install it triggers the SDK's own
     # command-line login on the MCP transport (review merge-blocker) — must be off
     import globus_compute_sdk
+
     from hpc_bridge import server
     seen = {}
 

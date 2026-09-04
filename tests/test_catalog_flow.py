@@ -234,7 +234,7 @@ async def test_server_registers_connect_facility_tool():
 
 
 def _no_catalog():
-    raise RuntimeError("HPC_BRIDGE_SEARCH_INDEX is required")
+    raise OSError("registry unreachable")  # a TRANSPORT failure lists nothing; a bug would now raise (review 2026-09-03)
 
 
 async def test_connect_facility_index_unavailable_falls_back_to_details(monkeypatch):
@@ -799,6 +799,7 @@ async def test_no_ssh_access_is_explained_not_dumped(monkeypatch):
     # denied (publickey,…)' — an internal step name + a bare ssh error. Name the host, the login name and
     # its source, and the remedies instead.
     from types import SimpleNamespace
+
     from hpc_bridge import server
 
     f = FakeFacility()
@@ -823,6 +824,7 @@ async def test_no_ssh_access_is_explained_not_dumped(monkeypatch):
 
 def test_explain_provision_error_classes():
     from types import SimpleNamespace
+
     from hpc_bridge.server import _explain_provision_error
     fac = SimpleNamespace(alias="h.example.edu", cli=SimpleNamespace(target=SimpleNamespace(host="h.example.edu", user=None)))
     assert _explain_provision_error(RuntimeError("x failed: ssh: Could not resolve hostname h.example.edu"), fac).startswith("CANNOT REACH h.example.edu")

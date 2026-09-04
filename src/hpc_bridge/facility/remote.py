@@ -18,14 +18,16 @@ import tempfile
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING, Literal
 
 import yaml
+
+# PRIVATE SDK path (globus-compute-sdk 4.x): a rename here breaks at IMPORT — i.e. the 'no hpc-bridge tools'
+# boot failure. Re-check on every SDK bump (dependency audit 2026-09-03).
 from globus_compute_sdk.sdk.auth.token_storage import (
     _get_storage_filepath,
     _resolve_namespace,
 )
-
-from typing import TYPE_CHECKING, Literal
 
 from ..credentials import build_minimal_storage_db
 from ..profile import Profile
@@ -34,7 +36,6 @@ from ..state import EndpointRecord, LoginNodeStore
 if TYPE_CHECKING:
     from ..catalog.entry import CatalogEntry
 from .base import EndpointHandle
-
 
 # A Globus endpoint UUID — scopes the per-UEP pidfile-cleanup glob to one endpoint, and refuses to
 # build a remote glob from anything that isn't a plain UUID.

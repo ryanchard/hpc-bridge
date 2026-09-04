@@ -7,7 +7,6 @@ from pathlib import Path
 
 from .entry import CatalogEntry, CatalogSummary
 
-
 # The public registry of HPC facilities (Globus Search index `hpc-bridge-test`, entries `visible_to: public`,
 # read ANONYMOUSLY). Baked in so `list_facilities()` works out of the box; HPC_BRIDGE_SEARCH_INDEX overrides
 # it (a private/staging registry). A purpose-named production index is an open V1 item — swap the id here.
@@ -98,7 +97,7 @@ class SearchCatalog:
         if cached.exists():
             try:
                 return CatalogEntry.model_validate(json.loads(cached.read_text()))
-            except Exception:
+            except Exception:  # noqa: BLE001 - a transport failure lists nothing; the caller degrades honestly
                 pass  # corrupt/stale cache — a hard miss, not a hardcoded fallback
         return None
 
@@ -107,7 +106,7 @@ class SearchCatalog:
             resp = await asyncio.to_thread(
                 self._client.post_search, self._index_id, {"q": query or "*"}
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 - a corrupt cache file is a miss, not a crash
             return []  # offline: no fallback (discover isn't cached)
         out = []
         for gmeta in resp.get("gmeta", []):

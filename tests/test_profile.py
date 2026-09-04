@@ -18,9 +18,10 @@ def test_profile_rejects_nonpositive_idletime():
 
 
 def test_profile_carries_scheduler_and_cpus_per_node():
+    import datetime
+
     from hpc_bridge.catalog.entry import CatalogEntry, Compute, Defaults
     from hpc_bridge.facility.remote import profile_from_catalog_entry
-    import datetime
 
     entry = CatalogEntry(
         id="polaris", facility_key="alcf", facility="ALCF",
