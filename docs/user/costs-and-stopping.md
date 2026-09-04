@@ -31,8 +31,8 @@ busy, so the idle timeout never reclaims it under you. Do not ask for work to be
 is still running. If the endpoint disappears while a task is pending, the task is reported as
 orphaned rather than left to poll forever.
 
-A task cannot outlive its block. When the block's walltime expires (30 minutes on Anvil's `debug`
-partition by default), the task is killed with exit code 124 and you get the output it produced up to
+A task cannot outlive its block. When the block's walltime expires (30 minutes on Expanse by
+default, 15 on Anvil's facility endpoint), the task is killed with exit code 124 and you get the output it produced up to
 then; hpc-bridge does not resubmit it. For work longer than a block, ask the agent to submit a batch job
 from the login node with `sbatch` or `qsub` and check on it later.
 
@@ -47,7 +47,7 @@ from the login node with `sbatch` or `qsub` and check on it later.
   facility forbids persistent processes on login nodes.
 - **Facility-run endpoint:** hpc-bridge has no cancel channel into the facility's block. The agent
   drains it, no more work is accepted, and reports `draining` as the final state; the facility's idle
-  timeout reclaims the block, about ten minutes on `globus1`. Spend can accrue for that tail. The
+  timeout reclaims the block, about ten minutes on `globus-labs`. Spend can accrue for that tail. The
   agent should not keep polling for "down" here, and there is nothing of yours to tear down.
 
 ## If you walk away

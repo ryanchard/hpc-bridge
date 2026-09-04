@@ -8,7 +8,7 @@ touched. Steps: (1) in-terminal Globus login — LOG OUT of app.globus.org in th
 sign in as the identity that has NO account on the facility; (2) prints who you are (and refuses to
 continue if it is one of the `--not` usernames, or if that username is in your linked-identity set:
 the MEP mapper tries the WHOLE linked set, so a linked mapped identity would silently succeed);
-(3) attaches to the facility (registry entry; default globus1), fires the first submit through
+(3) attaches to the facility (registry entry; default globus-labs), fires the first submit through
 hpc-bridge's real path, and prints the RAW error text plus hpc-bridge's verdict — twice, to show the
 outcome is stable. PASS = a terminal `down` whose notice says NO ACCOUNT and names the identity.
 """
@@ -31,7 +31,7 @@ def main(argv: list[str]) -> int:
         i = args.index("--not")
         not_ids.append(args[i + 1].lower())
         del args[i : i + 2]
-    facility = args[0] if args else "globus1"
+    facility = args[0] if args else "globus-labs"
 
     fresh = Path(os.environ.get("FRESH", str(Path.home() / "hpcb-noaccount"))).expanduser()
     if reset and fresh.exists():

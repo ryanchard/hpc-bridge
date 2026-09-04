@@ -1,6 +1,6 @@
 """The registry wins over a stale local cache (decision 2026-09-03). The jail's `facilities.json` is
-pre-seeded with an SSH-era BYO config for `globus1` — exactly what the maintainer's own cache held —
-and the registry serves `globus1` as a facility MEP. `connect_facility("globus1")` must ATTACH to the
+pre-seeded with an SSH-era BYO config for `globus-labs` — exactly what the maintainer's own cache held —
+and the registry serves `globus-labs` as a facility MEP. `connect_facility("globus-labs")` must ATTACH to the
 MEP (reused=True, zero SSH, no probe) and never take the cached SSH path. Attach only: no block, no
 spend. Cheap.
 
@@ -10,9 +10,9 @@ the agent starts.
 from invariants import calls_bounded, no_ssh_workaround, texts_mention
 from mep_compute_only import mep_zero_ssh
 
-FACILITY_ID = "globus1"
+FACILITY_ID = "globus-labs"
 SEED_FACILITY_CACHE = {
-    "globus1": {   # a valid, STALE SSH-era config for the same id the registry now serves as a MEP
+    "globus-labs": {   # a valid, STALE SSH-era config for the same id the registry now serves as a MEP
         "ssh_host": "globus1.cs.uchicago.edu",
         "interface": "enP7s7",
         "env_setup": "uv pip install -q globus-compute-endpoint==4.15.0",
@@ -22,7 +22,7 @@ SEED_FACILITY_CACHE = {
     }
 }
 PROMPT = (
-    "Connect me to the HPC facility `globus1` (catalogued: connect_facility(facility='globus1') — no "
+    "Connect me to the HPC facility `globus-labs` (catalogued: connect_facility(facility='globus-labs') — no "
     "ssh_host, no details) and tell me exactly how it was reached: attached to a facility-run "
     "multi-user endpoint, or bootstrapped over SSH? Do NOT provision or run anything. This is an "
     "automated run with no human present."

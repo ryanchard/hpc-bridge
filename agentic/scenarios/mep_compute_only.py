@@ -1,6 +1,6 @@
 """The facility multi-user-endpoint (MEP) path: a catalogued compute-only facility, ZERO SSH.
 
-`connect_facility("globus1")` resolves the Globus Search index entry for `globus-cluster-mep` (a
+`connect_facility("globus-labs")` resolves the Globus Search index entry for `globus-cluster-mep` (a
 facility-run, identity-mapped MEP on globus1) and ATTACHES — nothing is bootstrapped, no SSH is made,
 and the result is `needs_account` at once with `reused=True`. The facility is compute-only: the MEP
 schema refuses hpc-bridge's LocalProvider login shape, so there is no free login node — every command
@@ -23,7 +23,7 @@ only the idle-release reclaims it; globus1 is unmetered. Expected ≈ 3 min agen
 """
 from invariants import Result, Trace, _shape, compute_ran
 
-FACILITY_ID = "globus1"          # the catalog id of the MEP entry (src/hpc_bridge/catalog/seed/globus-cluster.yaml)
+FACILITY_ID = "globus-labs"          # the catalog id of the MEP entry (src/hpc_bridge/catalog/seed/globus-cluster.yaml)
 MAPPED_USER = "glabs"            # the facility's identity mapping for the harness' Globus identity
 
 PROMPT = (

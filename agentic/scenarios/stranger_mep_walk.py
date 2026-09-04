@@ -13,14 +13,14 @@ from invariants import compute_ran, list_before_connect, never_asks_for_password
 from mep_compute_only import MAPPED_USER, mep_stop_is_draining_only, mep_zero_ssh
 
 SERIAL = True
-FACILITY_ID = "globus1"
+FACILITY_ID = "globus-labs"
 PROMPT = (
     "Hi — I'm new to HPC. Could you show me which facilities I can use, then get me onto the Globus "
     "Labs cluster and run `hostname` on a compute node there? Ask me before you spend anything, and "
     "tidy up afterwards."
 )
 USER_GOAL = (
-    "You are a new researcher with an account at the Globus Labs cluster (facility id globus1). You "
+    "You are a new researcher with an account at the Globus Labs cluster (facility id globus-labs). You "
     "want `hostname` run once on one of its compute nodes, as cheaply as possible, and everything "
     "cleaned up afterwards. Answer questions promptly; pick the Globus Labs cluster when asked which "
     "facility; approve the compute spend when asked."

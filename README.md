@@ -57,7 +57,7 @@ endpoint needs no SSH at all. Design, tool reference and module notes: the **[va
 
 **Public beta** (0.1.2, tag `v0.1.2-beta.1`): tested live on six clusters, security-reviewed, and now in the hands
 of test users — expect rough edges and please [report them](https://github.com/ryanchard/hpc-bridge/issues). In the
-registry: **Purdue Anvil** (SSH and its multi-user endpoint), **NCSA Delta** (multi-user endpoint), **SDSC Expanse**
+registry: **Purdue Anvil** (multi-user endpoint), **NCSA Delta** (multi-user endpoint), **SDSC Expanse**
 (SSH with a one-time code) and Globus Labs' cluster; also proven live through the bring-your-own path on **Midway**
 (Slurm) and **ALCF Polaris** (PBS). Slurm and PBS are the supported schedulers.
 Unit tests, lint and type checks run in CI. Every command after the bootstrap carries only a scoped Globus token,

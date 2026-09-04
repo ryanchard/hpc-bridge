@@ -509,7 +509,7 @@ def test_anvil_seed_pins_the_client_version():
 
     with open("src/hpc_bridge/catalog/seed/anvil.yaml") as fh:
         docs = yaml.safe_load(fh)
-    e = next(CatalogEntry.model_validate(d) for d in docs if d["id"] == "anvil-mep")
+    e = next(CatalogEntry.model_validate(d) for d in docs if d["id"] == "anvil")  # the MEP is THE anvil entry now
     assert e.compute.worker_version == "client"
 
 
