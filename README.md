@@ -7,7 +7,7 @@ compute (cost-gated), and run commands on a compute node, interactively, right i
 Globus Compute is the engine; hpc-bridge is the agent-facing packaging, the bootstrap, and the
 runtime that makes a batch supercomputer feel like a REPL.
 
-> **Not published yet.** Install locally with `claude --plugin-dir .` (see [Try it](#try-it)).
+> **Install from Claude Code:** `/plugin marketplace add ryanchard/hpc-bridge` then `/plugin install hpc-bridge@hpc-bridge` — the repository is its own marketplace. Pre-release. New here? Start with the **[user guide](docs/user/README.md)**.
 
 ## Why
 
@@ -33,7 +33,7 @@ flowchart TB
   end
   subgraph server["inside connect_facility — resolved server-side · first hit wins"]
     direction LR
-    R1["① session<br/>this run"] -->|miss| R2["② facilities.json<br/>used before"] -->|miss| R3["③ catalog<br/>index"] -->|miss| R4["④ probe<br/>login node"]
+    R1["① session<br/>this run"] -->|miss| R2["② registry<br/>public index"] -->|miss| R3["③ facilities.json<br/>used before"] -->|miss| R4["④ probe<br/>login node"]
   end
   CF --> R1
   R1 & R2 & R3 -->|hit| UP(["login shape up"])
@@ -48,24 +48,31 @@ flowchart TB
 ```
 
 Rungs ①–③ cost **no SSH** (teal); only a brand-new, un-indexed machine falls to the **probe** (amber).
-A machine you've used before hits ② — reconnecting **zero-SSH** from a local cache. From *login shape
-up* the rest is the workflow: discover partitions → gate the spend → provision the block → run → stop
+The **registry wins for any catalogued id** (curated entries are the stable ones); a cluster you
+discovered yourself hits ③ — reconnecting **zero-SSH** from a local cache. A facility that runs its
+own multi-user endpoint is simply *attached* at ② with no login node at all. From *login shape up*
+the rest is the workflow: discover partitions → gate the spend → provision the block → run → stop
 (walked through in [Try it](#try-it)).
 
-Eight MCP tools drive it — `connect_facility`, `list_facilities`, `ensure_endpoint_up`, `run_shell`,
-`login_shell`, `reset_session`, `stop_endpoint`, `teardown_endpoint`. The interactive version of this
-diagram, the warmth canary, and the cost model live in the [docs](#docs).
+Eleven MCP tools drive it — `list_facilities`, `connect_facility`, `authenticate`, `complete_login`,
+`ensure_endpoint_up`, `run_shell`, `poll_task`, `reset_session`, `stop_endpoint`, `teardown_endpoint`,
+`login_shell`. The interactive version of this diagram, the warmth canary, and the cost model live in
+the [docs](#docs).
 
 ## Try it
 
-You'll need Python 3.11+, [`uv`](https://docs.astral.sh/uv/), SSH access to an HPC login node (in
-your `~/.ssh/config`), and a `globus-compute-endpoint login`.
+You'll need Python 3.11+, [`uv`](https://docs.astral.sh/uv/), a Globus account, and — for an
+SSH-bootstrap facility — key-based SSH to its login node (in your `~/.ssh/config`). The Globus login
+happens **in the terminal**: the first connect opens your browser, you approve once, and the agent
+carries on (the [user guide](docs/user/login.md) explains it).
 
 ```bash
-uv sync --extra dev
-uv run pytest -q          # unit tests (hermetic — no cluster needed)
-claude --plugin-dir .     # load hpc-bridge into Claude Code
+/plugin marketplace add ryanchard/hpc-bridge     # inside Claude Code: the repo is its own marketplace
+/plugin install hpc-bridge@hpc-bridge
 ```
+
+Working from a clone instead? `claude --plugin-dir .` loads the checkout as the plugin, and
+`uv sync --extra dev && uv run pytest -q` runs the hermetic unit tests.
 
 Then just ask, in Claude Code:
 
@@ -91,8 +98,11 @@ Un-catalogued clusters still work today: give the agent an SSH login host and it
 
 ## Docs
 
-The **[vault](docs/hpc-bridge-vault/Home.md)** (an Obsidian vault at `docs/hpc-bridge-vault/`) is the
-map — start at **Home**. It covers the concepts (the two-channel architecture, the canary, cost
+**Using it:** the **[user guide](docs/user/README.md)** — install, a first session step by step, what
+each facility needs, the Globus login, costs and stopping, troubleshooting.
+
+**Building it:** the **[vault](docs/hpc-bridge-vault/Home.md)** (an Obsidian vault at
+`docs/hpc-bridge-vault/`) is the map — start at **Home**. It covers the concepts (the two-channel architecture, the canary, cost
 control), a note per module, the tool reference, and where the design is heading. Open it in Obsidian
 for the linked graph, or browse the markdown on GitHub.
 

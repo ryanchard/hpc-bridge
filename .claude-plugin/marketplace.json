@@ -1,0 +1,26 @@
+{
+  "name": "hpc-bridge",
+  "owner": {
+    "name": "hpc-bridge maintainers"
+  },
+  "metadata": {
+    "description": "Drive real HPC from Claude Code through Globus Compute.",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "hpc-bridge",
+      "source": "./",
+      "description": "Extend an AI agent onto real HPC via Globus Compute \u2014 a batch supercomputer as a REPL, cost-gated, one Globus login.",
+      "category": "productivity",
+      "keywords": [
+        "hpc",
+        "slurm",
+        "pbs",
+        "globus",
+        "globus-compute",
+        "supercomputing"
+      ]
+    }
+  ]
+}
