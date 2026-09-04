@@ -20,7 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # uv — hpc-bridge's discover-first flow proposes an env_setup that self-provisions the
 # globus-compute-endpoint venv with `uv venv` + `uv pip install` (see discovery._UV_ENV_SETUP).
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+COPY --from=ghcr.io/astral-sh/uv:0.12.9 /uv /uvx /usr/local/bin/
 
 # Slurm / munge / sshd runtime dirs. /etc/munge is a shared volume at run time (the generated
 # munge.key); the entrypoint re-chowns it once mounted.

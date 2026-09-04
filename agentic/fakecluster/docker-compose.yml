@@ -21,7 +21,7 @@ x-slurm: &slurm
 
 services:
   mysql:
-    image: mariadb:11
+    image: mariadb:11.8   # pinned LTS (the floating `11` tag resolved to 11.8 anyway; EOL 2028-06)
     platform: linux/arm64
     environment:
       MARIADB_ROOT_PASSWORD: ${SLURM_DB_PASS:-slurm-local-dev}
