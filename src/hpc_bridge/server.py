@@ -61,6 +61,10 @@ class ShapeRuntime:
     # service (live, 2026-09-03) that flipped the verdict back to 'allocating nodes…'. Cleared when the
     # runtime is dropped (re-bind/teardown) or a new login lands (_forget_identity_verdicts).
     no_account: str | None = None
+    # Consecutive TRANSIENT dispatch refusals (RESOURCE_CONFLICT). One is a race; three in a row means
+    # another session with the same Globus identity holds/starts this endpoint, or the manager is
+    # wedged — the 'call again' hint must stop (a model sweep showed Sonnet retrying 7× on it).
+    transient_conflicts: int = 0
     # Deterministic spend floor: a scheduler compute shape may not start a block until spend is
     # explicitly acknowledged via ensure_endpoint_up(confirm_spend=True). Persists for the
     # session once given (no re-nagging); cleared on stop/reset when the shape state is dropped.
@@ -167,7 +171,8 @@ def _short_control_dir(preferred: str) -> str:
     return preferred  # nothing short exists; ssh will say so
 
 
-def _explain_provision_error(exc: BaseException, fac) -> str:
+def _explain_provision_error(exc: BaseException, fac=None, *, host: str | None = None,
+                             user: str | None = None, fallback: str | None = None) -> str:
     """Turn a bootstrap failure into what a newcomer can act on. The raw text names an internal step
     ('seed storage.db (mkdir) failed: u@host: Permission denied (publickey,…)') — a stranger with no
     account or key on the facility must instead hear WHICH host and login name were tried, where the
@@ -175,10 +180,15 @@ def _explain_provision_error(exc: BaseException, fac) -> str:
     raw = str(exc)
     low = raw.lower()
     ssh_line = raw.rsplit("failed: ", 1)[-1].strip() if "failed: " in raw else raw
+    # ssh prefixes the verdict with warnings ("Identity file … not accessible") — quote the verdict line
+    verdict = [ln for ln in ssh_line.splitlines() if "permission denied" in ln.lower() or "denied" in ln.lower()]
+    if verdict:
+        ssh_line = verdict[-1].strip()
     cli = getattr(fac, "cli", None)
     target = getattr(cli, "target", None) or getattr(cli, "_target", None)
-    host = getattr(target, "host", None) or getattr(fac, "alias", None) or "the login host"
-    user = getattr(target, "user", None)
+    host = host or getattr(target, "host", None) or getattr(fac, "alias", None) or "the login host"
+    if user is None:
+        user = getattr(target, "user", None)
     if "permission denied" in low or "authentication fail" in low or "too many authentication failures" in low:
         who = f"as {user!r}" if user else "as your local username (no login name is configured for this host)"
         src = ("HPC_BRIDGE_SSH_USER" if os.environ.get("HPC_BRIDGE_SSH_USER", "").strip()
@@ -197,7 +207,7 @@ def _explain_provision_error(exc: BaseException, fac) -> str:
     if "controlpath too long" in low:
         return (f"hpc-bridge error: the SSH ControlMaster socket path is too long ({ssh_line[:160]}); set "
                 "HPC_BRIDGE_STATE_DIR to a short path (e.g. ~/.hpc-bridge). Nothing was started.")
-    return f"hpc-bridge error: {type(exc).__name__}: {raw}"[:500]
+    return (fallback or f"hpc-bridge error: {type(exc).__name__}: {raw}")[:500]
 
 
 def _slurm_facility(profile, *, alias: str, user: str) -> Facility:
@@ -460,6 +470,7 @@ mcp = FastMCP("endpoint", lifespan=lifespan)
 CANARY_TTL_S = 45.0  # trust a confirmed worker this long before re-canarying. Safe: an idle
 # block needs >= max_idletime (default 600s) of SILENCE to release, so a worker seen <45s ago
 # cannot have idle-released out from under us.
+TRANSIENT_CONFLICT_LIMIT = 3  # consecutive RESOURCE_CONFLICT dispatch refusals before we stop saying 'call again'
 CANARY_TIMEOUT_S = 8.0  # a live worker answers in ~1-2s; a cold block blows past this -> not warm
 
 # --- long-task submit/poll bounds (#21) ---
@@ -613,6 +624,7 @@ async def _confirm_worker(app: AppCtx, shape: str, *, force: bool) -> str:
     rt.last_canary = result  # keep failures too: the error text is the diagnosis the caller needs
     if result.ok:
         rt.warm_confirmed_at = now
+        rt.transient_conflicts = 0
         return "warm"
     rt.warm_confirmed_at = None
     if result.error and result.error != "timeout":
@@ -625,6 +637,7 @@ async def _confirm_worker(app: AppCtx, shape: str, *, force: bool) -> str:
         rt.runner_stale = True
         if _no_account_failure(result.error):
             rt.no_account = result.error
+        rt.transient_conflicts = rt.transient_conflicts + 1 if _transient_dispatch_failure(result.error) else 0
     return "provisioning"
 
 
@@ -908,6 +921,17 @@ async def _ensure_endpoint_up(
                 rt.provisioning_since = time.monotonic()
             provisioning_elapsed = time.monotonic() - rt.provisioning_since
             notice = f"allocating nodes on {active_partition!r}…" if active_partition else "allocating nodes…"
+            if rt.transient_conflicts >= TRANSIENT_CONFLICT_LIMIT:
+                rt.provisioning_since = None
+                return EndpointStatus(
+                    status="down", block_state="cold", endpoint_id=eid, session_spend=spend,
+                    partition=active_partition, account=active_account,
+                    notice=(f"the endpoint refused to start for this identity {rt.transient_conflicts} times in a row "
+                            f"(RESOURCE_CONFLICT: 'already in use … concurrent requests'). This is NO LONGER transient: "
+                            "another session with the SAME Globus identity is starting or holding a user endpoint here "
+                            "(a concurrent hpc-bridge run?), or the facility's manager is wedged. Stop retrying: end the "
+                            "other session or wait a few minutes, then call ensure_endpoint_up again. Nothing was started."),
+                )
             if rt.last_canary is not None and _no_account_failure(rt.last_canary.error):
                 # The manager refused to start a user endpoint for THIS identity: no local account. Not
                 # 'allocating nodes' — a terminal `down`, so the agent stops polling and tells the user.
@@ -1419,10 +1443,15 @@ async def _propose_or_ask(
     except NeedsPreauth as pre:  # host wants an interactive login (password/MFA) — hand off to the user
         return _needs_preauth_result(facility, pre.target)
     except Exception as exc:  # noqa: BLE001 - probe/connect/creds failure -> structured result
+        # The same first-contact explanation the bootstrap gives (stranger's walk): a refused SSH is
+        # "NO SSH ACCESS to <host> as <user>" with the remedies, not a raw rc=255 dump.
         return ConnectFacilityResult(
             phase="failed",
             facility=facility,
-            notice=f"discovery over SSH to {host!r} failed: {type(exc).__name__}: {exc}"[:400],
+            notice=_explain_provision_error(
+                exc, host=host, user=os.environ.get("HPC_BRIDGE_SSH_USER", "").strip() or None,
+                fallback=f"discovery over SSH to {host!r} failed: {type(exc).__name__}: {exc}"[:400],
+            ),
         )
     notice = (
         "probed the login node and proposed this config — review/correct it WITH THE USER "

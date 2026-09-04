@@ -829,3 +829,23 @@ def test_explain_provision_error_classes():
     assert "as your local username" in _explain_provision_error(RuntimeError("u@h: Permission denied (publickey)"), fac)
     assert "ControlMaster socket path is too long" in _explain_provision_error(RuntimeError("seed failed: ControlPath too long ('/x' >= 104 bytes)"), fac)
     assert _explain_provision_error(NotImplementedError("provisioning needs Linux"), fac).startswith("hpc-bridge error: NotImplementedError")
+
+
+async def test_probe_path_ssh_refusal_is_explained(monkeypatch):
+    # stranger's walk, BYO host: the PROBE (before any bootstrap) failed with a raw
+    # "discovery probe failed (rc=255): Warning: Identity file … Permission denied (publickey)".
+    from hpc_bridge import server
+
+    monkeypatch.setattr(server, "make_catalog", lambda: FakeCatalog([]))
+    monkeypatch.setenv("HPC_BRIDGE_SSH_USER", "hpcbridge-stranger")
+
+    async def refused(target):
+        raise RuntimeError("discovery probe failed (rc=255): Warning: Identity file /nonexistent-key not "
+                           "accessible: No such file or directory.\nhpcbridge-stranger@h.example.edu: "
+                           "Permission denied (publickey).")
+
+    monkeypatch.setattr(server, "discover_facility_details", refused)
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    res = await server._connect_facility(app, "byo", ssh_host="h.example.edu")
+    assert res.phase == "failed" and res.notice.startswith("NO SSH ACCESS to h.example.edu")
+    assert "'hpcbridge-stranger'" in res.notice and "Identity file" not in res.notice and "rc=255" not in res.notice

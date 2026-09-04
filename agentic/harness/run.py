@@ -81,7 +81,8 @@ async def _run_chain(phase_prompts, scen, *, model, effort, persona, user_goal, 
         print(f"\n=== CHAIN PHASE {i + 1}/{len(phase_prompts)} (fresh MCP server) ===")
         r = await run_scenario(pp, repo_root=REPO_ROOT, model=model, effort=effort,
                                persona=persona, user_goal=user_goal, ablate_skill=no_skill,
-                               max_turns=getattr(scen, "MAX_TURNS", 40))
+                               max_turns=getattr(scen, "MAX_TURNS", 40),
+                                     extra_env=getattr(scen, "EXTRA_ENV", None) or None)
         results.append(r)
         print(f"  phase {i + 1}: {len(r.trace.calls)} calls · is_error={getattr(r.final, 'is_error', None)}")
         if i + 1 < len(phase_prompts) and delay:
@@ -108,6 +109,22 @@ def _ssh_run(remote: str, *, timeout: int = 60) -> tuple[int, str]:
         return r.returncode, r.stdout + r.stderr
     except Exception as exc:  # noqa: BLE001 - callers decide how a transport error grades
         return 255, f"{type(exc).__name__}: {exc}"
+
+
+def _seed_facility_cache(scen) -> None:
+    """SEED_FACILITY_CACHE = {facility_id: FacilityDetails-shaped dict}: pre-populate the server's
+    local BYO cache (~/.hpc-bridge/facilities.json in this container) BEFORE the agent starts — e.g. a
+    stale SSH-era config for a facility the registry now serves as a MEP (registry must win)."""
+    seed = getattr(scen, "SEED_FACILITY_CACHE", None)
+    if not seed:
+        return
+    import json
+    state = Path(os.environ.get("HPC_BRIDGE_STATE_DIR") or (Path.home() / ".hpc-bridge"))
+    state.mkdir(parents=True, exist_ok=True)
+    p = state / "facilities.json"
+    p.write_text(json.dumps(dict(seed), indent=2, sort_keys=True))
+    p.chmod(0o600)
+    print(f"seeded facility cache: {sorted(seed)} -> {p}", file=sys.stderr, flush=True)
 
 
 def _setup(scen) -> bool:
@@ -146,7 +163,9 @@ def _postchecks(scen) -> list[Result]:
         rc, out = _ssh_run(pc["cmd"], timeout=pc.get("timeout", 60))
         ok, why = True, []
         if not pc.get("allow_nonzero_rc") and rc != 0:
-            ok, why = False, [f"rc={rc}"]
+            # rc=255 is ssh itself failing (host down, sshd refused): the world could not be checked at
+            # all — still a FAIL (conservative), but labelled so a sweep can separate an outage from a leak.
+            ok, why = False, [f"UNVERIFIABLE — ssh rc={rc}" if rc == 255 else f"rc={rc}"]
         if "expect_present" in pc and pc["expect_present"] not in out:
             ok = False
             why.append(f"missing {pc['expect_present']!r}")
@@ -267,6 +286,10 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
         "expect_ok": list(getattr(scen, "EXPECT_OK", [])),
         "teardown": getattr(scen, "TEARDOWN", "delete"),
         "setup": list(getattr(scen, "SETUP", [])),
+        "extra_env": dict(getattr(scen, "EXTRA_ENV", {}) or {}),
+        "seed_facility_cache": sorted(getattr(scen, "SEED_FACILITY_CACHE", {}) or {}),
+        "no_globus_db": bool(getattr(scen, "NO_GLOBUS_DB", False)),
+        "globus_db_secret": getattr(scen, "GLOBUS_DB_SECRET", None),
         "postcheck_delay_s": getattr(scen, "POSTCHECK_DELAY_S", 10),
         "git_sha": os.environ.get("HPCB_GIT_SHA", "unknown"),
         "pool_user": os.environ.get("HPC_BRIDGE_SSH_USER", "hpcbridge-test"),
@@ -277,6 +300,7 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
     res = None
     all_results: list[Result] = []
     try:
+        _seed_facility_cache(scen)
         if not _setup(scen):
             print("RESULT: SETUP FAILED — scenario not run (world precondition unmet)")
             rc = 2
@@ -287,7 +311,8 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
         else:
             res = await run_scenario(prompt, repo_root=REPO_ROOT, model=model, effort=effort,
                                      persona=persona, user_goal=user_goal, ablate_skill=no_skill,
-                                     max_turns=getattr(scen, "MAX_TURNS", 40))
+                                     max_turns=getattr(scen, "MAX_TURNS", 40),
+                                     extra_env=getattr(scen, "EXTRA_ENV", None) or None)
 
         print(f"\n=== TRACE: {len(res.trace.calls)} tool calls ===")
         for i, c in enumerate(res.trace.calls):
@@ -381,7 +406,7 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
 def main() -> None:
     ap = argparse.ArgumentParser(description="Run one hpc-bridge agentic scenario.")
     ap.add_argument("scenario", nargs="?", default="happy_path")
-    ap.add_argument("--model", default="claude-opus-4-8")
+    ap.add_argument("--model", default="claude-opus-5")
     ap.add_argument("--effort", default=None,
                     help="reasoning level: low|medium|high|xhigh|max (default: the model's default)")
     ap.add_argument("--persona", default=None,

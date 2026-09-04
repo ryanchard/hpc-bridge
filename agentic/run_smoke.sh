@@ -47,6 +47,18 @@ fi
 KEY="${HPCB_TEST_SSH_KEY:-$HOME/.ssh/hpcbridge-test}"
 SSH_USER="${HPCB_TEST_SSH_USER:-hpcbridge-test}"
 GLOBUS_DB="${HPCB_TEST_GLOBUS_DB:-}"
+# Per-scenario HOST knobs (read from the scenario module): run with NO Globus store (a logged-out
+# stranger: needs_login), or with an ALTERNATE store (a second identity — e.g. one the MEP does not map).
+eval "$(python3 "$REPO_ROOT/agentic/harness/scenario_knobs.py" "$SCENARIO")"
+if [ -n "${HPCB_KNOB_GLOBUS_DB_SECRET:-}" ]; then
+  GLOBUS_DB="${!HPCB_KNOB_GLOBUS_DB_SECRET:-}"
+  [ -n "$GLOBUS_DB" ] || { echo "ERROR: scenario '$SCENARIO' needs \$$HPCB_KNOB_GLOBUS_DB_SECRET (path to a storage.db) — set it in agentic/.env"; exit 1; }
+  echo "globus store: from \$$HPCB_KNOB_GLOBUS_DB_SECRET (an alternate identity)"
+fi
+if [ -n "${HPCB_KNOB_NO_GLOBUS_DB:-}" ]; then
+  GLOBUS_DB=""
+  echo "globus store: NONE — the scenario runs logged out (expects needs_login)"
+fi
 RUNID="$(date +%s)-$$"
 USER_DIR="/home/agent/run/$RUNID"   # agent-writable (the entrypoint mkdir's it + stages the db)
 RUNS_HOST="$REPO_ROOT/agentic/runs" # per-run provenance bundles land here (gitignored)
@@ -77,7 +89,7 @@ ARGS=(
 )
 if [ -n "$GLOBUS_DB" ]; then
   ARGS+=( -v "$GLOBUS_DB":/run/secrets/storage.db:ro )   # staged read-only; entrypoint copies to a writable owned path
-else
+elif [ -z "${HPCB_KNOB_NO_GLOBUS_DB:-}" ]; then
   echo "WARN: HPCB_TEST_GLOBUS_DB unset — endpoint registration/dispatch will fail without a Globus login."
 fi
 # OPTIONAL: the Globus Search catalog (list_facilities / catalogued connect). Forwarded only when the

@@ -366,3 +366,18 @@ async def test_warm_billed_block_explains_a_zero_spend(monkeypatch):
     await _connect(app, monkeypatch)
     res = await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
     assert res.status == "up" and "no charge factor is configured" in res.notice and "not a free tier" in res.notice
+
+
+async def test_persistent_resource_conflict_escalates_to_down(monkeypatch):
+    # model sweep 2026-09-03: two runs under ONE identity → the second got RESOURCE_CONFLICT on every
+    # submit for ~2 min and our "TRANSIENT — call again" hint had Sonnet retry 7×. Three in a row is terminal.
+    app = _app()
+    await _connect(app, monkeypatch)
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(
+        eid, _Res(0, "", ""), canary_result=CanaryResult(ok=False, error=_LIVE_409))
+    r1 = await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
+    r2 = await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
+    assert r1.status == "provisioning" and "TRANSIENT" in r1.notice and r2.status == "provisioning"
+    r3 = await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
+    assert r3.status == "down" and "NO LONGER transient" in r3.notice and "3 times in a row" in r3.notice
+    assert "SAME Globus identity" in r3.notice

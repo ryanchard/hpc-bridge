@@ -14,10 +14,9 @@ The world check names the MAPPED account (glabs) — the universal `stop_honesty
 `$(whoami)` (the pool user) and would pass vacuously here — and waits past the facility's 600 s
 idle-release, the only thing that reclaims the block.
 
-Requires the catalog path in the jail: `HPC_BRIDGE_SEARCH_INDEX` set on the host (run_smoke.sh forwards
-it) and the mounted Globus `storage.db` holding the Search scope — AND the identity in that storage.db
-must be one the MEP maps (gusellerm@uchicago.edu -> glabs today). Without the index the connect falls
-to the SSH probe path and this scenario fails its `mep_zero_ssh` gate by design.
+The registry id is built into the plugin (anonymous reads: no index env, no Search scope needed). The
+identity in the mounted storage.db must be one the MEP maps (gusellerm@uchicago.edu -> glabs today);
+an unmapped identity is the `mep_no_account` scenario.
 
 ⚠ The harness' own teardown (`scancel -u $(whoami)`) cannot touch glabs's block — on this facility
 only the idle-release reclaims it; globus1 is unmetered. Expected ≈ 3 min agent + 11 min settle.
