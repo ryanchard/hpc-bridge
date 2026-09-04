@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-import shlex
 import sys
 import time
 from collections.abc import AsyncIterator
@@ -11,7 +10,7 @@ from contextlib import asynccontextmanager
 
 from mcp.server.fastmcp import Context, FastMCP
 
-from . import binding, config, dispatch, session_shell
+from . import binding, config, dispatch, scheduler_ops, session_shell
 from .binding import (  # noqa: F401 - re-exported for imports; PATCH binding.<name>, not server.<name>
     _catalog_facility,  # noqa: F401
     _entry_from_details,  # noqa: F401
@@ -104,6 +103,14 @@ from .notices import (  # re-exported
 )
 from .profile import Profile
 from .runner import GlobusRunner
+from .scheduler_ops import (  # noqa: F401 - re-exported for imports; PATCH scheduler_ops.<name>
+    _augment_provisioning_notice,  # noqa: F401
+    _pilot_status_cmd,  # noqa: F401
+    _pilot_status_over_login,  # noqa: F401
+    _release_blocks_over_login,  # noqa: F401
+    _release_cmd,  # noqa: F401
+    _summarize_pilot,  # noqa: F401
+)
 from .session_shell import Session
 from .shapes import SHAPES, shape_config
 
@@ -510,7 +517,7 @@ async def _ensure_endpoint_up(
     # (The query rides the free login shape — a compute-only facility has none, so skip it there; the
     # #37 failure-signal path for a MEP is the dispatch-error suffix already on the notice.)
     if status == "provisioning" and billable and eid and _has_login_shape(app):
-        notice = await _augment_provisioning_notice(app, eid, notice, provisioning_elapsed)
+        notice = await scheduler_ops._augment_provisioning_notice(app, eid, notice, provisioning_elapsed, _login_runner(app))
     return EndpointStatus(
         status=status,
         block_state=block,
@@ -946,141 +953,6 @@ async def connect_facility(
     return await _connect_facility(app, facility, ssh_host=ssh_host, details=details)
 
 
-def _release_cmd(scheduler: str, eid: str) -> str:
-    """Login-shape shell one-liner that cancels THIS endpoint's scheduler block(s), matched
-    precisely by the `uep.<eid>` StdOut marker Parsl writes under the UEP dir. Scheduler-specific:
-    Slurm reads squeue/scancel; PBS reads qstat -f (unwrapping its 80-col line continuations so a
-    wrapped Output_Path can't split the marker) and qdel."""
-    marker = f"uep.{eid}"
-    if scheduler == "pbs":
-        # NB: `qstat -f -u $USER` yields NOTHING on PBS Pro — the -u filter suppresses full-format
-        # output entirely (unlike Slurm's `squeue -u`), which silently no-ops the cancel and lets the
-        # block burn to walltime (caught in live Polaris validation). Use bare `qstat -f` (all jobs)
-        # and let the endpoint-unique `uep.<eid>` marker scope the match to only our jobs.
-        return (
-            'ids=$(qstat -f 2>/dev/null '
-            "| sed ':a;N;$!ba;s/\\n\\t//g' "
-            f"| awk -v m={shlex.quote(marker)} 'BEGIN{{RS=\"Job Id: \"}} index($0,m){{print $1}}'); "
-            '[ -n "$ids" ] && qdel $ids; echo "released ${ids:-none}"'
-        )
-    return (
-        'ids=$(squeue -u "$USER" -h -O "JobID:30,StdOut:1024" 2>/dev/null '
-        f"| grep -F {shlex.quote(marker)} | awk '{{print $1}}'); "
-        '[ -n "$ids" ] && scancel $ids; echo "released ${ids:-none}"'
-    )
-
-
-async def _release_blocks_over_login(app: AppCtx, eid: str) -> tuple[bool, str]:
-    """Cancel this endpoint's scheduler block(s) by running the scheduler's cancel (scancel/qdel)
-    on the **login shape (AMQP)** — never SSH. That's the whole point of the login-node endpoint:
-    talk to the cluster over Compute, not a fresh SSH. Matches blocks precisely by the UEP StdOut
-    marker (`uep.<eid>`) so it never touches another endpoint's jobs.
-
-    A cold login worker can't dispatch on the first try — it returns cold_start ("allocating
-    nodes…"), not `complete`. But that first hit WAKES the worker, so we retry a bounded few times
-    to *confirm* the cancel instead of walking away while the block keeps burning. Returns
-    `(confirmed, detail)`: `confirmed=False` means the channel stayed cold across the retries and the
-    cancel was NOT verified — the caller must report that honestly (never "down"; see #24). An
-    unconfirmed cancel is still backstopped by idle-release (`min_blocks=0` + `max_idletime`), and
-    re-calling stop (channel now warming) confirms it. Retry budget: HPC_BRIDGE_RELEASE_ATTEMPTS
-    (default 3) × HPC_BRIDGE_RELEASE_BACKOFF_S (default 6s)."""
-    # The scheduler lives on the facility's MachineProfile (SlurmFacility.profile.scheduler); a
-    # facility without one (LocalFacility/dev, or test doubles) has never spoken anything but
-    # Slurm's squeue/scancel, so default there instead of assuming an attribute that isn't part
-    # of the Facility protocol.
-    scheduler = getattr(getattr(app.facility, "profile", None), "scheduler", "slurm")
-    cmd = _release_cmd(scheduler, eid)
-    attempts = config.release_attempts()
-    backoff = config.release_backoff_s()
-    detail = "unconfirmed"
-    for i in range(attempts):
-        out = await _run_shell(app, cmd, shape="login")
-        if out.phase == "complete" and out.exit_code == 0:
-            line = (out.stdout or "").strip().splitlines()
-            return True, (line[-1] if line else "released none")
-        detail = out.notice or out.phase or "unconfirmed"
-        if i + 1 < attempts and backoff > 0:
-            await asyncio.sleep(backoff)  # let the woken login worker register, then re-confirm
-    return False, f"cancel not confirmed ({detail}); idle-release will reclaim it"
-
-
-def _pilot_status_cmd(scheduler: str, eid: str) -> str:
-    """Login-shape one-liner that prints THIS endpoint's pilot block(s) as `STATE JOBID` lines,
-    matched by the same `uep.<eid>` StdOut marker `_release_cmd` uses (so it never reads another
-    endpoint's jobs). Read-only — the diagnostic twin of `_release_cmd`. Empty output ⇒ no pilot is
-    in the scheduler (submission rejected, or not yet registered)."""
-    marker = f"uep.{eid}"
-    if scheduler == "pbs":
-        # Bare `qstat -f` (the -u filter suppresses full-format output on PBS Pro); unwrap the 80-col
-        # line continuations, split on records, and for records carrying the marker print the
-        # job_state letter (R/Q/H) + the job id.
-        return (
-            "qstat -f 2>/dev/null | sed ':a;N;$!ba;s/\\n\\t//g' "
-            f"| awk -v m={shlex.quote(marker)} 'BEGIN{{RS=\"Job Id: \"}} index($0,m){{"
-            's="?"; if (match($0,/job_state = [A-Za-z]/)) s=substr($0,RSTART+12,1); '
-            "print s\" \"$1}'"
-        )
-    return (
-        # Filter by the marker INSIDE awk (not `grep -F | awk`): grep exits non-zero on no-match,
-        # which under a `set -o pipefail` shell would mask an empty result as an error and swallow the
-        # "no pilot -> rejected" signal this exists to surface. awk matches AND exits 0 either way.
-        'squeue -u "$USER" -h -O "State:20,JobID:24,StdOut:1024" 2>/dev/null '
-        f"| awk -v m={shlex.quote(marker)} 'index($0,m){{print $1\" \"$2}}'"
-    )
-
-
-def _summarize_pilot(stdout: str, provisioning_elapsed_s: float) -> tuple[str, str]:
-    """(category, notice-suffix) from `_pilot_status_cmd` output. category ∈ {starting, queued, held,
-    rejected}. A visible pilot (Q/R/H) is reported at once; a MISSING pilot is only called
-    `rejected` once the block has been cold past `PROVISION_GRACE_S` — before that it's a normal
-    cold-start gap (empty suffix ⇒ the caller leaves 'allocating nodes…' unchanged)."""
-    rows = [ln.split() for ln in stdout.splitlines() if ln.strip()]
-    if not rows:
-        if provisioning_elapsed_s < PROVISION_GRACE_S:
-            return "starting", ""  # normal cold-start window — pilot not visible yet, don't cry wolf
-        return "rejected", (
-            f"— but NO pilot job is in the scheduler after ~{int(provisioning_elapsed_s)}s. The block "
-            "submission was likely REJECTED (e.g. inactive allocation, wrong account, or bad queue) "
-            "rather than queued. Check run_shell('qstat -u $USER', shape='login') (squeue on Slurm) "
-            "and the endpoint log."
-        )
-    states = {r[0][:1].upper() for r in rows if r}
-    jid = rows[0][1] if len(rows[0]) > 1 else "?"
-    if "H" in states:
-        return "held", (
-            f"— pilot {jid} is HELD; a held job usually means a bad scheduler directive "
-            "(e.g. filesystems/account) — inspect qstat -f / the #PBS|#SBATCH directives."
-        )
-    if "R" in states:
-        return "starting", f"— pilot {jid} is RUNNING; the worker is starting, retry shortly."
-    return "queued", f"— pilot {jid} is queued (PENDING); waiting on the scheduler."
-
-
-async def _pilot_status_over_login(app: AppCtx, eid: str, elapsed_s: float) -> tuple[str, str] | None:
-    """Ask the scheduler (over the login shape — AMQP, no SSH) what state THIS endpoint's pilot is in.
-    Best-effort: returns None when it can't tell (login worker cold, scheduler unreachable) so the
-    caller leaves its notice unchanged. `elapsed_s` is how long the block has been provisioning — it
-    gates the rejection hint past the cold-start grace."""
-    scheduler = getattr(getattr(app.facility, "profile", None), "scheduler", "slurm")
-    out = await _run_shell(app, _pilot_status_cmd(scheduler, eid), shape="login")
-    if out.phase != "complete" or out.exit_code != 0:
-        return None
-    return _summarize_pilot(out.stdout or "", elapsed_s)
-
-
-async def _augment_provisioning_notice(app: AppCtx, eid: str, notice: str, elapsed_s: float) -> str:
-    """Enrich a still-cold BILLED block's 'allocating nodes…' with the pilot's ACTUAL scheduler state,
-    so a rejected/held submission isn't silently indistinguishable from a queue wait ([#32]). A
-    diagnostic must never break the result it annotates, so any failure — or an empty suffix (the
-    normal cold-start window) — leaves the notice as-is."""
-    try:
-        status = await _pilot_status_over_login(app, eid, elapsed_s)
-    except Exception:  # noqa: BLE001 - the pilot probe is advisory; never fail provisioning on it
-        return notice
-    suffix = status[1] if status else ""
-    return f"{notice} {suffix}" if suffix else notice
-
-
 async def _drop_compute_shape(app: AppCtx) -> float:
     """Drop the billed (compute) shape so a later run re-provisions a FRESH block (its runner now
     points at the released block) and stop its spend clock. Keep the login shape (if any), the
@@ -1147,6 +1019,15 @@ async def _stop_mep(app: AppCtx, eid: str) -> EndpointStatus:
     )
 
 
+def _login_runner(app: AppCtx):
+    """The free login-shape channel the scheduler ops ride, INJECTED into scheduler_ops so it needn't
+    import server. Resolves `_run_shell` at call time from this module's namespace, so a test that
+    patches `server._run_shell` still reaches every scheduler op."""
+    async def run(cmd: str) -> ShellOutcome:
+        return await _run_shell(app, cmd, shape="login")
+    return run
+
+
 async def _stop_endpoint(app: AppCtx) -> EndpointStatus:
     """Release the compute block over the **login endpoint (AMQP)** and LEAVE the manager online for
     reuse. "Stop" means *stop spending*, not destroy the endpoint: the login-node manager is the
@@ -1159,7 +1040,7 @@ async def _stop_endpoint(app: AppCtx) -> EndpointStatus:
     if not _has_login_shape(app):  # a facility MEP: no release channel exists — drain honestly
         return await _stop_mep(app, eid)
     # Cancel the scheduler block over the login shape (AMQP) — no SSH.
-    confirmed, detail = await _release_blocks_over_login(app, eid)
+    confirmed, detail = await scheduler_ops._release_blocks_over_login(app, eid, _login_runner(app))
     dropped = await _drop_compute_shape(app)
     if confirmed:
         return EndpointStatus(
@@ -1230,7 +1111,7 @@ async def _teardown_endpoint(app: AppCtx) -> EndpointStatus:
                 "connect_facility re-attaches with zero SSH."
             ),
         )
-    await _release_blocks_over_login(app, eid)  # halt spend first (a confirmed stop is stop_endpoint's job)
+    await scheduler_ops._release_blocks_over_login(app, eid, _login_runner(app))  # halt spend first (a confirmed stop is stop_endpoint's job)
     notice = "endpoint fully torn down (block released; manager gce-stopped + deleted)"
     teardown = getattr(app.facility, "teardown", None)
     if teardown is not None:
