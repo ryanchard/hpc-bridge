@@ -77,8 +77,10 @@ class LoginNodeStore:
 
 
 class FacilityStore:
-    """Persistent cache of CONFIRMED session (BYO) facility configs, keyed by **ssh_host** — the
-    'local discovery' cache. A fresh session resolves a previously-connected facility from here (no
+    """Persistent cache of PROVEN session (BYO) facility configs, keyed by **ssh_host** — the
+    'local discovery' cache. PROVEN = the login shape's canary answered on that config (which is
+    what exercises the discovered network interface); a config merely supplied or merely accepted
+    by the bootstrap is NOT written (decision 2026-09-03). A fresh session resolves a previously-connected facility from here (no
     SSH probe), then reuses its endpoint over the Globus web service. Lives in
     ~/.hpc-bridge/facilities.json, 0600 — config only (ssh_host, interface, env_setup, paths, …),
     never a secret (password/keys stay in ~/.ssh). Keyed on ssh_host so it lines up 1:1 with the
@@ -104,7 +106,7 @@ class FacilityStore:
         os.chmod(self.path, 0o600)
 
     def get(self, ssh_host: str) -> dict | None:
-        """The confirmed FacilityDetails (as a dict) last registered for this ssh_host, or None."""
+        """The proven FacilityDetails (as a dict) last registered for this ssh_host, or None."""
         return self._load().get(ssh_host)
 
     def put(self, ssh_host: str, details: dict) -> None:

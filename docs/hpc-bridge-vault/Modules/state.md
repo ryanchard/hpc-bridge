@@ -20,3 +20,6 @@ Used by [[facility-remote]]: `bootstrap` records the login pin after `start`; `_
 
 ## See also
 [[Standing up the endpoint]] · [[facility-remote]] · [[Discovery today]] · [[Facility catalog]] · [[Two-channel architecture]] · [[Configuration]]
+
+> [!note] Decided 2026-09-03 — the facility cache is PROVEN, not accepted; dead pins are dropped
+> `FacilityStore` is written only when the login shape's canary has answered on that config (`_commit_proven_facility`, via `AppCtx.pending_facility_cache`) — the canary is what exercises the discovered network interface, the probe's riskiest guess; a config merely supplied, or merely accepted by the bootstrap, is never remembered. And a login-node pin whose host is UNREACHABLE (`CANNOT REACH`) is dropped by `_drop_dead_pin` so the next connect resolves the canonical host again; a refused login keeps the pin. Before this, pins were permanent (`LoginNodeStore.remove` had no caller).
