@@ -107,6 +107,9 @@ class AppCtx:
     # The call that asked for the code, for complete_preauth's "now call X again" — connect_facility by default;
     # teardown_endpoint when the teardown gate asked (it is the one post-bootstrap op that must SSH).
     preauth_resume: str | None = None
+    # A teardown whose login-node ops (gce stop + delete over SSH) outlived one tool call's wait: the ops run on in
+    # this task; the next teardown_endpoint call reports its result (or waits again). See server._teardown_endpoint.
+    teardown_task: asyncio.Task[Any] | None = None
     # serializes provision / runner-swap / teardown so concurrent tool calls can't race AppCtx state
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 

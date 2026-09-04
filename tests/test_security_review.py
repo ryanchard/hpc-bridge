@@ -442,7 +442,7 @@ async def test_teardown_deletes_the_endpoint_and_its_worker_dirs_and_reports(tmp
     kinds = _kinds(cli)
     assert kinds.index("stop") < kinds.index("delete") and ("delete", "hpc-bridge") in cli.calls
     assert ("remove_uep_dirs", "eid-1") in cli.calls and ("wipe", "hpc-bridge") in cli.calls
-    assert report == {"deleted": True, "credentials_wiped": True}
+    assert report == {"deleted": True, "credentials_wiped": True, "ssh_closed": False}  # no SSH target on the fake
     assert store.get(alias="a", name="hpc-bridge") is None  # the record goes with the endpoint
 
 
@@ -485,7 +485,11 @@ async def test_teardown_tool_notice_reflects_the_report(monkeypatch):
     monkeypatch.setattr(server, "_run_shell", fake_run_shell)
 
     for report, expect in (({"deleted": True, "credentials_wiped": True}, ("deleted", "removed")),
-                           ({"deleted": False, "credentials_wiped": False}, ("DELETE FAILED", "no token store of ours"))):
+                           ({"deleted": False, "credentials_wiped": False}, ("DELETE FAILED", "no token store of ours")),
+                           # the agent told the user the SSH connection was "still open" after teardown (live
+                           # 2026-09-04) — it had been closed; the notice now says so
+                           ({"deleted": True, "credentials_wiped": True, "ssh_closed": True},
+                            ("deleted", "SSH connection to the login node was closed"))):
         class _F(FakeFacility):
             async def teardown(self, eid, *, wipe_credentials=False, _r=report):
                 return _r
@@ -494,6 +498,8 @@ async def test_teardown_tool_notice_reflects_the_report(monkeypatch):
         app.shapes["login"] = ShapeRuntime(user_endpoint_config={"provider_type": "LocalProvider"})
         res = await server._teardown_endpoint(app)
         assert all(e in (res.notice or "") for e in expect), res.notice
+        if not report.get("ssh_closed"):
+            assert "SSH connection" not in (res.notice or "")  # never claim a close that did not happen
 
 
 def test_bootstrap_timeout_is_explained_not_bare():

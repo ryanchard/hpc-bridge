@@ -33,7 +33,10 @@ class EndpointStatus(BaseModel):
     # release channel was cold) — spend is NOT verifiably stopped; idle-release is the backstop
     # and re-calling stop_endpoint (channel now warming) confirms. Never claim "down" here — an
     # agent that reads "down" walks away while the block may still burn (issue #24).
-    status: Literal["up", "provisioning", "down", "needs_confirmation", "draining"]
+    # tearing_down: teardown_endpoint started the login-node ops (gce stop + delete over SSH) and they outlived
+    # the call's wait — they keep running in the server; call teardown_endpoint again to confirm 'down'.
+    # (Expanse, live 2026-09-04: stop + delete take ~3 min on its filesystem, past the client's tool window.)
+    status: Literal["up", "provisioning", "down", "needs_confirmation", "draining", "tearing_down"]
     block_state: Literal["warm", "cold", "provisioning"]
     endpoint_id: str | None = None
     session_spend: NodeHours = 0.0

@@ -715,6 +715,77 @@ async def test_teardown_on_a_one_time_code_facility_asks_for_the_code_before_any
     assert torn == ["eid-1"] and res.status == "down" and app.state.endpoint_id is None
 
 
+async def test_teardown_hands_back_tearing_down_when_the_login_node_ops_outlive_the_wait(monkeypatch):
+    # Expanse live 2026-09-04: gce stop + delete took ~3 min and the tool call fell into the client's 120 s
+    # background rescue. The ops now run in a server-side task: one call waits a bounded time and returns
+    # `tearing_down`; the next call reports the finished result and the state is cleared only then.
+    import asyncio
+
+    from hpc_bridge import server
+    from hpc_bridge.models import ShellOutcome
+    from hpc_bridge.server import ShapeRuntime, _teardown_endpoint
+
+    release = asyncio.Event()
+    torn = []
+
+    class _F(FakeFacility):
+        async def teardown(self, eid, *, wipe_credentials=False):
+            await release.wait()
+            torn.append(eid)
+            return {"deleted": True, "credentials_wiped": True, "ssh_closed": True}
+
+    app = AppCtx(facility=_F(), profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
+    app.shapes["login"] = ShapeRuntime(user_endpoint_config={"provider_type": "LocalProvider"})
+
+    async def fake_run_shell(a, command, session_id="default", shape="compute"):
+        return ShellOutcome(phase="complete", exit_code=0, stdout="released 0\n", block_state="warm")
+
+    monkeypatch.setattr(server, "_run_shell", fake_run_shell)
+    monkeypatch.setattr(server, "_TEARDOWN_SYNC_WAIT_S", 0.05)
+    res = await _teardown_endpoint(app)
+    assert res.status == "tearing_down" and res.endpoint_id == "eid-1" and "call teardown_endpoint again" in res.notice.lower()
+    assert torn == [] and app.teardown_task is not None and app.state.endpoint_id == "eid-1"  # in flight; nothing cleared
+    res = await _teardown_endpoint(app)  # still running: waits again, same answer, does NOT start a second teardown
+    assert res.status == "tearing_down" and torn == []
+    release.set()
+    res = await _teardown_endpoint(app)
+    assert res.status == "down" and torn == ["eid-1"] and app.teardown_task is None
+    assert "SSH connection to the login node was closed" in res.notice
+    assert app.shapes == {} and app.state.endpoint_id is None  # cleared once the ops finished
+
+
+async def test_finished_teardown_does_not_clear_a_facility_bound_meanwhile(monkeypatch):
+    # the agent was told not to connect meanwhile; if it does anyway, the late teardown must not wipe the NEW binding
+    import asyncio
+
+    from hpc_bridge import server
+    from hpc_bridge.models import ShellOutcome
+    from hpc_bridge.server import ShapeRuntime, _teardown_endpoint
+
+    release = asyncio.Event()
+
+    class _F(FakeFacility):
+        async def teardown(self, eid, *, wipe_credentials=False):
+            await release.wait()
+            return {"deleted": True, "credentials_wiped": False}
+
+    app = AppCtx(facility=_F(), profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
+    app.shapes["login"] = ShapeRuntime(user_endpoint_config={"provider_type": "LocalProvider"})
+
+    async def fake_run_shell(a, command, session_id="default", shape="compute"):
+        return ShellOutcome(phase="complete", exit_code=0, stdout="released 0\n", block_state="warm")
+
+    monkeypatch.setattr(server, "_run_shell", fake_run_shell)
+    monkeypatch.setattr(server, "_TEARDOWN_SYNC_WAIT_S", 0.05)
+    assert (await _teardown_endpoint(app)).status == "tearing_down"
+    app.state = EndpointState(endpoint_id="eid-2")  # a connect_facility meanwhile bound a fresh endpoint
+    app.shapes["login"] = ShapeRuntime(user_endpoint_config={"provider_type": "LocalProvider"})
+    release.set()
+    res = await _teardown_endpoint(app)
+    assert res.status == "down" and res.endpoint_id == "eid-1"
+    assert app.state.endpoint_id == "eid-2" and "login" in app.shapes  # the new binding survives
+
+
 async def test_teardown_on_a_key_facility_never_gates(monkeypatch):
     # ssh-key facilities (the default) tear down straight away — no master check, no handoff
     from hpc_bridge import connect, server

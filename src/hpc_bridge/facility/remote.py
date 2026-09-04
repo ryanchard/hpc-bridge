@@ -972,7 +972,7 @@ class SlurmFacility:
         `_TEARDOWN_SSH_S`. `wipe_credentials=True` also removes the remote storage.db — but ONLY if
         hpc-bridge seeded it (`_seeded_by_us`): a token store that was already on the login node (a shared
         account the facility's own endpoint uses, say) is never ours to delete. Returns what was done so
-        the tool's notice can tell the truth: {"deleted": bool, "credentials_wiped": bool}."""
+        the tool's notice can tell the truth: {"deleted", "credentials_wiped", "ssh_closed"} (all bool)."""
         name = self.profile.endpoint_name
         await self.cli.stop(name)
         # `stop` kills the manager, but an ungraceful stop leaves Parsl's block holding the
@@ -988,7 +988,10 @@ class SlurmFacility:
         if self.store is not None and self.alias is not None:
             self.store.remove(alias=self.alias, name=name)  # no endpoint, no pin, no seeded-flag to carry
         await self.cli.close()  # drop the shared SSH master; the endpoint is gone
-        return {"deleted": deleted, "credentials_wiped": wiped}
+        # `ssh_closed`: the tool's notice says so, else the agent infers the connection is "still open" (it did,
+        # live 2026-09-04) and tells the user something false about what is left on their machine.
+        ssh_closed = getattr(getattr(self.cli, "target", None), "control_dir", None) is not None
+        return {"deleted": deleted, "credentials_wiped": wiped, "ssh_closed": ssh_closed}
 
     async def login_exec(self, command: str) -> tuple[int, str, str]:
         """Read-only login-node command for discovery — no block, no allocation (delegates
