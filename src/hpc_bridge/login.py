@@ -254,6 +254,12 @@ class LoginFlow:
 _IDENTITY_LABEL: str | None = None
 
 
+def reset_identity_label() -> None:
+    """Forget the cached label — a new login may be a different identity."""
+    global _IDENTITY_LABEL
+    _IDENTITY_LABEL = None
+
+
 def globus_identity_label(*, fetch: bool = True) -> str | None:
     """Best-effort 'who am I' for notices — the stored login's preferred_username (openid userinfo,
     silent refresh through the SDK app's EXISTING auth.globus.org authorizer; never prompts). Cached
@@ -274,8 +280,11 @@ def globus_identity_label(*, fetch: bool = True) -> str | None:
         label = info.get("preferred_username")
         sub = info.get("sub")
         if not label and sub:
-            idents = ac.get_identities(ids=sub).get("identities") or []
-            label = (idents[0].get("username") if idents else None) or sub
+            try:
+                idents = ac.get_identities(ids=sub).get("identities") or []
+                label = (idents[0].get("username") if idents else None) or sub
+            except Exception:  # noqa: BLE001 - get_identities may need a scope we don't hold: the id is still a label
+                label = sub
         _IDENTITY_LABEL = label or None
     except Exception:  # noqa: BLE001 - a label is a courtesy, never a failure
         return None

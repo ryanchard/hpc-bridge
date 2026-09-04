@@ -74,11 +74,14 @@ async def test_search_discover_maps_summaries(tmp_path):
     assert {s.id for s in got} == {"anvil"}
 
 
-async def test_search_discover_error_returns_empty(tmp_path):
-    # No fallback: a failed search yields no facilities (not hardcoded data).
-    client = _FakeSearchClient(fail=True)
-    c = SearchCatalog(index_id="idx", client=client, cache_dir=tmp_path)
-    assert await c.discover("") == []
+async def test_search_discover_transport_error_propagates(tmp_path):
+    # review 2: discover used to swallow everything, which made list_facilities' bug re-raise path dead.
+    # A transport failure now propagates; the TOOL layer (server._list_facilities) turns it into [] and
+    # re-raises anything that is not a transport error.
+    import pytest
+    c = SearchCatalog(index_id="idx", client=_FakeSearchClient(fail=True), cache_dir=tmp_path)
+    with pytest.raises(RuntimeError, match="search offline"):
+        await c.discover("anything")
 
 
 async def test_search_get_resolves_a_bare_id_via_search(tmp_path):

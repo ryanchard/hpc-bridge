@@ -1,4 +1,4 @@
-"""The server's runtime state — pure data, no behaviour (split step 1, 2026-09-03).
+"""The server's runtime state (split step 1, 2026-09-03): data plus the three derived reads on it (`_supported_shapes`, `_has_login_shape`, `_idle_release_s`).
 
 `AppCtx` is the one object every tool call shares (installed by the server's lifespan); a `ShapeRuntime`
 per resource shape carries that shape's Executor, warmth/canary state and spend clock; a `TaskHandle`

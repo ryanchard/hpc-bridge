@@ -7,7 +7,7 @@ shapes (`_drop_compute_shape`, `_drop_all_shapes`, `_forget_identity_verdicts`).
 still running past the sync-wait — are registered, resolved and drained here too, because the runner
 rebuild and the canary consult them (a live task IS warmth), which is why steps 7 and 8 ship together.
 
-Every function here runs under `app.lock`, held by the caller in `server`. Tests patch
+Every function here runs under `app.lock` held by the caller in `server` — except `_drop_compute_shape`, which takes the lock itself, and `_endpoint_gone`, a web call deliberately made OFF the lock (don't add one inside either). Tests patch
 `warmth._provision` / `warmth._drop_compute_shape`; `server` calls those two through the module and
 re-exports every name for imports.
 """
@@ -131,6 +131,8 @@ async def _confirm_worker(app: AppCtx, shape: str, *, force: bool) -> str:
         rt.provisioning_since = None  # warm by any route: a later cold start must not inherit a stale clock
         return "warm"
     rt.warm_confirmed_at = None
+    if result.error == "timeout":
+        rt.transient_conflicts = 0  # the submit was ACCEPTED (a normal cold-start wait) — not a conflict streak
     if result.error and result.error != "timeout":
         # A NON-timeout failure means the dispatch path itself broke — e.g. the web service rejected
         # the submit (a user_endpoint_config the endpoint's schema refuses, a bad partition), after
@@ -168,6 +170,7 @@ def _note_dispatch(rt: ShapeRuntime, out: ShellOutcome) -> None:
     that a slow task returns a poll handle, not a 124 failure)."""
     if out.phase in ("complete", "running"):
         rt.warm_confirmed_at = time.monotonic()
+        rt.transient_conflicts = 0
     elif out.phase == "failed":
         rt.warm_confirmed_at = None
 
@@ -271,6 +274,9 @@ async def _drop_compute_shape(app: AppCtx) -> float:
 def _forget_identity_verdicts(app: AppCtx) -> None:
     """A new Globus login may be a different identity: drop every sticky no-account verdict and make the
     runners rebuild (their Executors were built on the old credential)."""
+    from .login import reset_identity_label
+
+    reset_identity_label()  # the cached "who am I" may name the previous identity
     for rt in app.shapes.values():
         if rt.no_account:
             rt.no_account = None

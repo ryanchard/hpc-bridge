@@ -66,11 +66,12 @@ def _combine(results: list[RunResult]) -> RunResult:
         for c in r.trace.calls:
             c.phase = k
             calls.append(c)
+    texts = [x for r in results for x in getattr(r.trace, "texts", [])]  # the agent's words survive a chain too
     messages = [m for r in results for m in r.messages]
     dialogue = [d for r in results for d in (r.dialogue or [])]
     errored = [r for r in results if r.final is None or getattr(r.final, "is_error", False)]
     final = (errored[0] if errored else results[-1]).final
-    return RunResult(trace=Trace(calls), final=final, messages=messages, dialogue=dialogue)
+    return RunResult(trace=Trace(calls, texts), final=final, messages=messages, dialogue=dialogue)
 
 
 async def _run_chain(phase_prompts, scen, *, model, effort, persona, user_goal, no_skill):

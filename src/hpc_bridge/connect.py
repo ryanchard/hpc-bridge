@@ -25,7 +25,7 @@ from .discovery import discover_facility_details
 from .facility.remote import NeedsPreauth, SshTarget
 from .lifecycle import ensure_warm
 from .models import ConnectFacilityResult, FacilityDetails
-from .notices import _explain_provision_error, _login_wait_s, _needs_login_result, _needs_preauth_result
+from .notices import _explain_provision_error, _needs_login_result, _needs_preauth_result
 from .scheduler_ops import LoginRunner
 from .warmth import _drop_all_shapes
 
@@ -35,8 +35,27 @@ def _commit_proven_facility(app: AppCtx, facility: str) -> None:
     the probe flags as its riskiest guess. Only now does a BYO config earn a zero-probe reconnect
     (decision 2026-09-03; caching on acceptance remembered a wrong interface every session)."""
     pending = app.pending_facility_cache.pop(facility, None)
-    if pending is not None:
-        binding._facility_store().put(*pending)
+    if pending is None:
+        return
+    if app.state.reused:
+        # The canary ran on an endpoint that was ALREADY online under an earlier config — it proves nothing
+        # about these details (review 2: a bogus interface got committed this way). Leave the old proven
+        # entry as it is.
+        return
+    binding._facility_store().put(*pending)
+
+def _tcp_answers(host: str, port: int = 22, timeout_s: float = 3.0) -> bool:
+    import socket
+
+    try:
+        with socket.create_connection((host, port), timeout=timeout_s):
+            return True
+    except OSError:
+        return False
+
+
+_ALIAS_PROBE = _tcp_answers  # injectable: tests replace it; production probes the alias's sshd port
+
 
 def _drop_dead_pin(fac) -> bool:
     """A login-node PIN (endpoints.json) that no longer answers is dropped, so the next connect goes
@@ -47,6 +66,11 @@ def _drop_dead_pin(fac) -> bool:
     target = getattr(getattr(fac, "cli", None), "target", None)
     name = getattr(getattr(fac, "profile", None), "endpoint_name", None)
     if store is None or not alias or target is None or not name or getattr(target, "host", alias) == alias:
+        return False
+    if not _ALIAS_PROBE(alias):
+        # The facility's canonical host doesn't answer either: a CLIENT-side outage (VPN off, no network),
+        # not a dead pin. Dropping it would send teardown/login_shell to the round-robin alias later
+        # and orphan the endpoint the pin protects (review 2). Keep the pin.
         return False
     try:
         store.remove(alias=alias, name=name)
@@ -68,7 +92,7 @@ async def _connect_facility(
         start, status = await login_gate._start_login_and_wait(app.login_flow)
         if status != "done":
             return _needs_login_result(facility, start, app.login_flow.error,
-                                       waited_s=_login_wait_s() if status == "waiting" else None)
+                                       waited_s=config.login_wait_s() if status == "waiting" else None)
         # the browser flow completed while we waited — carry straight on with the connection
     # Resolve the entry: a session-local one the agent already supplied wins; else the catalog. An
     # index error is treated as "unresolved" (the agent can still supply details), not a hard fail.
@@ -135,7 +159,7 @@ async def _connect_facility(
     try:
         # off the loop: it may run `ssh -G` (a subprocess with a 10 s timeout) to read ~/.ssh/config
         fac = await asyncio.to_thread(binding._facility_from_entry, entry, account=(config.account() or ""))
-    except Exception as exc:  # noqa: BLE001 - surface a missing SSH_USER/KEY as a structured result
+    except Exception as exc:  # noqa: BLE001 - a facility that cannot be built (bad entry, store I/O) is a structured failure
         return ConnectFacilityResult(
             phase="failed",
             facility=facility,
@@ -149,12 +173,15 @@ async def _connect_facility(
         # ~/.hpc-bridge path on the remote node (same resolution as lifespan's).
         app.scratch_root = binding._resolve_scratch_root(fac)
         if not _has_login_shape(app):  # a facility-run multi-user endpoint: attach, don't provision
-            return await _connect_mep(app, facility, fac)
+            res = await _connect_mep(app, facility, fac)
+            if prior_spend > 0:  # a re-bind released a warm block: the number must not vanish (review 2)
+                res.notice = f"the previous facility's shapes were released (session spend so far ≈ {prior_spend:.2f}). " + (res.notice or "")
+            return res
         try:
             block = await warmth._provision(app, "login", force_canary=True)
         except Exception as exc:  # noqa: BLE001 - provisioning unavailable (e.g. non-Linux host)
             notice = _explain_provision_error(exc, fac)
-            if notice.startswith("CANNOT REACH") and _drop_dead_pin(fac):
+            if notice.startswith("CANNOT REACH") and await asyncio.to_thread(_drop_dead_pin, fac):
                 notice += " (The remembered login-node pin was dropped: the next connect resolves the facility's host afresh.)"
             return ConnectFacilityResult(phase="failed", facility=facility, notice=notice)
         if block == "warm":

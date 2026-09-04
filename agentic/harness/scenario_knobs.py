@@ -20,14 +20,19 @@ def main(argv: list[str]) -> int:
     here = Path(__file__).resolve().parent
     sys.path.insert(0, str(here))
     sys.path.insert(0, str(here.parent / "scenarios"))
-    name = argv[0].replace("-", "_").removesuffix(".py") if argv else ""
-    if not name:
+    raw = argv[0] if argv else ""
+    if not raw:
         print("usage: scenario_knobs.py <scenario>", file=sys.stderr)
         return 2
+    # the SAME normalisation run.py applies (a path, a trailing .py or '.', dashes) — a mismatch used to
+    # drop every knob silently, and run_smoke then mounted the WRONG Globus store (review 2)
+    name = Path(raw).stem if ("/" in raw or raw.endswith(".py")) else raw
+    name = name.rstrip(".").replace("-", "_")
     try:
         mod = importlib.import_module(name)
     except ModuleNotFoundError:
-        return 0  # run.py reports the unknown scenario properly; no knobs
+        print(f"scenario_knobs: unknown scenario {raw!r}", file=sys.stderr)
+        return 2
     if getattr(mod, "NO_GLOBUS_DB", False):
         print("HPCB_KNOB_NO_GLOBUS_DB=1")
     secret = getattr(mod, "GLOBUS_DB_SECRET", None)

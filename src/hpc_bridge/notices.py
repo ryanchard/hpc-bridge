@@ -60,7 +60,9 @@ def _explain_provision_error(exc: BaseException, fac=None, *, host: str | None =
                 "directory is over quota, read-only, or not writable. Free space or fix permissions there, then "
                 "call connect_facility again. Nothing was started or billed.")
     if any(k in low for k in ("could not resolve hostname", "connection timed out", "connection refused",
-                              "no route to host", "network is unreachable")):
+                              "no route to host", "network is unreachable", "operation timed out",  # macOS strerror
+                              "host is down", "network is down", "connection reset by peer",
+                              "kex_exchange_identification", "ssh: connect to host")):
         return (f"CANNOT REACH {host}: {ssh_line[:200]}. Check the login host name and your network/VPN, "
                 "then call connect_facility again. Nothing was started or billed.")
     if "controlpath too long" in low:
@@ -125,7 +127,7 @@ def _spend_floor_guidance(app: AppCtx | None) -> str:
             "ensure_endpoint_up(confirm_spend=True) to proceed — or use shape='login' for free "
             "login-node work.")
 
-def _login_wait_s() -> float:
+def _login_wait_s_UNUSED() -> float:
     """How long a tool call waits for a browser login to land before returning needs_login. Long enough
     for a real IdP round-trip (password + Duo), short enough to stay well under the flow's TTL and any
     MCP tool timeout (run_shell already blocks far longer)."""
