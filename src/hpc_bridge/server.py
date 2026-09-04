@@ -26,16 +26,29 @@ from .config import (  # noqa: F401 - re-exported: tests patch/import these on s
     _env_endpoint_id,
     _env_float,
     _env_mode,
+    _parse_hhmmss,  # noqa: F401
     _require_env,
     _short_control_dir,
+    _task_ceiling_s,  # noqa: F401
 )
 from .context import (  # noqa: F401 - re-exported: tools + tests import them from here
     DEFAULT_SHAPE,
     AppCtx,
     ShapeRuntime,
     TaskHandle,
+    _has_login_shape,  # noqa: F401
+    _idle_release_s,  # noqa: F401
+    _supported_shapes,  # noqa: F401
 )
-from .cost import cap_output, estimate_spend
+from .cost import (  # re-exported
+    _bank_warm_interval,  # noqa: F401
+    _billable,  # noqa: F401
+    _session_spend,  # noqa: F401
+    _settle_billing,  # noqa: F401
+    _total_session_spend,  # noqa: F401
+    _with_spend,  # noqa: F401
+    cap_output,
+)
 from .discovery import discover_facility_details
 from .endpoint import EndpointCLI
 from .facility.base import Facility
@@ -50,8 +63,35 @@ from .models import (
     LoginStatus,
     ShellOutcome,
 )
+from .notices import (  # re-exported
+    _GLOBUS_USERNAME_RE,  # noqa: F401
+    _NO_ACCOUNT_MARKERS,  # noqa: F401
+    _SSH_AUTH_DENIED,  # noqa: F401
+    _billed_bounds_note,  # noqa: F401
+    _busy_session_outcome,  # noqa: F401
+    _cold_outcome,  # noqa: F401
+    _dispatch_error_suffix,  # noqa: F401
+    _error_outcome,  # noqa: F401
+    _explain_provision_error,  # noqa: F401
+    _identity_from_error,  # noqa: F401
+    _local_dill,  # noqa: F401
+    _login_notice,  # noqa: F401
+    _login_wait_s,  # noqa: F401
+    _needs_confirmation_notice,  # noqa: F401
+    _needs_confirmation_outcome,  # noqa: F401
+    _needs_login_result,  # noqa: F401
+    _needs_preauth_result,  # noqa: F401
+    _no_account_failure,  # noqa: F401
+    _no_account_notice,  # noqa: F401
+    _orphaned_outcome,  # noqa: F401
+    _running_outcome,  # noqa: F401
+    _shape_reject_outcome,  # noqa: F401
+    _spend_floor_guidance,  # noqa: F401
+    _transient_dispatch_failure,  # noqa: F401
+    _worker_notice,  # noqa: F401
+)
 from .profile import Profile
-from .runner import CanaryResult, GlobusRunner
+from .runner import GlobusRunner
 from .session_shell import Session
 from .shapes import SHAPES, shape_config
 
@@ -72,58 +112,6 @@ def _ssh_config_user(host: str) -> str:
     except Exception:  # noqa: BLE001 - no ssh binary / odd host -> local username
         pass
     return getpass.getuser()
-
-
-# sshd's own denial lines — the method list in parentheses is the tell (a bare "Permission denied" is
-# usually the remote filesystem: `mkdir … : Permission denied` on an over-quota home, found in review).
-_SSH_AUTH_DENIED = re.compile(
-    r"permission denied \((?:publickey|password|keyboard-interactive|gssapi|hostbased)[^)]*\)"
-    r"|permission denied, please try again|authentication failed",
-    re.IGNORECASE,
-)
-
-
-def _explain_provision_error(exc: BaseException, fac=None, *, host: str | None = None,
-                             user: str | None = None, fallback: str | None = None) -> str:
-    """Turn a bootstrap failure into what a newcomer can act on. The raw text names an internal step
-    ('seed storage.db (mkdir) failed: u@host: Permission denied (publickey,…)') — a stranger with no
-    account or key on the facility must instead hear WHICH host and login name were tried, where the
-    name came from, and the two remedies (found on the stranger's walk, 2026-09-03)."""
-    raw = str(exc)
-    low = raw.lower()
-    ssh_line = raw.rsplit("failed: ", 1)[-1].strip() if "failed: " in raw else raw
-    # ssh prefixes the verdict with warnings ("Identity file … not accessible") — quote the verdict line
-    verdict = [ln for ln in ssh_line.splitlines() if "permission denied" in ln.lower() or "denied" in ln.lower()]
-    if verdict:
-        ssh_line = verdict[-1].strip()
-    cli = getattr(fac, "cli", None)
-    target = getattr(cli, "target", None) or getattr(cli, "_target", None)
-    host = host or getattr(target, "host", None) or getattr(fac, "alias", None) or "the login host"
-    if user is None:
-        user = getattr(target, "user", None)
-    if _SSH_AUTH_DENIED.search(raw) or "too many authentication failures" in low:
-        who = f"as {user!r}" if user else "as your local username (no login name is configured for this host)"
-        src = ("HPC_BRIDGE_SSH_USER" if (config.ssh_user() or "")
-               else "~/.ssh/config" if user else "nowhere")
-        return (
-            f"NO SSH ACCESS to {host}: the login-node SSH {who} was refused ({ssh_line[:200]}). hpc-bridge "
-            "needs an account on this facility and key-based SSH to its login node. Put the host's User and "
-            "IdentityFile in ~/.ssh/config (or set HPC_BRIDGE_SSH_USER / HPC_BRIDGE_SSH_KEY) and call "
-            "connect_facility again; on a multi-factor facility, pre-open a session in your own terminal "
-            f"first. The login name came from {src}. Nothing was started or billed."
-        )
-    if "permission denied" in low:  # a denial from the remote FILESYSTEM (quota, read-only home), not from sshd
-        return (f"REMOTE FILESYSTEM refused a write on {host}: {ssh_line[:200]}. The login worked; the home "
-                "directory is over quota, read-only, or not writable. Free space or fix permissions there, then "
-                "call connect_facility again. Nothing was started or billed.")
-    if any(k in low for k in ("could not resolve hostname", "connection timed out", "connection refused",
-                              "no route to host", "network is unreachable")):
-        return (f"CANNOT REACH {host}: {ssh_line[:200]}. Check the login host name and your network/VPN, "
-                "then call connect_facility again. Nothing was started or billed.")
-    if "controlpath too long" in low:
-        return (f"hpc-bridge error: the SSH ControlMaster socket path is too long ({ssh_line[:160]}); set "
-                "HPC_BRIDGE_STATE_DIR to a short path (e.g. ~/.hpc-bridge). Nothing was started.")
-    return (fallback or f"hpc-bridge error: {type(exc).__name__}: {raw}")[:500]
 
 
 def _slurm_facility(profile, *, alias: str, user: str) -> Facility:
@@ -353,20 +341,6 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppCtx]:
 mcp = FastMCP("endpoint", lifespan=lifespan)
 
 
-def _supported_shapes(app: AppCtx) -> tuple[str, ...]:
-    """The shapes the bound facility can serve. Default: every shape (a personal endpoint renders
-    our own template, which has both). A facility-run multi-user endpoint declares
-    `supported_shapes=("compute",)` — its schema REJECTS the LocalProvider login shape — and the
-    server derives the rest from that single fact: no login shape ⇒ no free channel for the
-    allocation listing / the pilot query / the scancel release ⇒ stop is draining-only, teardown is
-    a no-op, every shape is billed."""
-    return tuple(getattr(app.facility, "supported_shapes", None) or SHAPES)
-
-
-def _has_login_shape(app: AppCtx) -> bool:
-    return "login" in _supported_shapes(app)
-
-
 def _shape_reject(app: AppCtx, shape: str) -> str | None:
     """A notice if `shape` isn't served by the bound facility, else None. Checked BEFORE any
     _shape_runtime(app, shape) so an unsupported shape never gets a ShapeRuntime/runner (a submit
@@ -401,47 +375,6 @@ def _shape_runtime(app: AppCtx, shape: str) -> ShapeRuntime:
         rt = ShapeRuntime(user_endpoint_config=uec)
         app.shapes[shape] = rt
     return rt
-
-
-def _parse_hhmmss(s: str | None) -> int:
-    """HH:MM:SS (also H:MM:SS / MM:SS / SS) -> seconds. Deterministic and total: returns 0 on anything
-    missing or malformed so callers fall back rather than crash; never negative."""
-    if not s:
-        return 0
-    text = str(s).strip()
-    days = 0
-    if "-" in text:  # Slurm's "days-hours[:minutes[:seconds]]" (a 2-day walltime parsed as 0 -> a 300 s ceiling)
-        d, _, text = text.partition("-")
-        if not d.isdigit() or not text:
-            return 0
-        days = int(d)
-        parts = text.split(":")
-        if not 1 <= len(parts) <= 3 or not all(p.strip().isdigit() for p in parts):
-            return 0
-        parts = parts + ["0"] * (3 - len(parts))  # after a day count the first field is HOURS
-    else:
-        parts = text.split(":")
-        if not 1 <= len(parts) <= 3 or not all(p.strip().isdigit() for p in parts):
-            return 0
-    secs = 0
-    for p in parts:
-        secs = secs * 60 + int(p)
-    return days * 86400 + secs
-
-
-def _task_ceiling_s(uec: dict) -> float:
-    """The per-task kill ceiling (seconds) passed to the runner as the ShellFunction walltime: the block
-    walltime minus a margin (so a task dies with a 124 result just BEFORE the scheduler reclaims the
-    block), optionally capped by HPC_BRIDGE_MAX_TASK_S (unset = the full block walltime — the
-    deterministic default). Falls back to a safe non-zero value when the block walltime is absent."""
-    block_s = _parse_hhmmss(uec.get("walltime"))
-    ceiling = block_s - TASK_CEILING_MARGIN_S
-    if ceiling <= 0:  # missing/tiny walltime (e.g. LocalFacility has none) -> a safe default
-        ceiling = max(SYNC_WAIT_S + TASK_CEILING_MARGIN_S, 300.0)
-    cap = config.max_task_s()
-    if cap > 0:
-        ceiling = min(ceiling, cap)
-    return float(ceiling)
 
 
 def _live_task_handles(app: AppCtx, shape: str) -> list[tuple[str, TaskHandle]]:
@@ -548,94 +481,6 @@ def _drop_all_shapes(app: AppCtx, *, bank: bool) -> float:
     return spent
 
 
-def _bank_warm_interval(rt: ShapeRuntime, app: AppCtx) -> None:
-    """Fold the elapsed warm interval into accrued spend and stop the clock."""
-    if rt.warm_since is not None:
-        rt.spend_accrued += estimate_spend(
-            time.monotonic() - rt.warm_since, app.profile.nodes_per_block, app.charge_factor
-        )
-        rt.warm_since = None
-
-
-def _billable(rt: ShapeRuntime) -> bool:
-    """LocalProvider (login-node) shapes consume no allocation, so they don't bill."""
-    return rt.user_endpoint_config.get("provider_type") != "LocalProvider"
-
-
-def _settle_billing(rt: ShapeRuntime, app: AppCtx, block: str) -> None:
-    """Drive the session-spend clock from TRUE worker presence (the canary), not manager
-    liveness. Banking on warm->not-warm makes spend survive an idle block release without
-    over-counting the idle gap (the clock stays stopped while cold) — closes the over-report
-    without the symmetric under-report of simply resetting. Login (LocalProvider) shapes are
-    not billable, so their clock never starts and nothing accrues."""
-    if block == "warm" and _billable(rt):
-        if rt.warm_since is None:
-            rt.warm_since = time.monotonic()
-    else:
-        _bank_warm_interval(rt, app)
-
-
-def _session_spend(rt: ShapeRuntime, app: AppCtx) -> float:
-    spent = rt.spend_accrued
-    if rt.warm_since is not None:
-        spent += estimate_spend(
-            time.monotonic() - rt.warm_since, app.profile.nodes_per_block, app.charge_factor
-        )
-    return spent
-
-
-def _total_session_spend(app: AppCtx) -> float:
-    """Total spend across every shape — the cost the agent sees on outcomes/status."""
-    return sum(_session_spend(rt, app) for rt in app.shapes.values())
-
-
-def _local_dill() -> str | None:
-    try:
-        import dill  # type: ignore[import-untyped]
-
-        return dill.__version__
-    except Exception:  # noqa: BLE001 - dill absent locally just means we can't compare
-        return None
-
-
-def _worker_notice(canary: CanaryResult | None) -> str | None:
-    """A short warm descriptor for the agent: where the worker landed, its Python/Dill, and a
-    serialization-skew warning when worker Dill differs from ours (the real failure mode)."""
-    if canary is None:
-        return None
-    head = f"worker live on {canary.worker_host}" if canary.worker_host else "worker live"
-    vers = [v for v in (
-        f"py{canary.worker_python}" if canary.worker_python else None,
-        f"dill{canary.worker_dill}" if canary.worker_dill else None,
-    ) if v]
-    note = head + (f" ({', '.join(vers)})" if vers else "")
-    local = _local_dill()
-    if canary.worker_dill and local and canary.worker_dill != local:
-        note += f"; ⚠ dill skew: worker {canary.worker_dill} vs local {local} (serialization may fail)"
-    return note
-
-
-def _idle_release_s(app: AppCtx) -> int:
-    """The block's idle-release window: the facility's own (a MEP's template), else our profile's.
-    One source — the warm-block bounds note and the MEP stop notice used to read different ones."""
-    return int(getattr(app.facility, "max_idletime_s", None) or app.profile.max_idletime_s)
-
-
-def _billed_bounds_note(app: AppCtx, rt: ShapeRuntime) -> str:
-    """The bounds of a billed compute block ([#21]), surfaced so a caller runs long work AS A TASK
-    rather than being surprised: a run_shell task runs up to the block walltime (then the worker kills
-    it, exit 124) and, if it outlives the sync-wait, comes back as a poll handle (poll_task) — it is
-    NOT cut at ~110s any more. The block idle-releases after `max_idletime` once nothing is running or
-    queued, so keep long work in the FOREGROUND (a running task holds the block); a detached process
-    is not a Compute task and would be idle-released out from under itself."""
-    idle = _idle_release_s(app)
-    ceiling = int(_task_ceiling_s(rt.user_endpoint_config))
-    return (f"billed block bounds — a task runs up to ~{ceiling}s (the block walltime); one that "
-            f"outlives the ~{int(SYNC_WAIT_S)}s sync-wait returns a poll handle (poll_task), it is NOT "
-            f"cut. The block idle-releases after ~{idle}s once nothing runs or is queued, so run long "
-            "work as a foreground task — don't detach it (a detached process isn't a Compute task).")
-
-
 def _note_dispatch(rt: ShapeRuntime, out: ShellOutcome) -> None:
     """A real result — or a task still running — is the strongest liveness proof, so refresh the canary
     TTL. A dispatch FAILURE (transport timeout/error) means the worker may be gone, so void the
@@ -729,27 +574,6 @@ def _apply_account(app: AppCtx, shape: str, rt: ShapeRuntime, account: str | Non
     rt.runner_stale = True
     rt.warm_confirmed_at = None
     return None
-
-
-def _needs_confirmation_notice(app: AppCtx, where: str) -> str:
-    """The spend-floor notice. Names the free login shape as the alternative ONLY where one exists —
-    on a compute-only facility every shape is billed, so pointing at shape='login' is a dead-end."""
-    head = (f"scheduler compute block{where} ({app.profile.nodes_per_block} node(s)): spend "
-            "not yet confirmed. ")
-    return head + _spend_floor_guidance(app)
-
-
-def _spend_floor_guidance(app: AppCtx | None) -> str:
-    """What to do about an unconfirmed spend — ONE text for ensure_endpoint_up and run_shell/reset
-    (they used to drift). Names the free login shape only where one exists: on a compute-only
-    facility every shape is billed, so pointing at shape='login' is a dead-end."""
-    if app is not None and not _has_login_shape(app):
-        return ("This facility is compute-only (no free login shape — every command bills a block, which "
-                "then stays warm between calls). Confirm with the user, then call "
-                "ensure_endpoint_up(confirm_spend=True) before running work.")
-    return ("Surface the allocation balance (e.g. run_shell('mybalance', shape='login')) and call "
-            "ensure_endpoint_up(confirm_spend=True) to proceed — or use shape='login' for free "
-            "login-node work.")
 
 
 async def _ensure_endpoint_up(
@@ -1282,13 +1106,6 @@ async def _connect_mep(app: AppCtx, facility: str, fac) -> ConnectFacilityResult
     )
 
 
-def _login_wait_s() -> float:
-    """How long a tool call waits for a browser login to land before returning needs_login. Long enough
-    for a real IdP round-trip (password + Duo), short enough to stay well under the flow's TTL and any
-    MCP tool timeout (run_shell already blocks far longer)."""
-    return config.login_wait_s()
-
-
 async def _start_login_and_wait(flow: LoginFlow, mode: str | None = None) -> tuple[LoginStart, str]:
     """Arm a login and, in browser mode, wait for it. Returns (start, status). A browser attempt that
     FAILS during the wait (no browser after all, Globus rejected the redirect) is re-armed at once in
@@ -1301,73 +1118,6 @@ async def _start_login_and_wait(flow: LoginFlow, mode: str | None = None) -> tup
         start = await asyncio.to_thread(flow.start)  # goes to paste (browser failure remembered)
         status = "waiting"
     return start, status
-
-
-def _login_notice(start: LoginStart, flow_error: str | None, *, facility: str | None = None,
-                  waited_s: float | None = None) -> str:
-    """The agent-facing instructions for a login, by mode. Same discipline as needs_preauth: relay
-    the link, never ask for a password, never handle a token; in paste mode only a one-time code
-    (not a token) passes through the chat."""
-    for_what = f" before {facility!r} can be reached" if facility else ""
-    head = (f"A Globus login is needed{for_what} (first use, or a stored credential missing a scope an "
-            "endpoint needs). ")
-    tail = (" The login happens ONLY in the browser: never ask the user for a Globus password, and "
-            "never paste the link into a shell.")
-    prefix = f"({flow_error}) " if flow_error else ""
-    if start.mode == "browser":
-        waited = (f"A browser window opened to Globus and I waited {waited_s:.0f}s for the login to land; it "
-                  "hasn't yet. ") if waited_s else "A browser window should have opened to Globus. "
-        return prefix + head + waited + (
-            "If the browser already shows the login finished ('you may close this window'), just call "
-            "connect_facility again — nothing to paste. If no browser opened, give the USER this link to "
-            f"open: {start.login_url}\nThe link is SINGLE-USE: once the page says they can return, do not "
-            "reopen it (it will fail — that is not an error). It is valid for ~10 minutes; a new "
-            "connect_facility issues a fresh one and waits again."
-        ) + tail
-    return prefix + head + (
-        f"Give the USER this link to open: {start.login_url}\nAfter they log in and approve, Globus shows "
-        "a one-time authorization CODE. Ask them to paste that code here and call complete_login(code). "
-        "It is single-use and expires in minutes."
-    ) + tail
-
-
-def _needs_login_result(facility: str, start: LoginStart, flow_error: str | None,
-                        waited_s: float | None = None) -> ConnectFacilityResult:
-    return ConnectFacilityResult(
-        phase="needs_login",
-        facility=facility,
-        login_url=start.login_url,
-        login_mode=start.mode,
-        notice=_login_notice(start, flow_error, facility=facility, waited_s=waited_s),
-    )
-
-
-def _needs_preauth_result(facility: str, target) -> ConnectFacilityResult:
-    """Surface a one-time interactive-auth handoff (password / MFA / Duo). The user opens a
-    ControlMaster in THEIR OWN terminal (entering the secret there); hpc-bridge then multiplexes
-    over it. The agent relays the command and NEVER handles the secret — see the credential-handling
-    policy in the vault (`Planned/MFA and interactive SSH auth`)."""
-    if not getattr(target, "control_dir", None):  # multiplexing off -> a pre-opened master can't be shared
-        return ConnectFacilityResult(
-            phase="needs_preauth",
-            facility=facility,
-            notice=f"{target.host} needs an interactive login (password/MFA), but SSH multiplexing is "
-            "off. Set HPC_BRIDGE_SSH_CONTROL_PERSIST (e.g. 3600) so a pre-opened master is reusable, "
-            "then call connect_facility again.",
-        )
-    cmd = target.preauth_command()
-    return ConnectFacilityResult(
-        phase="needs_preauth",
-        facility=facility,
-        preauth_command=cmd,
-        notice=(
-            f"{target.host} needs a one-time interactive login (a password and/or MFA/Duo). Ask the "
-            "USER to run this in THEIR OWN terminal — they enter the secret directly; never ask for, "
-            f"type, or run it with their password yourself:\n    {cmd}\n"
-            "It authenticates once and opens a reusable connection. When they confirm it's connected, "
-            "call connect_facility again — the session then rides that connection with no further auth."
-        ),
-    )
 
 
 async def _propose_or_ask(
@@ -1811,25 +1561,6 @@ async def login_shell(command: str, ctx: Context) -> LoginShellResult:
     return await _login_shell(ctx.request_context.lifespan_context, command)
 
 
-def _dispatch_error_suffix(canary: CanaryResult | None) -> str:
-    """A suffix naming a NON-timeout canary failure, else ''. A timeout is the normal cold-start wait
-    and stays silent ('allocating nodes…'); anything else means a submit was refused or the dispatch
-    path broke — the caller must see WHY rather than keep waiting on a block that will never come."""
-    if canary is None or canary.ok or not canary.error or canary.error == "timeout":
-        return ""
-    if _transient_dispatch_failure(canary.error):
-        return (f" — last dispatch was refused as TRANSIENT: {canary.error}. The endpoint is still processing "
-                "a previous start request — wait ~10 s and call again (not a config problem)")
-    return f" — last dispatch failed: {canary.error}. Not a queue wait: fix the config/partition and retry"
-
-
-def _transient_dispatch_failure(error: str | None) -> bool:
-    """The web service's 409 RESOURCE_CONFLICT ('Endpoint … is already in use: possibly due to concurrent
-    requests -- please try again'): seen live when a submit followed another within ~2 s."""
-    e = (error or "").lower()
-    return "resource_conflict" in e or ("already in use" in e and ("endpoint" in e or "concurrent requests" in e))
-
-
 def _forget_identity_verdicts(app: AppCtx) -> None:
     """A new Globus login may be a different identity: drop every sticky no-account verdict and make the
     runners rebuild (their Executors were built on the old credential)."""
@@ -1840,80 +1571,12 @@ def _forget_identity_verdicts(app: AppCtx) -> None:
         rt.runner_stale = True
 
 
-# The MEP manager's failure notices when it cannot start a user endpoint for the caller's identity
-# (globus_compute_endpoint/endpoint/endpoint_manager.py; delivered by the web service as the task's
-# failure reason, so our canary future raises with this text). None of them is a queue wait, and
-# nothing on our side changes them: the facility must grant an account / add the identity mapping.
-_NO_ACCOUNT_MARKERS = (
-    "failed to map to a local user",          # identity mapping found no local user
-    "local user does not exist",              # mapped, but the account isn't on the machine
-    "untrusted identity",                     # single-user endpoint: not the owner's identity
-)
-
-
-def _no_account_failure(error: str | None) -> bool:
-    e = (error or "").lower()
-    return any(m in e for m in _NO_ACCOUNT_MARKERS)
-
-
-_GLOBUS_USERNAME_RE = re.compile(r"Globus username:\s*([^\s'\"),]+)")
-
-
-def _identity_from_error(error: str | None) -> str | None:
-    """The web service echoes the submitter in the 422 ('Globus username: alice@example.edu')."""
-    m = _GLOBUS_USERNAME_RE.search(error or "")
-    return m.group(1) if m else None
-
-
-def _no_account_notice(app: AppCtx | None, error: str | None, identity: str | None) -> str:
-    identity = _identity_from_error(error) or identity
-    who = f" ({identity})" if identity else ""
-    eid = app.state.endpoint_id if app is not None else None
-    where = f" {eid}" if eid else ""
-    return (
-        f"NO ACCOUNT at this facility: its multi-user endpoint{where} could not map the user's Globus "
-        f"identity{who} to a local user — the facility's manager said: {(error or '').strip()[:320]}. "
-        "This is TERMINAL, not a queue wait: no retry or poll from here changes it. The user needs an account "
-        "on this machine with their Globus identity added to the endpoint's identity mapping — tell them to "
-        "ask the facility's support, quoting that identity. Do not call ensure_endpoint_up again until they have."
-    )
-
-
-def _cold_outcome(block: str, canary: CanaryResult | None = None) -> ShellOutcome:
-    if canary is not None and _no_account_failure(canary.error):
-        from .login import globus_identity_label
-
-        return ShellOutcome(phase="failed", block_state=block,
-                            notice=_no_account_notice(None, canary.error, globus_identity_label(fetch=False)))
-    return ShellOutcome(
-        phase="cold_start",
-        block_state=block,
-        est_wait_s=60,
-        notice="allocating nodes…" + _dispatch_error_suffix(canary),
-    )
-
-
-def _needs_confirmation_outcome(app: AppCtx | None = None) -> ShellOutcome:
-    """A billed shape whose spend wasn't acknowledged: the command is NOT dispatched and no
-    block is started. The agent must run the budget gate and confirm via ensure_endpoint_up."""
-    return ShellOutcome(
-        phase="needs_confirmation",
-        block_state="cold",
-        notice="scheduler compute shape: spend not confirmed, so nothing ran. " + _spend_floor_guidance(app),
-    )
-
-
 async def _ensure_warm_runner(app: AppCtx, shape: str) -> str | None:
     """Ensure a worker is live and the shape's runner is bound to it; returns the block state
     if NOT warm (caller returns a cold_start), else None. _provision -> _confirm_worker
     (re)creates the runner and proves a worker answered, so on 'warm' the runner is ready."""
     block = await _provision(app, shape, force_canary=False)
     return None if block == "warm" else block
-
-
-def _with_spend(app: AppCtx, out: ShellOutcome) -> ShellOutcome:
-    out.session_spend = _total_session_spend(app)
-    return out
 
 
 def _busy_session(app: AppCtx, shape: str, session_id: str) -> str | None:
@@ -1925,17 +1588,6 @@ def _busy_session(app: AppCtx, shape: str, session_id: str) -> str | None:
         if h.session_id == session_id:
             return tid
     return None
-
-
-def _busy_session_outcome(task_id: str, shape: str, session_id: str) -> ShellOutcome:
-    return ShellOutcome(
-        phase="failed",
-        block_state="warm",
-        exit_code=None,
-        notice=(f"session {session_id!r} on shape {shape!r} still has a task running "
-                f"(task_id={task_id!r}); poll_task it, or run in a different session_id. Two commands "
-                "can't share one session's cwd/env at once."),
-    )
 
 
 def _register_task(app: AppCtx, shape: str, session_id: str, command: str, fut, ceiling_s: float) -> str:
@@ -1951,19 +1603,6 @@ def _register_task(app: AppCtx, shape: str, session_id: str, command: str, fut, 
         ceiling_s=ceiling_s,
     )
     return task_id
-
-
-def _running_outcome(app: AppCtx, task_id: str, ceiling_s: float) -> ShellOutcome:
-    out = ShellOutcome(
-        phase="running",
-        block_state="warm",
-        task_id=task_id,
-        notice=(f"still running past the ~{int(SYNC_WAIT_S)}s sync-wait — it was NOT cut. Poll for its "
-                f"result with poll_task({task_id!r}). It runs up to ~{int(ceiling_s)}s (the block "
-                "walltime) then is killed (exit 124); submit a batch job for anything longer. The "
-                "block stays warm while it runs."),
-    )
-    return _with_spend(app, out)
 
 
 def _resolve_task(app: AppCtx, task_id: str) -> ShellOutcome | None:
@@ -1994,10 +1633,6 @@ def _resolve_task(app: AppCtx, task_id: str) -> ShellOutcome | None:
         out = dispatch.complete_outcome(res, "warm", app.max_output_chars)
     _note_dispatch(_shape_runtime(app, handle.shape), out)
     return _with_spend(app, out)
-
-
-def _shape_reject_outcome(notice: str) -> ShellOutcome:
-    return ShellOutcome(phase="failed", block_state="cold", exit_code=None, notice=notice)
 
 
 async def _ready_session(app: AppCtx, shape: str, session_id: str) -> tuple[GlobusRunner, Session] | ShellOutcome:
@@ -2078,19 +1713,6 @@ async def _endpoint_gone(app: AppCtx) -> bool:
         return False
 
 
-def _orphaned_outcome(app: AppCtx, task_id: str) -> ShellOutcome:
-    return _with_spend(app, ShellOutcome(
-        phase="failed", block_state="cold", exit_code=None,
-        notice=(
-            f"task {task_id!r} is ORPHANED: the endpoint it was dispatched to is offline or gone, so its "
-            "result can never arrive — stop polling. Its block state is unknown (a stopped/deleted "
-            "endpoint takes its blocks with it; a facility outage may leave one billing). If you "
-            "stopped or tore down the endpoint, this is expected; otherwise connect_facility again "
-            "and re-run the command."
-        ),
-    ))
-
-
 async def _poll_task(app: AppCtx, task_id: str, wait: float = 0.0) -> ShellOutcome:
     """Retrieve a running task's result (or report it still running). Optionally block up to `wait`
     seconds for it OFF the lock, then re-check under the lock.
@@ -2128,15 +1750,6 @@ async def _poll_task(app: AppCtx, task_id: str, wait: float = 0.0) -> ShellOutco
             if app.tasks.pop(task_id, None) is not None:
                 return _orphaned_outcome(app, task_id)
     return _running_outcome(app, task_id, ceiling_s)
-
-
-def _error_outcome(exc: Exception) -> ShellOutcome:
-    return ShellOutcome(
-        phase="failed",
-        block_state="cold",
-        exit_code=1,
-        notice=f"hpc-bridge error: {type(exc).__name__}: {exc}"[:500],
-    )
 
 
 @mcp.tool()

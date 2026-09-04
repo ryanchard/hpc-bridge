@@ -152,3 +152,43 @@ TASK_CEILING_MARGIN_S = 20.0
 # of a block's cold-start is NORMAL, not a rejection. Only past this grace do we surface the rejection
 # hint — else every healthy warm-up cries wolf (caught live on globus1, [#32]).
 PROVISION_GRACE_S = 45.0
+
+
+def _parse_hhmmss(s: str | None) -> int:
+    """HH:MM:SS (also H:MM:SS / MM:SS / SS) -> seconds. Deterministic and total: returns 0 on anything
+    missing or malformed so callers fall back rather than crash; never negative."""
+    if not s:
+        return 0
+    text = str(s).strip()
+    days = 0
+    if "-" in text:  # Slurm's "days-hours[:minutes[:seconds]]" (a 2-day walltime parsed as 0 -> a 300 s ceiling)
+        d, _, text = text.partition("-")
+        if not d.isdigit() or not text:
+            return 0
+        days = int(d)
+        parts = text.split(":")
+        if not 1 <= len(parts) <= 3 or not all(p.strip().isdigit() for p in parts):
+            return 0
+        parts = parts + ["0"] * (3 - len(parts))  # after a day count the first field is HOURS
+    else:
+        parts = text.split(":")
+        if not 1 <= len(parts) <= 3 or not all(p.strip().isdigit() for p in parts):
+            return 0
+    secs = 0
+    for p in parts:
+        secs = secs * 60 + int(p)
+    return days * 86400 + secs
+
+def _task_ceiling_s(uec: dict) -> float:
+    """The per-task kill ceiling (seconds) passed to the runner as the ShellFunction walltime: the block
+    walltime minus a margin (so a task dies with a 124 result just BEFORE the scheduler reclaims the
+    block), optionally capped by HPC_BRIDGE_MAX_TASK_S (unset = the full block walltime — the
+    deterministic default). Falls back to a safe non-zero value when the block walltime is absent."""
+    block_s = _parse_hhmmss(uec.get("walltime"))
+    ceiling = block_s - TASK_CEILING_MARGIN_S
+    if ceiling <= 0:  # missing/tiny walltime (e.g. LocalFacility has none) -> a safe default
+        ceiling = max(SYNC_WAIT_S + TASK_CEILING_MARGIN_S, 300.0)
+    cap = max_task_s()
+    if cap > 0:
+        ceiling = min(ceiling, cap)
+    return float(ceiling)

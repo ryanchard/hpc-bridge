@@ -12,3 +12,6 @@ Pure and dependency-free — no SDK, easy to unit-test.
 
 ## See also
 [[Cost control]] · [[dispatch]] · [[server]]
+
+> [!note] Split step 4 (2026-09-03) — the session spend clock lives here now
+> `_bank_warm_interval`, `_billable`, `_settle_billing`, `_session_spend`, `_total_session_spend` and `_with_spend` moved in from `server.py` (the vault always documented cost as their home). `server` re-exports them.

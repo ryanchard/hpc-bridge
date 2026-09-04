@@ -18,6 +18,7 @@ from .lifecycle import EndpointState
 from .login import LoginFlow
 from .profile import Profile
 from .runner import CanaryResult, GlobusRunner
+from .shapes import SHAPES
 
 DEFAULT_SHAPE = "compute"
 
@@ -95,3 +96,21 @@ class AppCtx:
     login_flow: LoginFlow | None = None
     # serializes provision / runner-swap / teardown so concurrent tool calls can't race AppCtx state
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+def _supported_shapes(app: AppCtx) -> tuple[str, ...]:
+    """The shapes the bound facility can serve. Default: every shape (a personal endpoint renders
+    our own template, which has both). A facility-run multi-user endpoint declares
+    `supported_shapes=("compute",)` — its schema REJECTS the LocalProvider login shape — and the
+    server derives the rest from that single fact: no login shape ⇒ no free channel for the
+    allocation listing / the pilot query / the scancel release ⇒ stop is draining-only, teardown is
+    a no-op, every shape is billed."""
+    return tuple(getattr(app.facility, "supported_shapes", None) or SHAPES)
+
+def _has_login_shape(app: AppCtx) -> bool:
+    return "login" in _supported_shapes(app)
+
+def _idle_release_s(app: AppCtx) -> int:
+    """The block's idle-release window: the facility's own (a MEP's template), else our profile's.
+    One source — the warm-block bounds note and the MEP stop notice used to read different ones."""
+    return int(getattr(app.facility, "max_idletime_s", None) or app.profile.max_idletime_s)
