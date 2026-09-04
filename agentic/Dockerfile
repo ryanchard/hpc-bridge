@@ -4,21 +4,19 @@
 # image, and the admin key is never present. Design: Planned/Agentic testing - Plan B.
 FROM python:3.11-slim
 
-# System deps: ssh client (hpc-bridge's control plane), git/curl/ca-certs, and node
-# (the Agent SDK spawns the Claude Code CLI as a subprocess).
+# System deps: ssh client (hpc-bridge's control plane), git/curl/ca-certs. No Node: the Python Agent
+# SDK BUNDLES the Claude Code CLI it spawns (the npm CLI on Node 20 — EOL 2026-04 — was dead weight;
+# dependency audit 2026-09-03).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        openssh-client git curl ca-certificates gnupg \
+        openssh-client git curl ca-certificates \
         build-essential python3-dev \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# uv (hpc-bridge launches its MCP server via `uv run`)
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+# uv (hpc-bridge launches its MCP server via `uv run`) — pinned: a floating `latest` made builds drift by the day
+COPY --from=ghcr.io/astral-sh/uv:0.12.9 /uv /usr/local/bin/uv
 
-# The Claude Code CLI (spawned by the Agent SDK) + the Python SDK
-RUN npm install -g @anthropic-ai/claude-code \
-    && pip install --no-cache-dir claude-agent-sdk
+# The Python Agent SDK (bundles the Claude Code CLI it drives) — pinned; it releases near-daily
+RUN pip install --no-cache-dir claude-agent-sdk==0.2.152
 
 # The hpc-bridge repo (plugin + MCP server + skill + harness). Build context is the
 # repo root (run_smoke.sh builds from there); .dockerignore trims it.
