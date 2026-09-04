@@ -181,6 +181,7 @@ async def _main(args) -> int:
     # time: two cells at once make the web service answer the second with RESOURCE_CONFLICT (first sweep).
     serial_locks = {s: asyncio.Lock() for s in scenarios if _is_serial(s)}
     cooldowns = {s: _cooldown_s(s) for s in serial_locks}
+    remaining = {s: sum(1 for j in jobs if j[0] == s) for s in serial_locks}  # cooldown only BETWEEN cells
     if serial_locks:
         print("serial scenarios (one cell at a time): "
               + ", ".join(f"{s}{f' (+{cooldowns[s]}s cooldown)' if cooldowns[s] else ''}" for s in sorted(serial_locks)),
@@ -192,7 +193,8 @@ async def _main(args) -> int:
             return await _run_job(s, m, e, pe, ab, claims, sem, stagger, halt)
         async with lock:
             r = await _run_job(s, m, e, pe, ab, claims, sem, stagger, halt)
-            if cooldowns.get(s) and not halt.is_set():
+            remaining[s] -= 1
+            if cooldowns.get(s) and remaining[s] > 0 and not halt.is_set():  # the last cell needs no cooldown
                 print(f"⏲ cooldown {s}: {cooldowns[s]}s before its next cell (fail2ban findtime)", flush=True)
                 await asyncio.sleep(cooldowns[s])
             return r
