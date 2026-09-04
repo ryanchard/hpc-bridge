@@ -56,3 +56,4 @@
 > Steps 3–4 moved every pure notice/outcome builder to [[notices]] and the spend clock to [[cost]]; the shape-capability reads (`_supported_shapes`, `_has_login_shape`, `_idle_release_s`) went to [[context]] and the task-ceiling maths (`_parse_hhmmss`, `_task_ceiling_s`) to [[config]]. `server.py` is now ~1810 lines (from 2276).
 > Step 5 moved facility/catalog construction to [[binding]] — callers use module attributes; tests patch `binding.*` / `config._control_settings`. `server.py` ≈ 1550 lines.
 > Step 6 moved the scheduler ops (block release, pilot status) to [[scheduler_ops]] with the login-shape runner injected (`_login_runner`).
+> Steps 7–8 moved the warmth state machine and task-handle bookkeeping to [[warmth]]; tests patch `warmth._provision` / `warmth._drop_compute_shape`.
