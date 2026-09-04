@@ -25,3 +25,29 @@ The remaining discovery-channel machinery — per-channel **ablation flags** and
 
 ## See also
 [[Facility catalog]] · [[The MCP tools]] · [[Two-channel architecture]] · [[facility-remote]] · [[facility-mep]] · [[server]] · [[state]] · [[Standing up the endpoint]]
+
+## The resolution ladder, as a diagram
+
+Moved here from the README (2026-09-04) when the front page was rewritten for new users. `connect_facility`
+resolves a machine server-side, first hit wins; rungs ①–③ cost no SSH, only a brand-new un-indexed machine
+falls to the probe. The registry wins for any catalogued id; a cluster you discovered yourself hits ③ and
+reconnects zero-SSH from the local cache; a facility MEP is attached at ② with no login node at all.
+
+```mermaid
+flowchart TB
+  subgraph agent["you / the agent — the only calls"]
+    LF["list_facilities()"] -.->|"pick one"| CF["connect_facility(facility, ssh_host?)"]
+  end
+  subgraph server["inside connect_facility — resolved server-side · first hit wins"]
+    direction LR
+    R1["① session<br/>this run"] -->|miss| R2["② registry<br/>public index"] -->|miss| R3["③ facilities.json<br/>used before"] -->|miss| R4["④ probe<br/>login node"]
+  end
+  CF --> R1
+  R1 & R2 & R3 -->|hit| UP(["login shape up"])
+  R4 -->|"propose config → you confirm"| UP
+```
+
+Eleven MCP tools drive it — `list_facilities`, `connect_facility`, `authenticate`, `complete_login`,
+`ensure_endpoint_up`, `run_shell`, `poll_task`, `reset_session`, `stop_endpoint`, `teardown_endpoint`,
+`login_shell` — see [[The MCP tools]].
+

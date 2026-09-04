@@ -6,23 +6,25 @@ it spends anything), runs your commands on a node, and releases the block when y
 
 | Page | Read it when |
 |---|---|
-| [Install](install.md) | you are setting it up: prerequisites, loading the plugin, platform notes |
+| [Install](install.md) | you are setting it up: the two commands, prerequisites, updating |
 | [Quickstart](quickstart.md) | your first session, step by step, with what the agent will say |
 | [Facilities](facilities.md) | choosing a machine: what each facility needs from you |
 | [The Globus login](login.md) | the one credential hpc-bridge needs, and why your browser opens |
 | [Costs and stopping](costs-and-stopping.md) | how spend is gated, what "stop" means, long-running work |
 | [Troubleshooting](troubleshooting.md) | what a refusal or a stuck state means and what to do |
 
-**Three ways a facility is reached.** Which one applies is decided for you, but it helps to know:
+## What you bring, by how the facility is reached
 
-- **Zero-SSH, facility-run endpoint.** Some facilities run a Globus Compute *multi-user endpoint*.
-  You need an account there with your Globus identity mapped to it, and nothing else — no SSH keys,
-  no setup on the machine. The lab cluster `globus1` works this way.
-- **SSH bootstrap.** For other catalogued facilities, hpc-bridge uses SSH *once* to stand up a
-  personal endpoint on the login node, then never again: later sessions reconnect over the network.
-  You need an account and key-based SSH to the login node. Purdue Anvil works this way.
-- **Bring your own cluster.** Give the agent an SSH login host for a cluster that is not in the
-  registry; it probes the machine, proposes a configuration, and asks you to confirm.
+Which row applies is decided for you from the registry. Everything in the right column is included.
+
+| Facility | You bring | hpc-bridge does |
+|---|---|---|
+| **Facility-run endpoint**, zero SSH (e.g. `globus1`) | an account there with your Globus identity mapped to it | attaches to the facility's endpoint; nothing to set up on the machine |
+| **SSH bootstrap** (e.g. Purdue Anvil) | an account and key-based SSH to the login node, as a `Host` block in `~/.ssh/config` | one SSH to install a personal endpoint in your home directory, then reconnects with no SSH |
+| **Your own cluster**, not in the registry | the same as SSH bootstrap, plus a minute to confirm the settings it discovers | probes the login node, proposes a configuration, caches it once you confirm |
+
+In every case you also bring Claude Code, Python 3.11 with `uv`, and a Globus account; the plugin
+brings the registry, the terminal Globus login, the spend gate and idle self-release.
 
 The developer documentation (design, internals, the tool reference) lives in the
 [vault](../hpc-bridge-vault/Home.md).

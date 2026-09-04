@@ -1,121 +1,61 @@
 # hpc-bridge
 
-**Drive real HPC from Claude Code.** A Claude Code plugin that stands up a *personal* Globus
-Compute endpoint on a supercomputer's login node — so the agent can discover a machine, provision
-compute (cost-gated), and run commands on a compute node, interactively, right in the conversation.
+**Drive a supercomputer from Claude Code.** Ask for a compute node in plain language; the agent finds the
+facility, logs you in to Globus once, brings up a block (asking before it spends anything), runs your
+commands on the node, and releases it when you are done.
 
-Globus Compute is the engine; hpc-bridge is the agent-facing packaging, the bootstrap, and the
-runtime that makes a batch supercomputer feel like a REPL.
+## Install
 
-> **Install from Claude Code:** `/plugin marketplace add ryanchard/hpc-bridge` then `/plugin install hpc-bridge@hpc-bridge` — the repository is its own marketplace. Pre-release. New here? Start with the **[user guide](docs/user/README.md)**.
+Two commands inside Claude Code; the repository is its own plugin marketplace.
 
-## Why
-
-- **A cluster that feels like a REPL.** Ask Claude to bring up a node on Anvil or Polaris, run your
-  job, and stop — no batch-script babysitting.
-- **SSH once, then never.** The bootstrap is a single SSH; everything after — *discovery as well as
-  compute* — rides Globus Compute's scoped-token path. No re-auth mid-session, which is what makes
-  Duo/MFA facilities painful.
-- **Cost-gated by design.** A billed block won't start until you confirm the spend, and idle blocks
-  self-release. The agent surfaces your allocation balance before it asks.
-
-## How it works
-
-One idea holds the whole thing together: **SSH is a one-time bootstrap; everything after rides the
-endpoint.** `connect_facility` is the entry point — it brings up a free login-node worker, and both
-discovery *and* compute then go through it, never a fresh SSH. How it *reaches* a machine depends on
-what it already knows:
-
-```mermaid
-flowchart TB
-  subgraph agent["you / the agent — the only calls"]
-    LF["list_facilities()"] -.->|"pick one"| CF["connect_facility(facility, ssh_host?)"]
-  end
-  subgraph server["inside connect_facility — resolved server-side · first hit wins"]
-    direction LR
-    R1["① session<br/>this run"] -->|miss| R2["② registry<br/>public index"] -->|miss| R3["③ facilities.json<br/>used before"] -->|miss| R4["④ probe<br/>login node"]
-  end
-  CF --> R1
-  R1 & R2 & R3 -->|hit| UP(["login shape up"])
-  R4 -->|"propose config → you confirm"| UP
-
-  classDef free fill:#E4F1F2,stroke:#0C6E77,color:#0C4A50;
-  classDef ssh fill:#F5EBD9,stroke:#9C5A12,color:#5A3608;
-  classDef done fill:#E7F0EA,stroke:#2C7A57,color:#1E5940;
-  class R1,R2,R3 free
-  class R4 ssh
-  class UP done
 ```
-
-Rungs ①–③ cost **no SSH** (teal); only a brand-new, un-indexed machine falls to the **probe** (amber).
-The **registry wins for any catalogued id** (curated entries are the stable ones); a cluster you
-discovered yourself hits ③ — reconnecting **zero-SSH** from a local cache. A facility that runs its
-own multi-user endpoint is simply *attached* at ② with no login node at all. From *login shape up*
-the rest is the workflow: discover partitions → gate the spend → provision the block → run → stop
-(walked through in [Try it](#try-it)).
-
-Eleven MCP tools drive it — `list_facilities`, `connect_facility`, `authenticate`, `complete_login`,
-`ensure_endpoint_up`, `run_shell`, `poll_task`, `reset_session`, `stop_endpoint`, `teardown_endpoint`,
-`login_shell`. The interactive version of this diagram, the warmth canary, and the cost model live in
-the [docs](#docs).
-
-## Try it
-
-You'll need Python 3.11+, [`uv`](https://docs.astral.sh/uv/), a Globus account, and — for an
-SSH-bootstrap facility — key-based SSH to its login node (in your `~/.ssh/config`). The Globus login
-happens **in the terminal**: the first connect opens your browser, you approve once, and the agent
-carries on (the [user guide](docs/user/login.md) explains it).
-
-```bash
-/plugin marketplace add ryanchard/hpc-bridge     # inside Claude Code: the repo is its own marketplace
+/plugin marketplace add ryanchard/hpc-bridge
 /plugin install hpc-bridge@hpc-bridge
 ```
 
-Working from a clone instead? `claude --plugin-dir .` loads the checkout as the plugin, and
-`uv sync --extra dev && uv run pytest -q` runs the hermetic unit tests.
+Then ask *"What HPC facilities can I use?"* — that first answer needs no login and no configuration.
 
-Then just ask, in Claude Code:
+## What you bring, what's included
 
-> *"Connect me to the cluster at `login.example.edu`, bring up a compute node, and run `hostname` on it."*
+| You bring | Included |
+|---|---|
+| **Claude Code** | the plugin: eleven tools, a skill the agent follows on its own, `/hpc-bridge:hpc-connect` |
+| **Python 3.11+ and [`uv`](https://docs.astral.sh/uv/)**, the only local prerequisites | the **public facility registry**: which machines exist and what each needs from you |
+| **A Globus account** (institutional, ACCESS, Google, ORCID) | the **Globus login in your terminal**: the browser opens once, the token is remembered |
+| **Access to a facility**: an account whose Globus identity it has mapped (zero SSH), or an account plus key-based SSH to its login node in `~/.ssh/config` | the **endpoint bootstrap**: on an SSH facility hpc-bridge installs Globus Compute in your home directory there, then reconnects with no SSH — nothing for you to install on the machine |
+| For an un-catalogued cluster, a minute to confirm the settings the agent discovers | **discovery** of that cluster's configuration, the **spend gate** before any billed block, and **idle self-release** |
 
-The agent brings up the login node, discovers the partitions, shows you your allocations, asks you to
-confirm the spend, provisions a block, runs — then `stop_endpoint` releases it. Next time you connect
-to that cluster, the reconnect is zero-SSH.
+Nothing is configured by hand. Details: **[Install](docs/user/install.md)** · **[Facilities](docs/user/facilities.md)**.
 
-Config is **discovered, not hand-written**: SSH identity comes from your `~/.ssh/config` (or
-`HPC_BRIDGE_SSH_USER` / `HPC_BRIDGE_SSH_KEY`), and the facility's own settings are probed on first
-connect. The full env-var reference is in the docs.
+## Your first session
 
-## Add your facility
+1. *What HPC facilities can I use?*
+2. *Connect me to globus1*
+3. *Run `hostname` on a compute node*
+4. *Tear it down*
 
-The facility registry is **public data, curated**: a Globus Search index the plugin reads anonymously, so a fresh install can `list_facilities()` with no login. The plugin never writes it — executable config (`env_setup` shell, endpoint UUIDs) is an injection vector, so new machines arrive by review:
+The connect opens your browser for Globus; approve once. Before the first command the agent shows the
+partition and account it will charge and asks you to confirm. Allocating a block takes a couple of minutes
+on a quiet cluster; after that, commands run immediately and your working directory persists between them.
+The **[Quickstart](docs/user/quickstart.md)** shows what the agent actually says at each step.
 
-1. Copy a seed under `src/hpc_bridge/catalog/seed/` — `anvil.yaml` for an **SSH-bootstrap** facility (hpc-bridge stands up a personal endpoint on the login node), `globus-cluster.yaml` for a **facility-run multi-user endpoint** (zero SSH: `compute_mep_uuid`, no `ssh_host`, `$HOME`-relative scratch, a version-pinned `env_setup`).
-2. Fill in the scheduler, interface, `env_setup`, scratch root, defaults, and `last_validated`; run `python -m pytest tests/test_catalog_bundled.py -q` (the schema validates it).
-3. Open a PR. A curator ingests it with `hpc-bridge-catalog <index-uuid> <seed>.yaml` (idempotent, keyed by subject) and it is live for everyone at the next `list_facilities()`.
+## How it works
 
-Un-catalogued clusters still work today: give the agent an SSH login host and it discovers the config (BYO), caching it locally. For a catalogued id the registry always wins over that cache.
+SSH is a one-time bootstrap; everything after rides a Globus Compute endpoint. `connect_facility` resolves
+a machine from the registry, from a cluster you used before, or by probing a new login node, and both
+discovery and compute then flow through the endpoint over Globus. A facility that runs its own multi-user
+endpoint needs no SSH at all. Design, tool reference and module notes: the **[vault](docs/hpc-bridge-vault/Home.md)**.
 
 ## Docs
 
-**Using it:** the **[user guide](docs/user/README.md)** — install, a first session step by step, what
-each facility needs, the Globus login, costs and stopping, troubleshooting.
+- **[User guide](docs/user/README.md)** — install, quickstart, facilities, the Globus login, costs and stopping, troubleshooting.
+- **[Adding a facility to the registry](docs/adding-a-facility.md)** — for facility staff and contributors.
+- **[Vault](docs/hpc-bridge-vault/Home.md)** — how it is built.
 
-**Building it:** the **[vault](docs/hpc-bridge-vault/Home.md)** (an Obsidian vault at
-`docs/hpc-bridge-vault/`) is the map — start at **Home**. It covers the concepts (the two-channel architecture, the canary, cost
-control), a note per module, the tool reference, and where the design is heading. Open it in Obsidian
-for the linked graph, or browse the markdown on GitHub.
+## Status and security
 
-## Status
-
-Actively developed, **not yet published**. Proven live on **Purdue Anvil** and **Midway** (Slurm),
-**ALCF Polaris** (PBS), and a lab Globus cluster — the agent stands up an endpoint, runs on a compute
-node, and releases the allocation. `uv run pytest -q` is green.
-
-## Security
-
-The hot path carries a scoped Globus Auth token, **never SSH material**; SSH is key-only and used
-only to bootstrap. An interactive login (a password or Duo passcode) is **never handled by the
-agent** — hpc-bridge relays a command for *you* to run in your own terminal. The honest caveats — the
-"the agent runs as you" prompt-injection surface, and credential brokering for OTP facilities — are
-tracked in the docs. **Don't point this at a production facility yet.**
+Pre-release (v0.1.0), proven live on **Purdue Anvil** and **Midway** (Slurm), **ALCF Polaris** (PBS) and a
+lab Globus cluster; unit tests, lint and type checks run in CI. The hot path carries a scoped Globus token,
+never SSH material; SSH is key-only and used once to bootstrap. A password or Duo passcode is never handled
+by the agent: it hands you an `ssh` command for your own terminal and shares that session. The agent runs
+as you on the login node, so treat what it runs there as you would your own shell.
