@@ -24,9 +24,11 @@ from .facility.remote import SshTarget
 
 _CODE_RE = re.compile(r"^[A-Za-z0-9]{4,16}$")  # a TOTP / Duo passcode; never a password
 _ASKPASS = """#!/bin/sh
-# hpc-bridge askpass: answer ONE one-time-code prompt; refuse anything that looks like a password prompt.
+# hpc-bridge askpass: answer ONE one-time-code prompt; refuse a password prompt, and refuse a host-key
+# confirmation (answering it with the code would loop until the timeout — live 2026-09-04).
 case "$1" in
   *[Pp]assword*|*[Pp]assphrase*) echo "hpc-bridge: refusing a PASSWORD prompt (one-time codes only)" >&2; exit 1 ;;
+  *continue\ connecting*|*fingerprint*|*authenticity*) echo "hpc-bridge: refusing a HOST KEY prompt" >&2; exit 1 ;;
 esac
 cat "$HPCB_CODE_FILE"
 """
@@ -74,6 +76,10 @@ def open_master_with_code(target: SshTarget, code: str, *, state_dir: Path, time
                 return False, ("the login asked for a PASSWORD, which hpc-bridge never handles. Open the session "
                                "in your own terminal with the preauth_command instead (a key on the facility "
                                "removes the password prompt).")
+            if "refusing a host key prompt" in low or "host key verification failed" in low:
+                return False, (f"UNKNOWN HOST KEY for {target.host}: your ssh does not trust this host's key yet. "
+                               f"Connect once from your own terminal (`ssh {target._destination()}`), accept the "
+                               "fingerprint, then try again with a fresh code.")
             if "permission denied" in low:
                 return False, ("the code was not accepted (expired or mistyped?) — ask the user for a fresh one "
                                "and try again.")

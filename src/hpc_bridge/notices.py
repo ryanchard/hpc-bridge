@@ -224,8 +224,13 @@ def _needs_preauth_result(facility: str, target, *, otp_ok: bool = False) -> Con
             "then call connect_facility again.",
         )
     cmd = target.preauth_command()
+    pinned = ""
+    alias = getattr(target, "host_key_alias", None)
+    if alias and alias != target.host:
+        pinned = (f"The endpoint runs on login node {target.host} (the facility placed it there), which needs its own "
+                  f"shared connection separate from {alias}'s — one more code, once per session. ")
     if otp_ok:
-        notice = (
+        notice = pinned + (
             f"{target.host} needs a one-time login step: the facility accepts a ONE-TIME CODE (TOTP / Duo "
             "passcode). Ask the USER for the CURRENT code from their authenticator and call "
             "complete_preauth(code) — the code is single-use and expires in seconds. NEVER ask for a password; if the "
@@ -234,7 +239,7 @@ def _needs_preauth_result(facility: str, target, *, otp_ok: bool = False) -> Con
             "further auth."
         )
     else:
-        notice = (
+        notice = pinned + (
             f"{target.host} needs a one-time interactive login (a password and/or MFA/Duo). Ask the "
             "USER to run this in THEIR OWN terminal — they enter the secret directly; never ask for, "
             f"type, or run it with their password yourself:\n    {cmd}\n"
