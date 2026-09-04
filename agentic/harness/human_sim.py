@@ -39,6 +39,66 @@ PERSONAS: dict[str, str] = {
 }
 
 _ANSWER_RE = re.compile(r"\{.*\}", re.S)
+_WS_RE = re.compile(r"[\s`'\"“”‘’.,;:!?()\[\]{}—–-]+")
+# A turn that ends in prose asking the user something (no AskUserQuestion call). Weaker models do this —
+# a Haiku gated_provision cell ended "Does this look correct for your facility?" and the run stalled with
+# nobody to answer (block-tier sweep, 2026-09-03). A real user would just reply; so does the sim.
+_ASKS_RE = re.compile(
+    r"\?\s*(\*\*)?\s*$|\b(does (this|that) look|let me know|please confirm|shall i|should i proceed|"
+    r"do you want|would you like|can you confirm|is (this|that) (correct|right|ok|okay))\b",
+    re.I,
+)
+
+
+def _norm(s: str) -> str:
+    return _WS_RE.sub(" ", (s or "").lower()).strip()
+
+
+def ends_with_question(text: str) -> bool:
+    """Does the agent's final text of a turn ask the user something (in prose, without the tool)?"""
+    tail = (text or "").strip()[-600:]
+    if not tail:
+        return False
+    last = tail.rstrip("*_ \n").splitlines()[-1] if tail.rstrip("*_ \n") else ""
+    return bool(_ASKS_RE.search(last)) or bool(_ASKS_RE.search(tail[-300:]))
+
+
+def rekey_answers(answers: dict[str, str], questions: list[dict]) -> tuple[dict[str, str], list[str]]:
+    """Re-key the sim's answers to the EXACT question texts the CLI matches on.
+
+    The CLI resolves `answers` by full question text; a Haiku sim paraphrased a long partition question
+    as its key and the operator saw "The user did not answer the questions" (Sonnet gated_provision cell,
+    2026-09-03). Matching order: exact → normalised equality → one side a prefix/substring of the other
+    (normalised, ≥ 24 chars) → positional when the counts agree. Unmatched questions stay unanswered
+    (never invent an answer). Returns (rekeyed, notes-about-what-was-remapped)."""
+    texts = [str(q.get("question", "")) for q in questions]
+    out: dict[str, str] = {}
+    notes: list[str] = []
+    used: set[str] = set()
+    for t in texts:
+        if t in answers:
+            out[t] = answers[t]
+            used.add(t)
+    pending = [t for t in texts if t not in out]
+    spare = [k for k in answers if k not in used]
+    for t in list(pending):
+        nt = _norm(t)
+        for k in list(spare):
+            nk = _norm(k)
+            if nk == nt or (len(nk) >= 24 and (nt.startswith(nk) or nk in nt)) or (len(nt) >= 24 and nt in nk):
+                out[t] = answers[k]
+                spare.remove(k)
+                pending.remove(t)
+                notes.append(f"remapped answer key {k[:40]!r} -> question {t[:40]!r}")
+                break
+    if pending and len(pending) == len(spare):
+        for t, k in zip(pending, spare, strict=True):
+            out[t] = answers[k]
+            notes.append(f"positional answer {k[:40]!r} -> question {t[:40]!r}")
+        pending = []
+    for t in pending:
+        notes.append(f"UNANSWERED question {t[:60]!r} (no matching key)")
+    return {t: out[t] for t in texts if t in out}, notes
 
 
 @dataclass
@@ -85,8 +145,38 @@ class HumanSim:
                 if t:
                     text += t
         answers, note = self._parse(text, questions)
+        answers, fixes = rekey_answers(answers, questions)
+        if fixes:
+            note = (note + " " if note else "") + "[" + "; ".join(fixes) + "]"
         self.dialogue.append(Exchange(questions=questions, answers=answers, note=note))
         return answers
+
+    async def reply(self, assistant_text: str) -> str:
+        """A short in-persona reply to a turn the agent ended with a PROSE question (no tool call)."""
+        from claude_agent_sdk import ClaudeAgentOptions, query  # type: ignore[import-not-found]
+
+        said = (assistant_text or "").strip()[-2500:]
+        prompt = (
+            "You are role-playing a HUMAN USER in a chat with an assistant that is operating an HPC "
+            f"cluster for you.\n\nYOUR PERSONA: {PERSONAS.get(self.persona, self.persona)}\n\n"
+            f"YOUR GOAL: {self.goal}\n\nTHE ASSISTANT JUST SAID:\n{said}\n\n"
+            "Reply as the user in one or two plain sentences that answer what it asked (no JSON, no preamble). "
+            "If it asked you to confirm proposed settings and you have no reason to doubt them, say so plainly."
+        )
+        opts = ClaudeAgentOptions(model=self.model, max_turns=1, allowed_tools=[], setting_sources=[],
+                                  system_prompt="Answer as the role-played user. Output ONLY your reply.")
+        text = ""
+        async for msg in query(prompt=prompt, options=opts):
+            for b in getattr(msg, "content", []) or []:
+                t = getattr(b, "text", None)
+                if t:
+                    text += t
+        reply = " ".join(text.split())[:600]
+        if not reply:  # never a fabricated approval: a neutral nudge back to a proper question
+            reply = "I can't tell from that — please ask me with a clear multiple-choice question."
+        self.dialogue.append(Exchange(questions=[{"question": said[-500:], "prose": True}],
+                                      answers={"reply": reply}, note="(prose follow-up: the agent asked in text)"))
+        return reply
 
     @staticmethod
     def _parse(text: str, questions: list[dict]) -> tuple[dict[str, str], str]:

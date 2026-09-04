@@ -159,6 +159,9 @@ python3 agentic/run_suite.py --scenarios happy_path,gated_provision --models cla
 #      and launches a cell only when a node is idle (holding the gate through the cell when only one is). 2026-09-03:
 #      4/5 compute cells failed on `compute_ran` with every node held by other users' day-long jobs — an environment
 #      fact, not agent behaviour. `--node-wait-s 0` disables the gate; HPCB_NODE_PROBE_SSH / HPCB_NODE_PARTITION override.
+#    Interactive cells (persona set): the human-sim's answers are re-keyed to the EXACT question text (a paraphrased key
+#      read as "did not answer" — Sonnet, 2026-09-03), and a turn ending in a PROSE question (no AskUserQuestion — Haiku,
+#      same sweep) gets an in-persona reply fed back as a follow-up turn, at most 3 per run (runner.MAX_PROSE_FOLLOWUPS).
 ```
 
 ## How grading works

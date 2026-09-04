@@ -29,7 +29,7 @@ from claude_agent_sdk import (  # type: ignore[import-not-found]
     PermissionResultAllow,
     query,
 )
-from human_sim import HumanSim
+from human_sim import HumanSim, ends_with_question
 from invariants import Trace, logical_name
 from trace_adapter import build_trace
 
@@ -53,6 +53,9 @@ HPC_BRIDGE_TOOLS = (
 # (run_smoke.sh forwards it) — the mounted storage.db must then already hold the search scope
 # (granted once via `hpc-bridge-catalog`); unset, the suite stays on the BYO/discovery path.
 _REQUIRED_ENV = ("HPC_BRIDGE_USER_DIR", "HPC_BRIDGE_SSH_USER", "HPC_BRIDGE_SSH_KEY")
+# Interactive runs: when the agent ends a turn with a prose question instead of AskUserQuestion, the
+# human-sim replies and the conversation continues — at most this many times per run.
+MAX_PROSE_FOLLOWUPS = 3
 _OPTIONAL_ENV = ("HPC_BRIDGE_SSH_HOST", "HPC_BRIDGE_MACHINE", "HPC_BRIDGE_SEARCH_INDEX")
 
 
@@ -214,11 +217,26 @@ async def run_scenario(
         if interactive:
             async with ClaudeSDKClient(options=options) as client:
                 await client.query(prompt)
-                async for msg in client.receive_response():
-                    messages.append(msg)
-                    _live(msg)
-                    if type(msg).__name__ == "ResultMessage":
-                        final = msg
+                for followup in range(MAX_PROSE_FOLLOWUPS + 1):
+                    last_text, last_had_tool = "", False
+                    async for msg in client.receive_response():
+                        messages.append(msg)
+                        _live(msg)
+                        kind = type(msg).__name__
+                        if kind == "ResultMessage":
+                            final = msg
+                        elif kind == "AssistantMessage":
+                            content = getattr(msg, "content", None) or []
+                            last_had_tool = any(hasattr(b, "name") and hasattr(b, "input") for b in content)
+                            last_text = "".join(getattr(b, "text", "") or "" for b in content)
+                    # The turn ended on a text-only question (no tool call): a real user would answer in
+                    # chat, so the sim does — one more `query` continues the SAME session (SDK multi-turn).
+                    if (followup == MAX_PROSE_FOLLOWUPS or last_had_tool or getattr(final, "is_error", False)
+                            or not ends_with_question(last_text)):
+                        break
+                    reply = await human.reply(last_text)
+                    print(f"  ! human({persona}) answers a PROSE question: {reply[:160]}", file=sys.stderr, flush=True)
+                    await client.query(reply)
         else:
             async for msg in query(prompt=prompt, options=options):
                 messages.append(msg)
