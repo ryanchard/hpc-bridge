@@ -289,7 +289,7 @@ async def test_teardown_wipes_the_store_hpc_bridge_seeded(tmp_path, monkeypatch)
 async def test_teardown_never_wipes_a_store_that_was_already_there(tmp_path, monkeypatch):
     from hpc_bridge.profile import Profile
 
-    fac, cli, store, wiped = _bootstrap_parts(tmp_path, monkeypatch, remote_db_present=True)
+    fac, cli, _store, wiped = _bootstrap_parts(tmp_path, monkeypatch, remote_db_present=True)
     handle = await fac.bootstrap(Profile(mode="interactive"))
     assert cli.seeded is None  # the login node could already authenticate: not ours
     await fac.teardown(handle.endpoint_id, wipe_credentials=True)
@@ -301,7 +301,7 @@ async def test_teardown_in_a_later_session_reads_the_record(tmp_path, monkeypatc
     from hpc_bridge.profile import Profile
     from tests.test_remote_facility import _BootstrapCLI, _no_endpoints, _profile
 
-    fac, cli, store, _ = _bootstrap_parts(tmp_path, monkeypatch, remote_db_present=False)
+    fac, _cli, store, _ = _bootstrap_parts(tmp_path, monkeypatch, remote_db_present=False)
     handle = await fac.bootstrap(Profile(mode="interactive"))
     # a new process: no in-memory flag, only the endpoint record
     cli2 = _BootstrapCLI(status="running", remote_db_present=True)
