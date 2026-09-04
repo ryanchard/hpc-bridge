@@ -1,0 +1,20 @@
+#!/bin/sh
+# hpc-bridge: run `uv` with the given arguments, finding it when it is not on PATH.
+#
+# Claude Code's desktop app and IDE extensions start a plugin's MCP server with a minimal PATH (on macOS the
+# launchd default: /usr/bin:/bin:/usr/sbin:/sbin), which does not include where uv installs itself. A bare
+# `uv` then fails with "command not found" and the agent reports it has no hpc-bridge tools (release-readiness
+# pass, 2026-09-04). This launcher is what .mcp.json calls instead of `uv`.
+set -e
+if command -v uv >/dev/null 2>&1; then
+  exec uv "$@"
+fi
+for candidate in "$HOME/.local/bin/uv" "/opt/homebrew/bin/uv" "/usr/local/bin/uv" "$HOME/.cargo/bin/uv" \
+                 "/home/linuxbrew/.linuxbrew/bin/uv"; do
+  if [ -x "$candidate" ]; then
+    exec "$candidate" "$@"
+  fi
+done
+echo "hpc-bridge: 'uv' was not found on PATH or in the usual install locations (~/.local/bin, Homebrew, ~/.cargo/bin)." >&2
+echo "hpc-bridge: install it from https://docs.astral.sh/uv/ or symlink your uv into ~/.local/bin, then /reload-plugins." >&2
+exit 127
