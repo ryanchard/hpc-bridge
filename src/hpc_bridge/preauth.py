@@ -23,7 +23,7 @@ from pathlib import Path
 from .facility.remote import SshTarget
 
 _CODE_RE = re.compile(r"^[A-Za-z0-9]{4,16}$")  # a TOTP / Duo passcode; never a password
-_ASKPASS = """#!/bin/sh
+_ASKPASS = r"""#!/bin/sh
 # hpc-bridge askpass: answer ONE one-time-code prompt; refuse a password prompt, and refuse a host-key
 # confirmation (answering it with the code would loop until the timeout — live 2026-09-04).
 case "$1" in
