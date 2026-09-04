@@ -3,6 +3,9 @@
 > [!abstract] In one line
 > Replace the manual prerequisite (`globus-compute-endpoint login` in a terminal, before first use) with a **Cloudflare-shaped OAuth login that the agent surfaces and the browser completes** — a `needs_login` phase carrying an authorize URL; the browser redirects back to a loopback listener inside the server and the session continues; paste-back as the fallback. One consent covers every scope hpc-bridge needs. It rides the **Compute SDK's own `UserApp`** (same client id, same `storage.db`) so endpoint credential seeding keeps working unchanged. Tier-2 item B of [[V1 release]]; the same mechanism later carries a MEP's consent (M2).
 
+> [!success] Built and merged — 2026-09-03, [PR #48](https://github.com/ryanchard/hpc-bridge/issues/48)
+> This note is the design record and its live findings. The implementation is documented as ground truth in [[login]] (`LoginFlow`, the wait-and-continue, `globus_identity_label`) and [[login_flow_manager]] (the quiet loopback manager, paste-back); the tools and phases in [[The MCP tools]] / [[models]]; the gate's position in [[server]]. `HPC_BRIDGE_LOGIN_WAIT_S` in [[Configuration]].
+
 ## Why
 
 A stranger's first run today: hpc-bridge needs a Globus login carrying `openid` + `manage_projects` + refresh tokens ([[Credential seeding]]); a plain SDK login isn't enough; the MCP server **cannot prompt** (stdio), so `credentials.MissingCredentials` surfaces as a generic `failed` telling the user to go run a CLI command elsewhere and come back. That is the single worst moment of the new-user experience — and it's the exact problem the Cloudflare MCP solved with `authenticate` / `complete_authentication`.
@@ -34,13 +37,13 @@ A stranger's first run today: hpc-bridge needs a Globus login carrying `openid` 
 
 **Wait-and-continue (added after the first fresh-user test, 2026-09-03).** The first design returned `needs_login` the instant the listener was armed and left the agent to ask the user to 'say when done'. Live, with a Globus web session and this client's consent already in the browser, the redirect landed **4 s** after the URL was issued — the login was over before the agent finished writing its message, the user then re-opened the single-use link (the loopback had already closed) and read the failure as 'it's reusing the token'. Now the tool call that arms a browser flow **waits for it** (`LoginFlow.wait`, up to `HPC_BRIDGE_LOGIN_WAIT_S` = 90 s — a real IdP round-trip fits; well under the 10-min TTL and any MCP tool timeout, which `run_shell` already exceeds routinely) and, when it lands, **continues the connection in the same call** — the Cloudflare-plugin feel the design was after. A browser attempt that fails during the wait is re-armed in paste mode at once. Only a still-open (slow) login returns `needs_login`, and its notice says how long it waited, that a finished page means 'just call again', and that the link is single-use. The listener lives in the MCP server process: quitting the session mid-login kills it (the tokens already stored survive).
 
-## What the agent is taught ([[driving-hpc skill|SKILL.md]])
+## What the agent is taught (`skills/driving-hpc/SKILL.md` — [[Plugin packaging]])
 On `needs_login`: present `login_url` as a link and say what will happen ("your browser will log you in to Globus; when it says you can return, tell me"); then call `connect_facility` again. In paste mode: ask the user to paste the code Globus shows and call `complete_login(code)`. **Never** ask for a Globus password; never paste a URL into a shell. Same discipline as `needs_preauth`.
 
 ## Not in scope / later
 - M2: a facility MEP's consent-required 401 becomes a `needs_login` with the consent URL — same phase, same tools.
 - Multiple Globus identities / choosing an identity: the Globus login page handles it.
-- Logout / re-login (`force`): `authenticate(force=True)` is a natural extension; not V1.
+- ~~Logout / re-login (`force`): `authenticate(force=True)` is a natural extension; not V1.~~ *Superseded: `authenticate(force=True)` shipped in the same PR (it re-arms a login even when one is present), and `authenticate(mode="paste")` forces paste mode. A new login also drops the sticky MEP no-account verdicts and rebuilds the runners (`_forget_identity_verdicts`, [[server]]).*
 
 ## Milestones
 | L | Deliverable |
@@ -52,4 +55,4 @@ On `needs_login`: present `login_url` as a link and say what will happen ("your 
 | L5 fresh-user walk | ✅ 2026-09-03 |
 
 ## See also
-[[V1 release]] · [[Credential seeding]] · [[Facility catalog]] · [[Endpoint reuse and MEP integration]] (M2) · [[MFA and interactive SSH auth]] (the `needs_preauth` precedent) · [[credentials]]
+[[login]] · [[login_flow_manager]] · [[V1 release]] · [[Credential seeding]] · [[Facility catalog]] · [[Endpoint reuse and MEP integration]] (M2) · [[MFA and interactive SSH auth]] (the `needs_preauth` precedent) · [[credentials]]

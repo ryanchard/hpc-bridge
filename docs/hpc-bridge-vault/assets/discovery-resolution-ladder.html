@@ -127,9 +127,11 @@
   <header>
     <p class="kicker">hpc-bridge · discovery</p>
     <h1>The resolution ladder <span class="fn">— inside connect_facility()</span></h1>
-    <p class="lede">The agent only ever calls two discovery tools. Everything else — the cache read, the
-      index query, the SSH probe — happens <b>server-side, inside a single tool call</b>, walked top-to-bottom
-      until something resolves. The agent never touches <code>facilities.json</code>.</p>
+    <p class="lede">The agent only ever calls two discovery tools. Everything else — the registry query, the
+      cache read, the SSH probe — happens <b>server-side, inside a single tool call</b>, walked top-to-bottom
+      until something resolves. The agent never touches <code>facilities.json</code>. (Before the ladder runs at all,
+      <code>connect_facility</code> gates on the Globus login: a missing credential opens the browser, waits ≤90 s,
+      and continues — or returns <code>needs_login</code>.)</p>
     <div class="legend">
       <span><i class="dot free"></i> resolves with no SSH</span>
       <span><i class="dot ssh"></i> costs an SSH round-trip</span>
@@ -142,19 +144,21 @@
   <div class="agent">
     <div class="tool">
       <div class="call">list_facilities(<span class="arg">query</span>)</div>
-      <p>Browse the curated Globus Search <b>index</b>. Returns agent-safe summaries. The explicit
-        “what machines exist?” step. <span class="anchor">:645</span></p>
+      <p>Browse the public Globus Search <b>registry</b> (built-in id, read anonymously — no login). Returns agent-safe
+        summaries that say how you get in (<code>access</code>: ssh | mep). The explicit
+        “what machines exist?” step. <span class="anchor">:1041</span></p>
     </div>
     <div class="tool">
       <div class="call">connect_facility(<span class="arg">facility, ssh_host?, details?</span>)</div>
       <p>Resolve <em>and</em> bind. This is the only call that walks the ladder below —
-        cache, index, and probe all live in here. <span class="anchor">:718</span></p>
+        registry, cache, and probe all live in here. <span class="anchor">:1115</span></p>
     </div>
   </div>
   <p class="agent-note"><b>Local discovery is embedded, not a step.</b> For a catalogued machine you
     usually see <code>list_facilities</code> then <code>connect_facility</code>. For a <em>cached</em>
     machine you see only <code>connect_facility(ssh_host=…)</code> — the cache hit is invisible; the tell
-    is an immediate <code>needs_account</code> with no <code>proposed_facility_details</code> and no SSH.</p>
+    is an immediate <code>needs_account</code> with no <code>proposed_facility_details</code> and no SSH.
+    An explicit <code>details=</code> skips the ladder entirely: it (re)defines the facility and is cached.</p>
 
   <div class="boundary"><b>▼ inside connect_facility — server-internal, invisible to the agent ▼</b></div>
 
@@ -163,32 +167,35 @@
       <div class="rung__num">1</div>
       <div>
         <div class="rung__head"><span class="rung__title">session cache</span><span class="chip free">no ssh</span></div>
-        <code class="rung__call">app.session_facilities.get(facility) <span class="anchor">:740</span></code>
+        <code class="rung__call">app.session_facilities.get(facility) <span class="anchor">:1149</span></code>
         <p class="rung__desc">In-memory, this process. A facility already connected earlier <b>this session</b>.</p>
       </div>
       <div class="rung__hit">on hit<b>→ login shape up</b></div>
     </div>
-    <div class="miss">miss — try disk</div>
-
-    <div class="rung rung--cache">
-      <div class="rung__num">2</div>
-      <div>
-        <div class="rung__head"><span class="rung__title">facilities.json</span><span class="chip free">no ssh</span></div>
-        <code class="rung__call">_facility_store().get(ssh_host or facility) <span class="anchor">:745</span></code>
-        <p class="rung__desc"><b>Local discovery.</b> A BYO config confirmed in a <b>prior session</b>, cached
-          to disk (keyed by <code>ssh_host</code>). Hit → reuse the online endpoint over the web. <b>Zero SSH.</b></p>
-      </div>
-      <div class="rung__hit">on hit<b>→ login shape up</b></div>
-    </div>
-    <div class="miss">miss — try the index</div>
+    <div class="miss">miss — try the registry</div>
 
     <div class="rung">
+      <div class="rung__num">2</div>
+      <div>
+        <div class="rung__head"><span class="rung__title">registry / index</span><span class="chip free">no ssh</span></div>
+        <code class="rung__call">make_catalog().get(facility) <span class="anchor">:1156</span></code>
+        <p class="rung__desc">The public Globus Search registry — a <b>catalogued</b> machine (Anvil over SSH, globus1
+          as a facility MEP). Same index <code>list_facilities</code> browses; resolved by id or subject here.
+          <b>The registry wins for any catalogued id</b> (a stale local config must never shadow a curated entry —
+          decided 2026-09-03). A MEP entry hits → <em>attach</em> (zero SSH), not a login shape.</p>
+      </div>
+      <div class="rung__hit">on hit<b>→ login shape up · MEP: attach</b></div>
+    </div>
+    <div class="miss">miss (or registry unreachable) — try disk</div>
+
+    <div class="rung rung--cache">
       <div class="rung__num">3</div>
       <div>
-        <div class="rung__head"><span class="rung__title">catalog / index</span><span class="chip free">no ssh</span></div>
-        <code class="rung__call">make_catalog().get(facility) <span class="anchor">:754</span></code>
-        <p class="rung__desc">The curated Globus Search index — a <b>catalogued</b> machine (e.g. Anvil). Same
-          index <code>list_facilities</code> browses; resolved by id here.</p>
+        <div class="rung__head"><span class="rung__title">facilities.json</span><span class="chip free">no ssh</span></div>
+        <code class="rung__call">_facility_store().get(ssh_host or facility) <span class="anchor">:1164</span></code>
+        <p class="rung__desc"><b>Local discovery.</b> A BYO config confirmed in a <b>prior session</b>, cached
+          to disk (keyed by <code>ssh_host</code>) — only for facilities the registry does not know. Hit → reuse the
+          online endpoint over the web. <b>Zero SSH.</b></p>
       </div>
       <div class="rung__hit">on hit<b>→ login shape up</b></div>
     </div>
@@ -198,25 +205,26 @@
       <div class="rung__num">4</div>
       <div>
         <div class="rung__head"><span class="rung__title">probe / ask</span><span class="chip ssh">ssh round-trip</span></div>
-        <code class="rung__call">_propose_or_ask(facility, ssh_host) <span class="anchor">:762</span></code>
+        <code class="rung__call">_propose_or_ask(facility, ssh_host) <span class="anchor">:1394</span></code>
         <p class="rung__desc">Never-seen, un-indexed. With an <code>ssh_host</code> → <b>probe the login node</b>
-          over raw SSH and return <code>proposed_facility_details</code>. Without one → ask for the host.</p>
+          over raw SSH and return <code>proposed_facility_details</code> (or <code>needs_preauth</code> when the host
+          wants a password/MFA). Without one → ask for the host.</p>
       </div>
       <div class="rung__hit">returns<b>proposed_details</b></div>
     </div>
   </div>
 
   <div class="writeback">
-    <p class="wb-title">↑ how rung ② gets filled — the confirm → persist loop</p>
+    <p class="wb-title">↑ how rung ③ gets filled — the confirm → persist loop</p>
     <div class="wb-flow">
       <span class="wb-step">proposed_facility_details</span>
       <span class="wb-arrow">→ agent confirms →</span>
       <span class="wb-step">connect_facility(<span style="color:var(--teal)">details=</span>)</span>
       <span class="wb-arrow">→</span>
-      <span class="wb-step persist">_facility_store().put(ssh_host) :738</span>
+      <span class="wb-step persist">_facility_store().put(ssh_host) :1147</span>
     </div>
     <p class="wb-loop">A confirmed <code>details=</code> with an <code>ssh_host</code> is written to
-      <code>facilities.json</code> — so <b>next session, rung ② hits with zero SSH.</b> The index is a curated
+      <code>facilities.json</code> — so <b>next session, rung ③ hits with zero SSH.</b> The registry is a curated
       cache of discovery; this file is the local one.</p>
   </div>
 

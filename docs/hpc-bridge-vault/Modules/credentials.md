@@ -9,8 +9,10 @@
 
 It raises `MissingCredentials` (`:66`) when a required token is absent, has no refresh token, or is **under-scoped**.
 
+`_required_scopes` is also the scope set the **in-terminal login** requests ([[login]] `required_scopes` — the minimum consent, with refresh tokens), so what the login stores is exactly what this module trims and what the remote daemon can refresh; the `connect_facility` login gate normally catches a missing/under-scoped credential *before* seeding is attempted.
+
 > [!warning] The `manage_projects` check
 > A plain SDK `Client` login carries only `openid` on `auth.globus.org`, not `manage_projects`. A remote manager registers `manage_projects` as a hard requirement and dies (interactive login in a daemon) without it. This module verifies scope adequacy **locally**, before shipping, with a clear remediation. The conceptual rationale is in [[Credential seeding]].
 
 ## See also
-[[Credential seeding]] · [[facility-remote]]
+[[Credential seeding]] · [[facility-remote]] · [[login]]

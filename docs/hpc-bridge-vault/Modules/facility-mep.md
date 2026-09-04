@@ -1,0 +1,28 @@
+# facility-mep.py — `facility/mep.py`
+
+> [!abstract] Role
+> `MEPFacility` — a **facility-run multi-user endpoint** (MEP) consumed with **zero SSH**: the facility already runs the manager, owns the UEP template and maps our Globus identity to a local account; we only dispatch a `user_endpoint_config` to its catalogued UUID over AMQP. The third [[facility-base|Facility]] implementation — M1 of [[Endpoint reuse and MEP integration]], merged in [#41](https://github.com/ryanchard/hpc-bridge/issues/41).
+
+## What it does
+
+- **`supported_shapes = ("compute",)`** (`facility/mep.py:36`) — the one capability the server reads (via `getattr`) and **derives everything else from**: no login shape ⇒ no free channel for the allocation listing, the [#32](https://github.com/ryanchard/hpc-bridge/issues/32) pilot query, or the `scancel` release ⇒ **stop is draining-only, teardown is a detach, every shape is billed** ([[server]] `_supported_shapes` / `_shape_reject` / `_connect_mep` / `_stop_mep`). `SlurmFacility` / `LocalFacility` don't declare it and get every shape.
+- **`from_entry(entry, account=…)`** (`:66`) — builds one from a catalog entry carrying `compute_mep_uuid` ([[Facility catalog]]): the pinned `compute.interface` and `compute.env_setup` (→ `worker_init`) plus the tunables `defaults.*` (partition, walltime, workers, nodes, **`init_blocks`** — the warm-block knob — `max_blocks`) and the account when given (the startup-pin path's `HPC_BRIDGE_ACCOUNT`; the agentic path supplies it per user via `ensure_endpoint_up(account=…)`). The constructor **drops empty/None values**: the manager `json.dumps`'s every string, so an `account: ""` would arrive as the truthy two-char string `'""'` and `sbatch` would reject an empty `--account`. The entry's `account_required` tells `_connect_mep` whether to ask for one at all.
+- **`provision(profile)`** (`:102`) — does **no work**: returns `EndpointHandle(endpoint_id=<catalogued UUID>, reused=True)` (there was never anything to bootstrap; the connect result reports a zero-SSH attach). There is no `bootstrap`, no `teardown`, no `login_exec`.
+- **`manager_online(endpoint_id)`** (`:107`) — a best-effort web check that **degrades to `True` on any error**: the authoritative liveness signal on a MEP is the dispatch [[Warmth, the canary & cold-start|canary]], so a status-API hiccup — or a foreign-endpoint read we aren't authorized for — must not strand us as `provisioning`. A manager that *reports* offline is still honoured: `_connect_mep` returns `failed` naming the facility as the owner, and `poll_task`'s ORPHANED check ([[The MCP tools]]) keys on it.
+- **`config_template(profile)`** (`:120`) — `("", user_opts)`: only the compute-shape `user_endpoint_config` defaults; the template slot is empty because the *facility* owns the template (`_shape_runtime` reads element `[1]` only). `shape_config("compute")` ([[shapes]]) merges `compute=True` over these.
+- **`scratch_root`** — kept in worker-side form (`$HOME/.hpc-bridge`), expanded by the mapped user's shell through `Session.quoted_state_dir` ([[session_shell]]); we cannot know the local username client-side.
+
+> [!warning] No login shape — the facility's schema rejects it
+> A facility MEP refuses `LocalProvider` / `compute: false` (its forked UEPs run in `system.slice` with no memory cgroup, so an unbounded task on the controller node is refused outright). The server must never request `shape="login"` against it: `_shape_reject` ([[server]]) returns a notice *before* any `ShapeRuntime` exists, because a refused submit would shut the SDK Executor down (`Executor is shutdown`). Low latency comes from a warm block (`init_blocks: 1` + the facility's idle-release), not a free login node.
+
+> [!warning] No account = a terminal failure, not a queue wait
+> Attaching never tests the identity mapping — only the first submit does. The manager's failure notices (`Identity failed to map to a local user name`, `… local user does not exist`, `untrusted identity` — `_NO_ACCOUNT_MARKERS` in [[server]]) arrive as the canary's error text (the API error's `.message`, kept whole by [[runner]] `dispatch_error_text`); `_no_account_failure` turns them into a terminal `down` (`ensure_endpoint_up`) / `failed` (`run_shell`) naming the refused identity, and the verdict is **sticky** on `ShapeRuntime.no_account` — a rapid re-submit got a transient `RESOURCE_CONFLICT` that flipped it back to "allocating nodes…" (live, 2026-09-03). Cleared by a re-bind/teardown or a new login (`_forget_identity_verdicts`). Live record: [[Endpoint reuse and MEP integration]] § *No account at the facility*.
+
+> [!warning] Worker version pin is the client's job
+> The MEP's endpoint and our workers must match; the seed's `env_setup` → `worker_init` pins `globus-compute-endpoint==4.15.0` **unconditionally** (a `command -v … ||` guard silently keeps a wrong-version venv → cryptic `process_worker_pool.py: -P/--port` failures). Client-side templating (`{user}`/`{venv}`) is refused on a MEP entry by `CatalogEntry._reachable` — nothing client-side can resolve it.
+
+> [!note] One fixed config shape — a known model gap
+> `from_entry` builds one `user_endpoint_config` shape (`partition`/`account`/`walltime`/…). Real MEP templates disagree and are case-sensitive (`queue` at ALCF, `ACCOUNT_ID` at NeSI, `qos` on Anvil) — see [[MEP facilities survey]]. A per-facility key map is needed before any of those enters the registry.
+
+## See also
+[[facility-base]] · [[facility-remote]] · [[server]] · [[Facility catalog]] · [[MEP & templated endpoints]] · [[Endpoint reuse and MEP integration]] · [[MEP facilities survey]] · [[Cost control]] · [[shapes]]

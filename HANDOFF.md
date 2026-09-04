@@ -1,23 +1,25 @@
 # hpc-bridge — handoff (state of the repo)
 
-_Snapshot: 2026-09-03, end of day. V1 sprint: **Tier 1 DONE** (#41); the 08-19 "block-thrashing" thread **closed** (#43 harness, #44 product, #45 follow-ups); **fake-cluster spike merged** (#46). **Tier 2 in progress — see "Resume here" just below.**_
+_Snapshot: 2026-09-03, late evening (after the vault audit). V1 sprint: **Tier 1 DONE** (#41); the 08-19 "block-thrashing" thread **closed** (#43 harness, #44 product, #45 follow-ups); **fake-cluster spike merged** (#46). **Tier 2 — the new-user story is BUILT and merged**: in-terminal Globus login (#48), the public registry + terminal no-account (#49), the stranger's walk (#50). **Open: PR #51** (six agentic new-user scenarios + the first model sweep). End-user docs in progress. **See "Resume here" just below.**_
 _For a week-long handoff to a co-dev. Design rationale lives in `docs/hpc-bridge-vault/`; this file is the live state + how-to-run + gotchas on top._
 
 ## TL;DR
 
-**M1 — "consume a facility-run multi-user Globus Compute endpoint (MEP) with zero SSH" — is code-complete and validated live on globus1.** This is the V1-gating objective (Phase 2 in the vault). A catalogued MEP entry now resolves to a compute-only `MEPFacility` that dispatches over AMQP through the facility's identity mapping (no SSH bootstrap, ever). All unit tests green (**334 passed, 2 skipped**; harness **52 passed**). The SSH personal-endpoint path is unchanged and still green.
+**A stranger with zero configuration can now drive hpc-bridge end to end:** `list_facilities` reads the public registry anonymously (the index id is built in), the first `connect_facility` opens a browser for the one Globus login and continues in the same call, an SSH facility is bootstrapped once (or reused with zero SSH) and a facility multi-user endpoint (MEP) is attached with zero SSH ever, a billed block is spend-gated, and stop is honest (`down` confirmed / `draining` — terminal on a MEP). What used to fail cryptically now says what a newcomer can act on: `needs_login`, `NO SSH ACCESS to <host> as <user>`, `CANNOT REACH <host>`, a terminal `NO ACCOUNT` naming the refused Globus identity, an ORPHANED task instead of polling forever.
 
-What's left before merge: a **general code review** of the branch, a **clean agentic regression re-run** on a quiet cluster (a couple of wave-2 scenarios were only blocked by real cluster contention, not by our code), and two small **follow-ups** (below).
+Everything through #50 is on `main`. All unit tests green (**392 passed, 2 skipped**; harness graders **53 passed**). The SSH personal-endpoint path is unchanged and still green.
 
-## Resume here (paused 2026-09-03 evening — subscription allocation)
+## Resume here (2026-09-03, after #50; PR #51 open)
 
-**Where we stopped:** Tier 2 of the V1 sprint — `docs/hpc-bridge-vault/Planned/V1 release.md` is the plan of record. Tier-2 item 1 was re-scoped into **B — in-terminal Globus login** and **A — public registry**. Everything is on `main`; there are **no open branches**.
+**Where we are:** Tier 2 of the V1 sprint — `docs/hpc-bridge-vault/Planned/V1 release.md` is the plan of record. Merged today, in order: #41 (M1), #42, #43 (harness isolation), #44 (`poll_task` ORPHANED), #45, #46 (fake-cluster spike), #47 (clean stop), **#48 (in-terminal login), #49 (public registry + terminal no-account), #50 (stranger's walk)**.
 
-- **Tier-2 B (in-terminal Globus login) is BUILT** on `feat/in-terminal-login` (PR #48): `needs_login` phase gating `connect_facility` first; `authenticate(force, mode)` / `complete_login(code)` tools; loopback browser flow + paste-back fallback (headless-safe); minimum consent (Search reads are anonymous). L1–L4 live-validated, independent review done and its fixes in. Next: merge #48 → Tier-2 A (default registry index, `list_facilities` out of the box, 'add your facility' docs). Design + decisions: `Planned/In-terminal Globus login.md`. **Self-test as a fresh user:** `scripts/fresh_user_session.sh` (scratch token + state dirs, launched outside the repo so no repo-local config applies; `--reset` = brand-new user again; then say "connect me to globus1"). The script injects NO registry id — the plugin's built-in default is what gets exercised (`REGISTRY=<uuid>` overrides). Stranger's-walk findings + fixes are listed in the vault's V1 plan under Tier 2.
-- **A (public registry)** follows B: ship the index id as the plugin default; `SearchCatalog` reads **anonymously** (Search needs auth only for non-public entries — verified against the docs); `list_facilities` works out of the box; "add your facility" = seed YAML + PR. Open: create a purpose-named production index (today's is `hpc-bridge-test`) and name the curator of record.
-- **Fake-cluster tier** (~½ day) is scheduled in the plan; the spike works today: `agentic/fakecluster/bin/up.sh` → `prove-sbatch.sh` → `stretch.sh`; `bin/down.sh` stops it.
-- **Docker Desktop was fully quit** at the stop (it was misbehaving) — restart it before any live run.
-- Merged today, in order: #41 (M1), #42, #43 (harness isolation), #44 (`poll_task` ORPHANED), #45 (harness follow-ups), #46 (fake-cluster spike), and this pause point. Unit suite 345, harness 61.
+- **PR #51 — OPEN** (`feat/agentic-stranger-scenarios`): six new-user-story scenarios (`zero_config_list`, `needs_login_paste`, `mep_no_account`, `no_ssh_access`, `registry_over_cache`, `stranger_mep_walk`), per-scenario knobs (`NO_GLOBUS_DB`, `GLOBUS_DB_SECRET`, server-only `EXTRA_ENV`, `SEED_FACILITY_CACHE`, `SERIAL`, `COOLDOWN_S`), graders that read the agent's words (`Trace.texts`), `agentic/watch.sh`, and **round 1 of the model sweep** (Opus 5 / Sonnet 5 / Haiku 4.5 × the five cheap scenarios — written up in `docs/hpc-bridge-vault/Reference/Model sweep 2026-09-03.md` on that branch: 17/30 cells passed; 12 of 13 failures were a globus1 sshd outage, a grader false positive, or two cells sharing one identity — not the models). It carries **two product changes**: `TRANSIENT_CONFLICT_LIMIT` (3 consecutive `RESOURCE_CONFLICT` refusals ⇒ a `down` saying another session with the same identity holds the endpoint — Sonnet retried the "call again" hint 7×) and the discovery-probe path routed through `_explain_provision_error` (so a refused probe SSH also reads `NO SSH ACCESS …`). **Next:** review + merge; then re-run the outage-affected cells when globus1's sshd is back, then the block tier (`stranger_mep_walk`, serial) and the SSH classics on Sonnet/Haiku.
+- **End-user docs (Tier 2) — in progress** in `docs/user/` (install + quickstart, the facility matrix Anvil · globus1-MEP · BYO, platform notes). Being written in parallel; don't duplicate it in the vault.
+- **Remaining Tier 2:** the fake-cluster *tier* (~½ day: env knobs in `run_smoke.sh`/`run_suite.py`, pool users to `-09`, run `happy_path` + the cheap cost-safety scenarios against `agentic/fakecluster/`); the `spend_refusal` grader accepting a proactive refusal; a purpose-named **production registry index** (today's is `hpc-bridge-test`) + the curator of record.
+- **Blocked on the cluster:** the sweep re-runs above (globus1 sshd refused port 22 from ~18:05 local on 09-03; the node and the MEP manager stayed up); `no_ssh_access` is a **fail2ban trigger** — serial with a 660 s cooldown, or whitelist the harness egress in the cluster's `ignoreip`. Aurora stays blocked on an allocation.
+- **Tier 3** (release engineering) is untouched: marketplace packaging, `0.1.0 → 1.0.0`, security review, retire `docs/design/*.md` into the vault.
+- **Docker Desktop was fully quit** at the 09-03 pause (it was misbehaving) — restart it before any live run.
+- **The vault was audited against the code in this commit** (2026-09-03): new module notes `Modules/login.md`, `Modules/login_flow_manager.md`, `Modules/facility-mep.md`; `Happy path` is now the stranger's path; `Reference/Configuration.md` lists every env var the code reads; the resolution ladder (and its HTML diagram) shows the registry before the local cache; superseded statements are marked, not rewritten. Start at `docs/hpc-bridge-vault/Home.md`.
 
 ## Building project context — start with the vault
 
@@ -26,14 +28,23 @@ What's left before merge: a **general code review** of the branch, a **clean age
 **Entry point: [`docs/hpc-bridge-vault/Home.md`](docs/hpc-bridge-vault/Home.md)** — it's the index and has its own reading order. The short path:
 
 1. **`Home.md`** — the one-paragraph "what this is" + the map of everything below.
-2. **`Happy path.md`** — the end-to-end flow (select facility → stand up/reuse endpoint → gate spend → run on a compute block), the fastest way to see the whole system at once.
-3. **Concepts**, in order: `Concepts/Two-channel architecture.md` (SSH control plane vs the AMQP hot path — the central idea) → `Concepts/Standing up the endpoint.md` → `Concepts/MEP & templated endpoints.md`. Then `Concepts/Facility catalog.md` and `Concepts/Resource shapes & the spend floor.md`.
-4. **For the current work (M1/MEP):** `Planned/Endpoint reuse and MEP integration.md` is the plan of record.
-5. **To understand a specific source file:** `Modules/` has a note per `src/hpc_bridge/` module (`Modules/server.md`, `Modules/facility-remote.md`, …) — read the module note beside the code.
+2. **`Happy path.md`** — the end-to-end flow as a first-time user walks it (no config → list → Globus login → attach or bootstrap → gate → run → stop), the fastest way to see the whole system at once.
+3. **Concepts**, in order: `Concepts/Two-channel architecture.md` (SSH control plane vs the AMQP hot path — the central idea) → `Concepts/Standing up the endpoint.md` → `Concepts/MEP & templated endpoints.md` → `Concepts/Facility catalog.md`. Then `Concepts/Resource shapes & the spend floor.md` and `Concepts/Cost control.md`.
+4. **The three seams a new user hits first:** `Modules/login.md` (the in-terminal Globus login), `Modules/facility-mep.md` (zero-SSH facility endpoints), `Modules/discovery.md` (an un-indexed facility).
+5. **For the current work:** `Planned/V1 release.md` is the plan of record; `Planned/Endpoint reuse and MEP integration.md` (the MEP design + the no-account live record) and `Planned/In-terminal Globus login.md` (the login design + live findings) are the design records behind what shipped.
+6. **To understand a specific source file:** `Modules/` has a note per `src/hpc_bridge/` module (`Modules/server.md`, `Modules/facility-remote.md`, …) — read the module note beside the code.
 
 The vault holds the *why* (design rationale, decisions, the reading order); this `HANDOFF.md` holds the *now* (live state, how to run, what's next). Read the vault to understand the system; read on here for where it stands today. (Contributing to the vault itself? `docs/hpc-bridge-vault/Vault style guide.md` first.)
 
-## What M1 added (the branch)
+## What Tier 2 added (merged 2026-09-03)
+
+| PR | What |
+|---|---|
+| **#48** in-terminal Globus login | `src/hpc_bridge/login.py` + `login_flow_manager.py`: `LoginFlow` on the Compute SDK's **own** client id + `storage.db` (so seeding and the remote endpoint's refresh keep working); `connect_facility` gates on it **first** (before the catalog read, before SSH); browser loopback flow that **waits up to `HPC_BRIDGE_LOGIN_WAIT_S`=90 s and continues in the same call**, paste-back fallback for headless sessions; `authenticate(force, mode)` / `complete_login(code)` tools; `phase="needs_login"` + `login_url`/`login_mode` on the connect result; **minimum consent** (Compute + `openid` + `manage_projects`, refresh tokens; no Search scope). |
+| **#49** public registry + terminal no-account | `PUBLIC_REGISTRY_INDEX` baked into `catalog/search.py` (`HPC_BRIDGE_SEARCH_INDEX` only overrides); `_make_search_client` reads **anonymously** unless a Search-scoped login already exists; **the registry wins over the local BYO cache** for any catalogued id (`_connect_facility`: details → registry → cache → probe); the MEP manager's identity-mapping refusals become a **terminal `down`/`failed` naming the identity**, **sticky** on `ShapeRuntime.no_account` (a rapid re-submit's transient `RESOURCE_CONFLICT` used to flip it back), cleared by a new login (`_forget_identity_verdicts`); `runner.dispatch_error_text` keeps the API error's `.message`. Live-verified with an unmapped Google identity (`agentic/mep_no_account_check.py`). |
+| **#50** stranger's walk | `CatalogSummary.access` / `access_note` / `scheduler` (summaries say how you get in); `_explain_provision_error` (`NO SSH ACCESS to <host> as <user>` + where the name came from + remedies; `CANNOT REACH <host>`; `ControlPath too long`); `_short_control_dir` (ssh caps the whole expanded ControlPath — a deep state dir broke every SSH); `scripts/fresh_user_session.sh` no longer injects the registry id; MEP attach notice says attaching is identity-blind and "NO *allocation* account"; a warm billed block with no charge factor says `session_spend: 0` is not a free tier. Agent-level walk passed: list (~14 s) → attach in one call (~30 s) → block warm ~2 min → `hostname` on `globus2` → honest draining stop. |
+
+## What M1 added (merged 2026-09-03, #41)
 
 Read the commits in order — each is a self-contained step with a full message:
 
@@ -57,91 +68,91 @@ Hardening that shipped here because a MEP exposed it (all pre-existing, SSH path
 
 ## The live infrastructure (facts you'll need)
 
-- **The MEP:** `globus-cluster-mep` on globus1, UUID **`da3df250-4013-4d69-942c-eef1568f860c`**. Deployed + administered by the globus-cluster admin (not by us). Identity mapping: **`gusellerm@uchicago.edu` → local `glabs`**. Pinned to `globus-compute-endpoint==4.15.0` (the seed's `worker_init` pins it **unconditionally** — a version-skewed worker fails cryptically). `AccountingStorageEnforce=none` so no Slurm `--account` is needed (`account_required: false`).
-- **The Globus Search index (the runtime catalog):** **`6ff95fb8-1113-42be-a811-3d1cb5a67bd5`** (display name `hpc-bridge-test`, owned by the maintainer's Globus identity). Entries: `purdue:anvil` (SSH) and `globus:globus1` (MEP). **It's set in `.claude/settings.local.json` (gitignored) — NOT in your shell** (that's the #1 gotcha below). The `globus:globus1` entry is already ingested.
-- **`agentic/whoami_globus.py`** — read-only check of which identity + scopes a `storage.db` holds (the two facts that decide whether a run can reach the MEP and the catalog). Run it if a live run behaves unexpectedly.
+- **The MEP:** `globus-cluster-mep` on globus1, UUID **`da3df250-4013-4d69-942c-eef1568f860c`**. Deployed + administered by the globus-cluster admin (not by us). Identity mapping: **`gusellerm@uchicago.edu` → local `glabs`** (an unmapped identity gets the terminal NO ACCOUNT — by design). Pinned to `globus-compute-endpoint==4.15.0` (the seed's `worker_init` pins it **unconditionally** — a version-skewed worker fails cryptically). `AccountingStorageEnforce=none` so no Slurm `--account` is needed (`account_required: false`).
+- **The public registry (the runtime catalog):** Globus Search index **`6ff95fb8-1113-42be-a811-3d1cb5a67bd5`** (display name `hpc-bridge-test`, owned by the maintainer's Globus identity), **baked in as `PUBLIC_REGISTRY_INDEX`** and read anonymously — the server needs no env for it. Entries: `purdue:anvil` (SSH) and `globus:globus1` (MEP). `HPC_BRIDGE_SEARCH_INDEX` only overrides it (a staging registry); the curator CLI `hpc-bridge-catalog <uuid> <seed.yaml>` still takes the UUID explicitly. A production-named index is an open V1 item.
+- **`agentic/whoami_globus.py`** — read-only check of which identity + scopes a `storage.db` holds (the two facts that decide whether a run can reach the MEP). Run it if a live run behaves unexpectedly. **`agentic/mep_no_account_check.py`** — the no-agent driver for the unmapped-identity path (log in as a *separate*, unlinked Globus account; `--not <mapped-username>` refuses to run as a mapped one).
 
 ## How to run things
 
 ```bash
 # Unit tests (fast, hermetic, no cluster) — the default gate.
-python -m pytest -q                                  # 334 passed, 2 skipped
+python -m pytest -q                                  # 392 passed, 2 skipped
 
 # Agentic harness graders (also hermetic — proves the graders, not the product).
-python -m pytest agentic/harness/test_invariants.py -q   # 52 passed
+python -m pytest agentic/harness/test_invariants.py -q   # 53 passed
+
+# Try it AS A FRESH USER (scratch Globus tokens + hpc-bridge state; launched outside the repo so no
+# repo-local config applies; the built-in registry is what gets exercised). Then say: connect me to globus1
+scripts/fresh_user_session.sh            # 1st run: browser login, then the MEP attach
+scripts/fresh_user_session.sh --reset    # brand-new user again
 
 # Live agentic scenarios (need globus1 + Docker + agentic/.env; cost money).
 #   agentic/.env holds: CLAUDE_CODE_OAUTH_TOKEN (subscription, NOT API key),
 #   HPCB_TEST_GLOBUS_DB (a storage.db whose identity the MEP maps), HPCB_TEST_SSH_* .
 ./agentic/run_smoke.sh happy_path                    # one scenario
+./agentic/run_smoke.sh mep_compute_only              # the MEP path (the registry id is built in — no index env needed)
 python3 agentic/run_suite.py --scenarios happy_path --repeat 3 --concurrency 3
-
-# The MEP scenario needs the catalog index forwarded into the jail:
-HPC_BRIDGE_SEARCH_INDEX=6ff95fb8-1113-42be-a811-3d1cb5a67bd5 \
-  ./agentic/run_smoke.sh mep_compute_only
 ```
 
-The pre-merge regression set + costs (~30–40 min, ~$7–10 for a full pass; subscription-billed) are in **`agentic/README.md`** — read it before a live run.
+The pre-merge regression set + costs (~30–40 min, ~$7–10 for a full pass; subscription-billed) and the model-sweep recipe are in **`agentic/README.md`** — read it before a live run.
 
 ## The agentic testing framework (`agentic/`)
 
 This repo ships a **live-agent regression harness** — its own test tier, separate from the unit tests. It drives a **headless Claude Code agent** against the real **globus1** cluster, once per scenario, inside a **disposable Docker container** holding only scoped (non-admin) credentials, and **grades the agent's behaviour from its tool-call trace** rather than from return values. It's what proves the *product* works end-to-end (an agent can actually drive HPC through hpc-bridge), which unit tests can't. `agentic/README.md` is the authoritative guide; this is the orientation.
 
-**Two things it is not:** it is **not** collected by `python -m pytest -q` (that's the hermetic tier), and it is **not** free — each scenario runs a real agent against a real cluster and bills your Claude subscription. Run it nightly / on demand / before merging anything that touches connect, discovery, endpoint naming, the local-discovery cache, or stop.
+**Two things it is not:** it is **not** collected by `python -m pytest -q` (that's the hermetic tier), and it is **not** free — each scenario runs a real agent against a real cluster and bills your Claude subscription. Run it nightly / on demand / before merging anything that touches connect, discovery, endpoint naming, the local-discovery cache, login, or stop.
 
-**How one run works** (`harness/run.py`): `SETUP` (optional cluster prep) → drive the agent on the scenario's `PROMPT` (a `human_sim.py` persona answers any `AskUserQuestion`) → grade the trace against **invariants** (`harness/invariants.py`, deterministic checks like "no raw SSH after the endpoint is up", "spend was confirmed before a billed block", "stop was honest") → **world postchecks** over SSH (did a block actually get left running?) → teardown. Every run writes a **provenance bundle** to `agentic/runs/<id>/` (`record.json` with the grading, `messages.jsonl`, `transcript.md`) — gitignored, but they're how you debug a failure after the fact, and `harness/regrade.py` can replay a stored bundle through the *current* invariants offline.
+**How one run works** (`harness/run.py`): `SETUP` (optional cluster prep) → drive the agent on the scenario's `PROMPT` (a `human_sim.py` persona answers any `AskUserQuestion`) → grade the trace against **invariants** (`harness/invariants.py`, 12 deterministic checks like "no raw SSH after the endpoint is up", "spend was confirmed before a billed block", "stop was honest") → **world postchecks** over SSH (did a block actually get left running?) → **run-scoped teardown** (only this run's endpoint and `uep.<eid>` blocks — never `scancel -u`; pool users are claimed cross-process with `flock`, so two `run_suite`s can run at once). Every run writes a **provenance bundle** to `agentic/runs/<id>/` (`record.json` with the grading, `messages.jsonl`, `transcript.md`, `endpoint-logs.txt`) — gitignored, but they're how you debug a failure after the fact, and `harness/regrade.py` can replay a stored bundle through the *current* invariants offline.
 
-**A scenario** is one file in `agentic/scenarios/` declaring a `PROMPT`, a persona, `EXTRA_INVARIANTS`, `EXPECT_OK` (which invariants gate the verdict), and optional `SETUP`/`POSTCHECKS`. To add coverage you add a scenario + (usually) a grader, and a hermetic unit test for the grader in `harness/test_invariants.py` — that last part is the discipline that lets a green run be trusted. `mep_compute_only.py` is the newest and a good template for the MEP path; `happy_path.py` for the SSH path.
+**A scenario** is one file in `agentic/scenarios/` declaring a `PROMPT`, a persona, `EXTRA_INVARIANTS`, `EXPECT_OK` (which invariants gate the verdict), and optional `SETUP`/`POSTCHECKS`/`PHASES` (a cross-restart chain). On `main`: `happy_path` · `gated_provision` · `spend_refusal` · `spend_gate_enforced` · `session_persistence` · `long_job_30m` · `long_task_via_handle` · `idle_release_kill` · `saturation` · `endpoint_reuse` · `endpoint_reuse_chain` · `facility_cache` · `aurora_pbs_bringup` · `mep_compute_only`; PR #51 adds the six new-user ones. To add coverage you add a scenario + (usually) a grader, and a hermetic unit test for the grader in `harness/test_invariants.py` — that last part is the discipline that lets a green run be trusted. `mep_compute_only.py` is a good template for the MEP path; `happy_path.py` for the SSH path.
 
-**Running it:**
-```bash
-# Grading core — hermetic, fast, no cluster (run this whenever you touch a grader):
-python -m pytest agentic/harness/test_invariants.py -q            # 52 passed
-
-# One live scenario (needs Docker + globus1 + agentic/.env):
-./agentic/run_smoke.sh happy_path
-HPCB_NO_SKILL=1 ./agentic/run_smoke.sh spend_gate_enforced        # ablation: withhold SKILL.md
-HPC_BRIDGE_SEARCH_INDEX=6ff95fb8-1113-42be-a811-3d1cb5a67bd5 \
-  ./agentic/run_smoke.sh mep_compute_only                         # the MEP path (needs the catalog index)
-
-# A matrix / repeats, staggered + capped (globus1 SSH + subscription-rate headroom):
-python3 agentic/run_suite.py --scenarios happy_path --repeat 3 --concurrency 3
-```
-**Prerequisites** (one-time, in `agentic/.env` — gitignored): `CLAUDE_CODE_OAUTH_TOKEN` (subscription, from `claude setup-token` — **not** an API key), `HPCB_TEST_GLOBUS_DB` (a Globus `storage.db` whose identity the target facility maps — for the MEP that means `gusellerm@uchicago.edu`; check with `python agentic/whoami_globus.py`), and the scoped SSH test user/key (`HPCB_TEST_SSH_*`, default user `hpcbridge-test`). Full setup + the pre-merge regression set are in `agentic/README.md`; the design rationale is `docs/hpc-bridge-vault/Planned/Agentic testing - Plan B (runtime sandbox).md`.
+**Prerequisites** (one-time, in `agentic/.env` — gitignored): `CLAUDE_CODE_OAUTH_TOKEN` (subscription, from `claude setup-token` — **not** an API key), `HPCB_TEST_GLOBUS_DB` (a Globus `storage.db` whose identity the target facility maps — for the MEP that means `gusellerm@uchicago.edu`; check with `python agentic/whoami_globus.py`), and the scoped SSH test user/key (`HPCB_TEST_SSH_*`, default user `hpcbridge-test`; the pool `hpcbridge-test-00..09` for `run_suite`). PR #51 adds `HPCB_TEST_GLOBUS_DB_NOACCOUNT` (a second, unmapped identity's db) for `mep_no_account`. Full setup + the pre-merge regression set are in `agentic/README.md`; the design rationale is `docs/hpc-bridge-vault/Planned/Agentic testing - Plan B (runtime sandbox).md`. **`agentic/fakecluster/`** is a compose Slurm cluster the SSH path bootstraps against in 96 s — a spike, not yet wired into the runners.
 
 ## Where things are
 
-> The **vault (`docs/hpc-bridge-vault/`) is committed in THIS repo** — not a submodule, not a separate remote. It ships with the code (same `ryanchard/hpc-bridge` remote, already in PR #41). It's an Obsidian vault (has `.obsidian/`), so open that folder in Obsidian for the wikilinks/graph — but every file is plain markdown you can read anywhere.
+> The **vault (`docs/hpc-bridge-vault/`) is committed in THIS repo** — not a submodule, not a separate remote. It ships with the code. It's an Obsidian vault (has `.obsidian/`), so open that folder in Obsidian for the wikilinks/graph — but every file is plain markdown you can read anywhere.
 
-
-- `src/hpc_bridge/server.py` — the FastMCP tools + all the orchestration seams (`_connect_facility`, `_connect_mep`, `_ensure_endpoint_up`, `_run_shell`, `_stop_endpoint`/`_stop_mep`, `_shape_reject`).
-- `src/hpc_bridge/facility/` — `remote.py` (SSH `SlurmFacility`), `local.py`, **`mep.py`** (new), `base.py` (the `Facility` protocol + `EndpointHandle`).
-- `src/hpc_bridge/catalog/` — `entry.py` (the `CatalogEntry` model), `search.py` (the runtime index client), `seed/*.yaml` (curator ingest sources), `ingest.py` (`hpc-bridge-catalog` CLI).
-- `docs/hpc-bridge-vault/` — the design record (Obsidian). Start at `Planned/Endpoint reuse and MEP integration.md` (the MEP plan) and `Concepts/Facility catalog.md`.
-- `agentic/` — the live-agent regression harness (`harness/`, `scenarios/`, `run_smoke.sh`, `run_suite.py`, `README.md`).
+- `src/hpc_bridge/server.py` — the FastMCP tools + all the orchestration seams (`_connect_facility` with the login gate and the resolution precedence, `_connect_mep`, `_ensure_endpoint_up`, `_run_shell`/`_poll_task`, `_stop_endpoint`/`_stop_mep`, `_shape_reject`, `_explain_provision_error`, the no-account verdict).
+- `src/hpc_bridge/login.py` + `login_flow_manager.py` — the in-terminal Globus login (`LoginFlow`; the quiet loopback manager + paste-back).
+- `src/hpc_bridge/facility/` — `remote.py` (SSH `SlurmFacility`, Slurm + PBS), `local.py`, **`mep.py`** (`MEPFacility`, zero SSH), `base.py` (the `Facility` protocol + `EndpointHandle`).
+- `src/hpc_bridge/catalog/` — `entry.py` (the `CatalogEntry` model + `CatalogSummary.access`), `search.py` (the registry client + `PUBLIC_REGISTRY_INDEX`), `seed/*.yaml` (curator ingest sources), `ingest.py` (`hpc-bridge-catalog` CLI).
+- `scripts/fresh_user_session.sh` — the fresh-user launcher; `agentic/clean-session.sh` — the pristine-Claude launcher (keeps your Globus login).
+- `docs/hpc-bridge-vault/` — the design record (Obsidian). `docs/user/` — end-user docs (in progress).
+- `agentic/` — the live-agent regression harness (`harness/`, `scenarios/`, `run_smoke.sh`, `run_suite.py`, `fakecluster/`, `README.md`).
 
 ## Live validation so far
 
 - **Wave 1 (2026-08-19): 3/3 green.** `mep_compute_only` passed on its first live run — the full chain: index → `MEPFacility` → identity-mapped compute (`whoami` → `glabs`) → draining-only stop → the facility's idle-release reclaimed the block (world check confirmed). `happy_path` + `endpoint_reuse_chain` confirm the SSH path is intact.
-- **Wave 2: partial, but every failure explained and none an M1 regression** — `gated_provision` / `long_task_via_handle` / the `spend_gate_enforced` world-check were blocked by **real cluster contention** (another user held globus2/3 for 1.5 days); the gate logic itself passed. `spend_refusal` tripped a **grader gap** (the agent was *more* cost-safe than the scenario models — it declined proactively without being asked). Re-run the three contention-affected scenarios on a quiet cluster to close them out.
+- **Wave 2: green once the cluster was quiet** — `gated_provision` / `long_task_via_handle` / `spend_gate_enforced` (2026-09-01); the only red was the `spend_refusal` grader gap (the agent was *more* cost-safe than the scenario models — it declined proactively). 
+- **The new-user story (2026-09-03):** login L1–L5 live (a fresh token dir → browser → loopback → all scopes + refresh tokens stored; the fresh-user walk logged in and attached in one 7 s call); the no-account path reproduced with a separate Google identity (driver + agent level: one submit, a terminal `down` naming the identity, no retry); the stranger's walk agent-level pass (list → attach → warm block → run → honest stop); the first model sweep round (PR #51) — see "Resume here".
 
 ## Next steps (priority order)
 
-> **2026-08-21 — the V1 sprint is ON.** Scope, decisions, and the full tiered punch-list live in **`docs/hpc-bridge-vault/Planned/V1 release.md`** (the plan of record — reorient there if a task runs long). Headlines: V1 = SSH path + consent-free MEP + BYO (M2 deferred); the long-task block-thrashing bug gets **fixed** before V1; distribution = a Claude Code plugin **marketplace**. Items 1–2 below are its Tier 1.
+> **The V1 sprint is ON (since 2026-08-21).** Scope, decisions, and the full tiered punch-list live in **`docs/hpc-bridge-vault/Planned/V1 release.md`** (the plan of record — reorient there if a task runs long). Headlines: V1 = SSH path + consent-free MEP + BYO (M2 deferred); distribution = a Claude Code plugin **marketplace**.
 
-1. **General code review of the branch** (the M1 diff), then merge the draft PR. _(Not yet done — the last planned step before merge.)_
-2. **Clean regression re-run** of `gated_provision`, `long_task_via_handle`, `spend_gate_enforced` when globus1 is quiet (`sinfo -N` to check; another user was saturating it 08-19→08-21).
-3. **Follow-up A — (was) long-task block-thrashing — RESOLVED as a harness artifact (2026-09-03):** two concurrent `run_suite` invocations shared pool user `test-00` and one run's user-wide teardown `scancel`led the other's blocks. Fixed in the harness (cross-process pool claims, run-scoped teardown, endpoint-log capture — `agentic/harness/pool.py`, `cluster_ops.py`). The surviving *product* item: `poll_task` must detect a block killed externally instead of hanging (Tier 2 in `Planned/V1 release.md`).
-4. **Follow-up B — `spend_refusal` grader** (`agentic/scenarios/spend_refusal.py`): `refusal_exercised` should also count a *proactive* refusal ("I won't spend without asking"), not only a declined question. Cheap fix.
+1. **Review + merge PR #51** (agentic new-user scenarios, the sweep harness, `TRANSIENT_CONFLICT_LIMIT`, the probe-path explanation). Then re-run the sweep's outage-affected cells and the block tier when globus1 is quiet.
+2. **End-user docs** (`docs/user/`, in progress) — install, quickstart, facility matrix, platform notes.
+3. **Fake-cluster tier** (~½ day) — wire `agentic/fakecluster/` into `run_smoke.sh`/`run_suite.py` so regressions run when globus1 is busy.
+4. **`spend_refusal` grader** accepts a *proactive* refusal (cheap).
+5. **Production registry index** (purpose-named, curator of record) — swap `PUBLIC_REGISTRY_INDEX`.
+6. **Tier 3:** marketplace packaging + publish, `1.0.0` tag/changelog, security review (SSH + credential handling), retire `docs/design/*.md` into the vault.
 
-## Open decision
+## Open decisions / observations
 
 - **Should the `globus:globus1` seed drop `interface: enP7s7`?** We forward it, which *overrides* the MEP template's own NIC default; the admin's verified UEC didn't include it. `enP7s7` is correct per the cluster facts, but a wrong NIC on an `init_blocks:1` block is cold-forever-but-billed, so letting the facility's template own the NIC is arguably safer for MEP entries. Confirm with the cluster admin or just drop it from `src/hpc_bridge/catalog/seed/globus-cluster.yaml` and re-ingest.
+- **Per-facility MEP template keys** are a model gap before any surveyed MEP (ALCF `queue`, NeSI `ACCOUNT_ID`, Anvil `qos`) can enter the registry — `MEPFacility.from_entry` builds one fixed config shape. See `Reference/MEP facilities survey.md`.
+- **`HPC_BRIDGE_USER_DIR` does not relocate the SDK's token storage** — only the *local* endpoint daemon's dir. The MCP process's tokens live at the SDK's `GLOBUS_COMPUTE_USER_DIR` (default `~/.globus_compute`); the harness and `fresh_user_session.sh` set both. An installed plugin therefore shares `~/.globus_compute/storage.db` with any other Globus Compute use on the machine (found in the vault audit; by design so far, but worth a docs line).
+- **Login-node pins are never removed** — `LoginNodeStore.remove` has no caller; a routable-but-dead pin fails fast and the reset is deleting `~/.hpc-bridge/endpoints.json` by hand.
 
 ## Gotchas (things that cost us time)
 
-- **The registry id is baked in** (`PUBLIC_REGISTRY_INDEX`, `catalog/search.py`; `HPC_BRIDGE_SEARCH_INDEX` only overrides it) and read anonymously — the server needs no env for the catalog any more. `.claude/settings.local.json` (gitignored) may still set the var (harmless). The curator CLI `hpc-bridge-catalog …` still takes the UUID explicitly — pass it literally. Symptom: `run_suite`/CLI can't resolve a catalogued machine, or `hpc-bridge-catalog` errors "seed_path required" (the empty var was swallowed as the index arg).
-- **`#39` registration-lag** is real and now *visible* (the `first_details_connect_succeeds` reported invariant): the first `connect_facility(details=…)` on a fresh bootstrap often returns `failed` ("could not find endpoint … in list output") and the retry succeeds. It's reported, not gating. Don't mistake it for an M1 regression.
-- **Cluster contention** silently fails billed agentic scenarios (block never scheduled → `compute_ran`/`ends_with_stop`/world checks break together). Check `sinfo` / `squeue` before trusting a billed-scenario failure; use `sacct -u <pool-user>` to see whether a block ran and got CANCELLED.
+- **The registry id is baked in** (`PUBLIC_REGISTRY_INDEX`, `catalog/search.py`; `HPC_BRIDGE_SEARCH_INDEX` only overrides it) and read anonymously — the server needs no env for the catalog any more. `.claude/settings.local.json` (gitignored) may still set the var (harmless). The curator CLI `hpc-bridge-catalog …` still takes the UUID explicitly — pass it literally. Symptom of forgetting: `hpc-bridge-catalog` errors "seed_path required" (the empty var was swallowed as the index arg).
+- **A stale local cache can't shadow the registry any more** — but it *can* still serve an id the registry doesn't know. If a BYO facility behaves oddly, look at `~/.hpc-bridge/facilities.json` (or the `HPC_BRIDGE_STATE_DIR` you set).
+- **The login gate runs first in `connect_facility`** — before the catalog read. If you ever build the SDK `Client` earlier (e.g. for a new tool), use `Client(do_version_check=False)` and never call anything that can prompt: the SDK's own command-line login writes a URL to stdout and reads stdin — the MCP transport.
+- **Keep `HPC_BRIDGE_STATE_DIR` short.** ssh checks the whole expanded `ControlPath` against the Unix socket cap (~104 bytes on macOS); a deep temp dir failed every SSH with `ControlPath too long`. `_short_control_dir` falls back to `~/.hpc-bridge/cm` / `/tmp/hpcb-cm-<uid>`, and the error is explained if even that is too long.
+- **A MEP attach says nothing about your access.** Attaching is identity-blind; the first billed submit is where an unmapped identity fails — a terminal `down` saying `NO ACCOUNT`. Don't read a clean `connect_facility` as "I have an account here" (the notice and the skill say so now).
+- **`#39` registration-lag** is real and now *visible* (the `first_details_connect_succeeds` reported invariant): the first `connect_facility(details=…)` on a fresh bootstrap often returns `failed` ("could not find endpoint … in list output") and the retry succeeds. It's reported, not gating. Don't mistake it for a regression.
+- **Cluster contention** silently fails billed agentic scenarios (block never scheduled → `compute_ran`/`ends_with_stop`/world checks break together). Check `sinfo` / `squeue` before trusting a billed-scenario failure; use `sacct -u <pool-user>` to see whether a block ran and got CANCELLED. And a **globus1 sshd outage** makes every world check `UNVERIFIABLE` (PR #51 labels it) — not a leak.
+- **Two harness cells under ONE Globus identity collide**: the web service answers the second with `RESOURCE_CONFLICT` on every submit. Scenarios that bind an identity (`mep_no_account`, `stranger_mep_walk`) are `SERIAL` in PR #51.
 - **Seed `aliases` are not indexed** — `ingest.py` drops them; at runtime use the `id` (`globus1`) or subject (`globus:globus1`), as `list_facilities` shows. `globus-cluster-mep` won't resolve as a facility arg.
 - Commit trailer: `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`. PR bodies end with the Claude Code generation line. `agentic/.env` is gitignored — never commit secrets.

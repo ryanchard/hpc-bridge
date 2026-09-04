@@ -1,7 +1,7 @@
 # Demos
 
 > [!warning] Point-in-time artifacts — read the era column
-> **Most** are recorded snapshots from **earlier** hpc-bridge and may **not** reflect current behaviour — for how it works *now*, see [[Happy path]]. (A clear tell: `architecture.html` describes *four* tools; there are now seven — [[The MCP tools]].) Each entry is stamped with when it was recorded and the era it reflects; the **top row tracks current behaviour**.
+> **Most** are recorded snapshots from **earlier** hpc-bridge and may **not** reflect current behaviour — for how it works *now*, see [[Happy path]]. (A clear tell: `architecture.html` describes *four* tools; there are now eleven — [[The MCP tools]].) Each entry is stamped with when it was recorded and the era it reflects; the **top row tracks current behaviour**.
 
 | Demo | Recorded | Era | Shows |
 |---|---|---|---|
