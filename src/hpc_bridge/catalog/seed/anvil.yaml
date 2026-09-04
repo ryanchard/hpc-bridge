@@ -27,3 +27,39 @@
     max_blocks: 1
   provenance: curated
   last_validated: 2026-06-03
+
+# Anvil's facility-run MULTI-USER endpoint (deployed; described in Purdue's GlobusWorld 2025 talk, not in the
+# RCAC user docs). Zero SSH: the facility maps the user's ACCESS identity to their x-… account. Its schema is
+# STRICT (additionalProperties: false): only account, partition, qos, walltime, cores_per_node, mem_per_node,
+# constraint, exclusive, min/max/init_blocks, nodes_per_block, scheduler_options, resource_specification,
+# worker_init, endpoint_setup, venvs_dir, requirements — everything else is dropped at attach. Its default
+# worker_init installs the worker at the CLIENT's SDK version; we pin the facility's ({gce_version}).
+- id: anvil-mep
+  facility_key: purdue
+  facility: "Purdue / ACCESS"
+  description: "Anvil via its multi-user endpoint — zero SSH; the Slurm account is your ACCESS project id (e.g. cis250223; -gpu for GPU)"
+  display_name: "HPC-Bridge Anvil (MEP)"
+  aliases: [anvil-mep, anvil-multi-user]
+  compute_mep_uuid: 5aafb4c1-27b2-40d8-a038-a0277611868f
+  ssh_host: null
+  auth_method: ssh-key
+  allocation: null
+  account_required: true
+  compute:
+    scheduler: slurm
+    interface: ib0                  # informational: the facility template pins its own address
+    env_setup: 'export PATH="$HOME/.local/bin:$PATH"; command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh; V=$HOME/hpc-bridge/gce-venv-{gce_version}-py{python_version}; [ -d $V ] || uv venv $V --python {python_version}; . $V/bin/activate; uv pip install -q "globus-compute-endpoint=={gce_version}"'
+    scratch_root: "$HOME/.hpc-bridge"
+    endpoint_name: anvil-mep
+  defaults:
+    partition: shared               # the template's own default; charged per core-hour
+    walltime: "00:15:00"
+    max_workers_per_node: 1
+    nodes_per_block: 1
+    init_blocks: 1
+    max_blocks: 1
+    extra:
+      cores_per_node: 1
+  provenance: curated
+  last_validated: 2026-09-04
+

@@ -278,6 +278,13 @@ async def _connect_mep(app: AppCtx, facility: str, fac) -> ConnectFacilityResult
                 "contact the facility / check its status page, then connect_facility again."
             ),
         )
+    tmpl = ""
+    if getattr(fac, "display_name", None) or getattr(fac, "endpoint_version", None):
+        tmpl = (f"Facility endpoint: {getattr(fac, 'display_name', None) or 'unnamed'}"
+                + (f" (v{fac.endpoint_version})" if getattr(fac, "endpoint_version", None) else "") + ". ")
+    notes = list(getattr(fac, "template_notes", []) or [])
+    if notes:
+        tmpl += "; ".join(notes) + ". "
     if getattr(fac, "account_required", True):
         how = ("pass the account directly: ensure_endpoint_up(account=…, partition=…, "
                "confirm_spend=True) — no allocation listing exists on a multi-user endpoint.")
@@ -289,7 +296,7 @@ async def _connect_mep(app: AppCtx, facility: str, fac) -> ConnectFacilityResult
         facility=facility,
         reused=True,  # attached to the facility's always-on endpoint: zero SSH, nothing bootstrapped
         allocations=[],
-        notice=(
+        notice=tmpl + (
             "attached to the facility's multi-user endpoint (zero SSH, nothing to bootstrap). Attaching "
             "does NOT test your identity mapping — the first block start does (no account there ⇒ a "
             "terminal NO ACCOUNT then, nothing billed). This "

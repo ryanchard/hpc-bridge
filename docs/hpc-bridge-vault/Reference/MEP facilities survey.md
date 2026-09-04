@@ -143,3 +143,19 @@ No. Checked: Globus news 2024-05-07 "Globus Announces Multi-User Support for Glo
 - **No-account failure is a synchronous 422** (`SEMANTICALLY_INVALID`, `Identity failed to map to a local user name … Globus username: <who>`) at submit — not a task-level failure. hpc-bridge keeps the API error's message (not a slice of its repr) and turns it into a terminal `down` naming the identity from the error itself.
 - **Auth policies are M2 territory.** A facility auth policy (ALCF-style domain/timeout) surfaces as a GARE the SDK answers by re-running its OWN login flow — inside the MCP process that is the command-line flow on the transport. Our `LoginFlow` must own that re-auth before an ALCF entry ships (deferred to V1.x with M2).
 - ALCF's wedged-endpoint recovery is `rm ~/.globus_compute/*/daemon.pid` over SSH: zero-SSH is the happy path, not the recovery path.
+
+## Validated live through hpc-bridge (2026-09-04)
+
+The template-key gap is closed: `MEPFacility` now reads the facility's published `user_config_schema`, `endpoint_version`
+and display name at attach (`load_template`), drops `user_endpoint_config` keys a strict schema rejects
+(`sanitize_uec`; Anvil's schema is `additionalProperties: false` and would have refused `interface`/`compute`/
+`max_workers_per_node`), and resolves `{gce_version}`/`{python_version}` in the entry's worker_init so the worker pool is
+pinned to the FACILITY's endpoint version and this client's Python — both facility templates' defaults would install the
+worker at the client's SDK version instead (the globus1 skew failure). Entry `defaults.extra` passes the template's own
+knobs (qos, cores_per_node, scheduler_options…). Driver: `agentic/mep_live_check.py SEED ENTRY --account …`.
+
+| facility | result | detail |
+|---|---|---|
+| **NCSA Delta** (`4a266c83…`, v4.15.0) | **PASS** | account `bgta-delta-gpu`, partition `gpuA40x4` + `#SBATCH --gpus-per-node=1`; block up in ~80 s; worker on gpub082 (py3.13.15, gce 4.15.0 pinned); `hostname; whoami` → `amcsweeneyellerm`; stop → draining. Facility stderr: "Task sandboxing will not work due to endpoint misconfiguration" (their template). Seed `ncsa-delta.yaml`. |
+| **Purdue Anvil MEP** (`5aafb4c1…`, v4.12.0) | identity + schema + submit OK; block queued | `gusellerm@uchicago.edu` mapped to `x-amcsweeneyel` (UEP started by the facility); strict schema satisfied after the drop; Slurm accepted a `shared` block for `cis250223` — pending on a busy partition at time of writing. Seed `anvil-mep` in `anvil.yaml`; ingest after a worker answers. |
+

@@ -62,6 +62,10 @@ class Defaults(BaseModel):
     init_blocks: int = 0  # blocks to pre-spawn; 0 = lazy (block on first task). A MEP entry sets 1 for a warm, low-latency block (its login-shape replacement)  # noqa: E501
     max_blocks: int = 1
     available_accelerators: int | list[str] | None = None
+    # Facility-MEP entries only: extra `user_endpoint_config` keys the facility's own template consumes
+    # (Anvil/Delta: qos, cores_per_node, exclusive, mem_per_node, scheduler_options, resource_specification…).
+    # Passed through verbatim, then filtered against the facility's published schema at attach time.
+    extra: dict[str, str | int | bool] | None = None
 
 
 class CatalogSummary(BaseModel):

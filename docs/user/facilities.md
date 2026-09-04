@@ -22,11 +22,12 @@ an unknown host key is refused with **"UNKNOWN HOST KEY"** until you have connec
 | Facility | Access | Scheduler | Notes |
 |---|---|---|---|
 | **Purdue Anvil** (ACCESS) | SSH bootstrap on `anvil.rcac.purdue.edu` | Slurm | your allocations come from `mybalance`; default partition `debug`, 30-minute walltime; the endpoint lives under `~/hpc-bridge/` in your Anvil home; scratch under `/anvil/scratch/<you>/.hpc-bridge` |
+| **NCSA Delta** (`delta`, ACCESS) | facility-run endpoint, zero SSH | Slurm | compute-only; every command runs on a billed block. You need a Delta allocation and its NCSA project code as the account (looks like `bgta-delta-gpu`; see it with `accounts` on a Delta login node). Default partition `gpuA40x4` with one GPU requested; CPU partitions charge a CPU allocation. Validated 2026-09-04. |
 | **Globus Labs cluster** (`globus1`) | facility-run endpoint, zero SSH | Slurm | Globus Labs members only (the facility maps their identities). Compute-only: there is no login node, every command runs on a billed block on partition `main` that stays warm between commands; no allocation account needed; unmetered lab hardware (3 ARM DGX Spark nodes, aarch64: bring ARM builds) |
 
-More facilities operate Globus Compute multi-user endpoints (ALCF Polaris and Crux, NCSA Delta,
-NeSI). They are not in the registry yet because their endpoint templates need per-facility settings
-hpc-bridge does not model yet; see the vault's
+More facilities operate Globus Compute multi-user endpoints (ALCF Polaris and Crux, NeSI, and Anvil's is
+being validated). hpc-bridge reads each facility endpoint's published template contract when it attaches,
+so adding one is a registry entry plus a live check; see the vault's
 [MEP facilities survey](../hpc-bridge-vault/Reference/MEP%20facilities%20survey.md).
 
 ## Which Globus identity to use

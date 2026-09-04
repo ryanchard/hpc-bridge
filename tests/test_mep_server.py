@@ -381,3 +381,100 @@ async def test_persistent_resource_conflict_escalates_to_down(monkeypatch):
     r3 = await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
     assert r3.status == "down" and "NO LONGER transient" in r3.notice and "3 times in a row" in r3.notice
     assert "SAME Globus identity" in r3.notice
+
+
+# ---- facility template contract (Anvil/Delta, 2026-09-04) ------------------------------------------------------
+
+class _Meta:
+    """A web client fake with the facility's published metadata."""
+
+    def __init__(self, schema=None, version="4.12.0", name="Anvil Multi-User Globus Compute Endpoint"):
+        self.schema, self.version, self.name = schema, version, name
+
+    def get_endpoint_status(self, eid):
+        return {"status": "online"}
+
+    def get_endpoint_metadata(self, eid):
+        return {"user_config_schema": self.schema, "endpoint_version": self.version, "display_name": self.name}
+
+
+ANVIL_SCHEMA = {"type": "object", "additionalProperties": False,
+                "properties": {k: {"type": "string"} for k in ("account", "partition", "qos", "walltime", "cores_per_node",
+                                                                 "worker_init", "scheduler_options", "init_blocks",
+                                                                 "max_blocks", "nodes_per_block")}}
+DELTA_SCHEMA = {"type": "object", "additionalProperties": True,
+                "properties": {"worker_init": {"type": "string"}, "endpoint_setup": {"type": "string"}}}
+
+
+async def test_strict_schema_drops_keys_the_facility_would_reject():
+    from hpc_bridge.shapes import shape_config
+
+    fac = MEPFacility.from_entry(fake_mep_entry(account_required=True), client_factory=lambda: _Meta(ANVIL_SCHEMA))
+    assert await fac.manager_online(fac.endpoint_id) is True
+    assert fac.endpoint_version == "4.12.0" and fac.display_name.startswith("Anvil")
+    uec = shape_config("compute", **fac.config_template(None)[1])
+    assert "compute" in uec and "interface" in uec  # what the server would have sent…
+    out = fac.sanitize_uec(uec)
+    assert "compute" not in out and "interface" not in out and "max_workers_per_node" not in out  # …now fits Anvil
+    assert out["partition"] and any("dropped" in n for n in fac.template_notes)
+
+
+async def test_permissive_schema_keeps_everything():
+    from hpc_bridge.shapes import shape_config
+
+    fac = MEPFacility.from_entry(fake_mep_entry(), client_factory=lambda: _Meta(DELTA_SCHEMA, version="4.15.0"))
+    await fac.load_template()
+    uec = shape_config("compute", **fac.config_template(None)[1])
+    assert fac.sanitize_uec(uec).keys() == uec.keys()
+    assert not [n for n in fac.template_notes if "dropped" in n]
+
+
+async def test_worker_init_tokens_resolve_to_the_facility_version_and_this_python():
+    import sys
+
+    entry = fake_mep_entry()
+    entry.compute.env_setup = "V=$HOME/v-{gce_version}-py{python_version}; uv pip install -q 'globus-compute-endpoint=={gce_version}'"
+    fac = MEPFacility.from_entry(entry, client_factory=lambda: _Meta(DELTA_SCHEMA, version="4.15.0"))
+    await fac.load_template()
+    wi = fac.sanitize_uec({"worker_init": fac.config_template(None)[1]["worker_init"]})["worker_init"]
+    assert "globus-compute-endpoint==4.15.0" in wi and f"py{sys.version_info.major}.{sys.version_info.minor}" in wi
+    assert "{" not in wi
+
+
+async def test_unknown_facility_version_falls_back_to_the_facility_default_worker_init():
+    class _NoMeta(_Meta):
+        def get_endpoint_metadata(self, eid):
+            raise RuntimeError("403")
+
+    entry = fake_mep_entry()
+    entry.compute.env_setup = "uv pip install 'globus-compute-endpoint=={gce_version}'"
+    fac = MEPFacility.from_entry(entry, client_factory=_NoMeta)
+    await fac.load_template()
+    assert "worker_init" not in fac.sanitize_uec({"worker_init": entry.compute.env_setup, "partition": "p"})
+    assert any("not readable" in n for n in fac.template_notes) and any("default worker_init" in n for n in fac.template_notes)
+
+
+def test_entry_extra_keys_pass_through_and_empty_env_setup_means_no_worker_init():
+    entry = fake_mep_entry()
+    entry.defaults.extra = {"qos": "normal", "cores_per_node": 1, "exclusive": False}
+    entry.compute.env_setup = ""
+    fac = MEPFacility.from_entry(entry)
+    opts = fac.config_template(None)[1]
+    assert opts["qos"] == "normal" and opts["cores_per_node"] == 1 and opts["exclusive"] is False
+    assert "worker_init" not in opts  # the facility template's default runs
+
+
+def test_new_seeds_validate_and_are_mep_entries():
+    import yaml
+
+    from hpc_bridge.catalog.entry import CatalogEntry
+
+    for f in ("ncsa-delta.yaml", "anvil.yaml"):
+        with open(f"src/hpc_bridge/catalog/seed/{f}") as fh:
+            docs = yaml.safe_load(fh)
+        for doc in docs:
+            e = CatalogEntry.model_validate(doc)
+            if e.compute_mep_uuid:
+                assert e.ssh_host is None and e.account_required is True
+                assert "{gce_version}" in e.compute.env_setup and "{python_version}" in e.compute.env_setup
+
