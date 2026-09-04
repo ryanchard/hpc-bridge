@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from hpc_bridge import binding, config
+from hpc_bridge import binding, config, warmth
 from hpc_bridge.models import FacilityDetails
 from hpc_bridge.profile import Profile
 from hpc_bridge.runner import CanaryResult
@@ -812,7 +812,7 @@ async def test_no_ssh_access_is_explained_not_dumped(monkeypatch):
         raise RuntimeError("seed storage.db (mkdir) failed: hpcbridge-stranger@anvil.rcac.purdue.edu: "
                            "Permission denied (publickey,gssapi-keyex,gssapi-with-mic,keyboard-interactive,hostbased).")
 
-    monkeypatch.setattr(server, "_provision", refused)
+    monkeypatch.setattr(warmth, "_provision", refused)
     app = AppCtx(facility=FakeFacility(), profile=Profile())
     res = await server._connect_facility(app, "anvil")
     assert res.phase == "failed"

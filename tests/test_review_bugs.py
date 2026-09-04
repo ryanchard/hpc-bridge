@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from hpc_bridge import binding, scheduler_ops
+from hpc_bridge import binding, scheduler_ops, warmth
 from hpc_bridge.profile import Profile
 from hpc_bridge.server import (
     AppCtx,
@@ -191,7 +191,6 @@ async def test_endpoint_name_cannot_carry_shell():
 
 # 11. stop on a GONE endpoint is terminal, not "call again" ------------------------------------
 async def test_stop_on_a_gone_endpoint_is_terminal(monkeypatch):
-    from hpc_bridge import server
     app = AppCtx(facility=FakeFacility(), profile=Profile())
     app.state.endpoint_id = "eid-1"
     app.shapes["compute"] = ShapeRuntime(user_endpoint_config={"compute": True}, runner=_FakeRunner("eid-1", _Res(0, "", "")))
@@ -204,7 +203,7 @@ async def test_stop_on_a_gone_endpoint_is_terminal(monkeypatch):
         return 0.0
 
     monkeypatch.setattr(scheduler_ops, "_release_blocks_over_login", cold)
-    monkeypatch.setattr(server, "_drop_compute_shape", nothing)
+    monkeypatch.setattr(warmth, "_drop_compute_shape", nothing)
     app.facility.manager_up = False  # the manager is GONE
     res = await _stop_endpoint(app)
     assert res.status == "down" and "OFFLINE" in res.notice and "ORPHANED" in res.notice and "call stop_endpoint again in a few" not in res.notice
@@ -242,7 +241,7 @@ async def test_byo_details_cached_only_after_the_bootstrap_accepts(monkeypatch):
     async def refused(app, shape, **kw):
         raise RuntimeError("seed storage.db (mkdir) failed: u@h: Permission denied (publickey)")
 
-    monkeypatch.setattr(server, "_provision", refused)
+    monkeypatch.setattr(warmth, "_provision", refused)
     app = AppCtx(facility=FakeFacility(), profile=Profile())
     assert (await _connect_facility(app, "byo", details=details)).phase == "failed"
     assert server._facility_store().get("h.example.edu") is None  # a config the bootstrap REFUSED is not remembered
@@ -250,7 +249,7 @@ async def test_byo_details_cached_only_after_the_bootstrap_accepts(monkeypatch):
     async def accepted(app, shape, **kw):
         return "warm"
 
-    monkeypatch.setattr(server, "_provision", accepted)
+    monkeypatch.setattr(warmth, "_provision", accepted)
     app2 = AppCtx(facility=FakeFacility(), profile=Profile())
     await _connect_facility(app2, "byo", details=details)
     assert server._facility_store().get("h.example.edu") is not None
@@ -323,7 +322,7 @@ async def test_byo_details_cached_only_once_the_login_shape_is_proven_warm(monke
     async def provision(app, shape, **kw):
         return next(outcomes)
 
-    monkeypatch.setattr(server, "_provision", provision)
+    monkeypatch.setattr(warmth, "_provision", provision)
     app = AppCtx(facility=FakeFacility(), profile=Profile())
     assert (await _connect_facility(app, "byo", details=details)).phase == "provisioning"
     assert server._facility_store().get("h.example.edu") is None      # accepted, not yet proven
@@ -337,7 +336,6 @@ async def test_byo_details_cached_only_once_the_login_shape_is_proven_warm(monke
 async def test_unreachable_pinned_login_node_drops_the_pin(monkeypatch, tmp_path):
     from types import SimpleNamespace
 
-    from hpc_bridge import server
     from hpc_bridge.state import EndpointRecord, LoginNodeStore
     from tests.fakes import FakeCatalog
     store = LoginNodeStore(tmp_path / "endpoints.json")
@@ -351,7 +349,7 @@ async def test_unreachable_pinned_login_node_drops_the_pin(monkeypatch, tmp_path
     async def unreachable(app, shape, **kw):
         raise RuntimeError("bootstrap failed: ssh: connect to host login03.example.edu port 22: Connection timed out")
 
-    monkeypatch.setattr(server, "_provision", unreachable)
+    monkeypatch.setattr(warmth, "_provision", unreachable)
     app = AppCtx(facility=FakeFacility(), profile=Profile())
     res = await _connect_facility(app, "anvil")
     assert res.phase == "failed" and res.notice.startswith("CANNOT REACH") and "pin was dropped" in res.notice
@@ -363,6 +361,6 @@ async def test_unreachable_pinned_login_node_drops_the_pin(monkeypatch, tmp_path
     async def refused(app, shape, **kw):
         raise RuntimeError("seed storage.db (mkdir) failed: u@login03.example.edu: Permission denied (publickey).")
 
-    monkeypatch.setattr(server, "_provision", refused)
+    monkeypatch.setattr(warmth, "_provision", refused)
     res = await _connect_facility(app, "anvil")
     assert res.notice.startswith("NO SSH ACCESS") and store.get(alias="anvil", name="hpc-bridge-anvil") is not None
