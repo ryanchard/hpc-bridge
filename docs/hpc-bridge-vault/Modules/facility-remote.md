@@ -32,3 +32,16 @@
 
 ## See also
 [[Standing up the endpoint]] · [[Credential seeding]] · [[MEP & templated endpoints]] · [[facility-base]] · [[facility-mep]] · [[state]] · [[credentials]] · [[MFA and interactive SSH auth]]
+
+## Issue #39 — the "registration lag" that was a wrapped table (fixed 2026-09-04)
+
+`globus-compute-endpoint list` renders an 80-column table when there is no TTY (how `_gce` runs it over SSH) and wraps
+an Endpoint Name longer than ~27 characters onto a second row. `_list_rows` parses per line and matches the name cell
+exactly, so `hpc-bridge-<fqdn>` names (and the harness's per-run names) were never found: the first `details=` connect
+failed with "could not find endpoint … in `list` output", the retry's `status()` missed too, re-ran `start` and hit
+"Another instance is running". Recovery only worked because `find_online_endpoint` asks the web service by name.
+Measured live on globus1 (gce 4.13); reproduced hermetically with the captured table (`tests/test_remote_facility.py`,
+the `test_39_*` tests). Three changes in `RemoteEndpointCLI`: `_gce` exports `COLUMNS=400` (honoured without a TTY);
+`start` polls for the UUID for up to 30 s (the detached daemon registers ~3.6 s after `start` returns) via
+`_await_endpoint_id`; a refused `start` whose manager is already running adopts it instead of failing (gce 4.13 exits 73 with
+NOTHING on either stream, so the check is `status(name) == "running"`, not the "Another instance" text). The robust follow-up remains issue #8: read `endpoint.json` / the pid file instead of parsing the table.
