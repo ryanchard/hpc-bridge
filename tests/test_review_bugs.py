@@ -316,7 +316,8 @@ async def test_byo_details_cached_only_once_the_login_shape_is_proven_warm(monke
     from hpc_bridge import server
     from hpc_bridge.models import FacilityDetails
     details = FacilityDetails(ssh_host="h.example.edu", interface="ib0", env_setup="true", scratch_root="/s/{user}", partition="main")
-    f = FakeFacility(); f.workers = 1
+    f = FakeFacility()
+    f.workers = 1
     monkeypatch.setattr(server, "_facility_from_entry", lambda entry, *, account: f)
     outcomes = iter(["provisioning", "provisioning", "warm"])
 
