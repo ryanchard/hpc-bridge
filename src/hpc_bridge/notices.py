@@ -85,7 +85,8 @@ def _explain_provision_error(exc: BaseException, fac=None, *, host: str | None =
         why = ("its host key has CHANGED since you last connected — verify the new fingerprint with the facility "
                "before trusting it" if changed else
                "its host key is not in your ~/.ssh/known_hosts yet")
-        return (f"UNKNOWN HOST KEY for {host}: {ssh_line[:200].rstrip('.')}. hpc-bridge connects only to hosts your own ssh "
+        line = ssh_line[:200].rstrip(".")  # OpenSSH's own line ends with a full stop already
+        return (f"UNKNOWN HOST KEY for {host}: {line}. hpc-bridge connects only to hosts your own ssh "
                 f"already trusts, and {why}. Verify the fingerprint and connect once from your own terminal "
                 f"(`ssh {who}`), which saves the key; then call connect_facility again. Nothing was started or billed.")
     if "permission denied" in low:  # a denial from the remote FILESYSTEM (quota, read-only home), not from sshd
