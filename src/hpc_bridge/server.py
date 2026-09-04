@@ -9,13 +9,26 @@ import sys
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from mcp.server.fastmcp import Context, FastMCP
 
-from . import dispatch, session_shell
+from . import config, dispatch, session_shell
 from .catalog.entry import Allocation, CatalogEntry, CatalogSummary, Compute, Defaults
 from .catalog.parsers import PARSERS
+from .config import (  # noqa: F401 - re-exported: tests patch/import these on server
+    CANARY_TIMEOUT_S,
+    CANARY_TTL_S,
+    PROVISION_GRACE_S,
+    SYNC_WAIT_S,
+    TASK_CEILING_MARGIN_S,
+    TRANSIENT_CONFLICT_LIMIT,
+    _control_settings,
+    _env_endpoint_id,
+    _env_float,
+    _env_mode,
+    _require_env,
+    _short_control_dir,
+)
 from .context import (  # noqa: F401 - re-exported: tools + tests import them from here
     DEFAULT_SHAPE,
     AppCtx,
@@ -43,13 +56,6 @@ from .session_shell import Session
 from .shapes import SHAPES, shape_config
 
 
-def _require_env(name: str) -> str:
-    val = os.environ.get(name, "").strip()
-    if not val:
-        raise RuntimeError(f"{name} is required for the selected HPC_BRIDGE_MACHINE")
-    return val
-
-
 def _ssh_config_user(host: str) -> str:
     """The login name OpenSSH would use for `host`, honoring ~/.ssh/config — via a local, no-connect
     `ssh -G`. Sources the user from the config the user already maintains, not a boot-env var the
@@ -66,40 +72,6 @@ def _ssh_config_user(host: str) -> str:
     except Exception:  # noqa: BLE001 - no ssh binary / odd host -> local username
         pass
     return getpass.getuser()
-
-
-def _control_settings() -> tuple[str | None, int]:
-    """ControlMaster socket dir + persist for SSH multiplexing — one authentication for the whole
-    bootstrap+discovery. Shared by _slurm_facility and the discovery probe so they reuse ONE master
-    (same user@host ⇒ same %C socket). HPC_BRIDGE_SSH_CONTROL_PERSIST=0 disables it (control_dir=None)."""
-    try:
-        persist = int((os.environ.get("HPC_BRIDGE_SSH_CONTROL_PERSIST", "60") or "60").strip())
-    except ValueError:
-        persist = 60
-    if persist <= 0:
-        return None, 60
-    from .state import _state_dir
-
-    cd = _short_control_dir(str(_state_dir() / "cm"))
-    os.makedirs(cd, mode=0o700, exist_ok=True)
-    os.chmod(cd, 0o700)  # the socket lets commands run on the master without re-auth
-    return cd, persist
-
-
-# Unix socket paths are capped (104 bytes on macOS, 108 on Linux). ssh expands the `%C` in our
-# ControlPath to a 40-hex hash and checks the WHOLE path, so a long state dir fails every SSH with
-# "ControlPath too long" before authentication (found on the stranger's walk with a deep temp dir;
-# a long username under the plugin data dir gets there too). Keep the socket dir short.
-_CONTROL_PATH_BUDGET = 100 - 1 - 40  # dir + '/' + %C must stay under the cap with margin
-
-
-def _short_control_dir(preferred: str) -> str:
-    if len(preferred) <= _CONTROL_PATH_BUDGET:
-        return preferred
-    for cand in (str(Path.home() / ".hpc-bridge" / "cm"), f"/tmp/hpcb-cm-{os.getuid()}"):
-        if len(cand) <= _CONTROL_PATH_BUDGET:
-            return cand
-    return preferred  # nothing short exists; ssh will say so
 
 
 # sshd's own denial lines — the method list in parentheses is the tell (a bare "Permission denied" is
@@ -131,7 +103,7 @@ def _explain_provision_error(exc: BaseException, fac=None, *, host: str | None =
         user = getattr(target, "user", None)
     if _SSH_AUTH_DENIED.search(raw) or "too many authentication failures" in low:
         who = f"as {user!r}" if user else "as your local username (no login name is configured for this host)"
-        src = ("HPC_BRIDGE_SSH_USER" if os.environ.get("HPC_BRIDGE_SSH_USER", "").strip()
+        src = ("HPC_BRIDGE_SSH_USER" if (config.ssh_user() or "")
                else "~/.ssh/config" if user else "nowhere")
         return (
             f"NO SSH ACCESS to {host}: the login-node SSH {who} was refused ({ssh_line[:200]}). hpc-bridge "
@@ -161,7 +133,7 @@ def _slurm_facility(profile, *, alias: str, user: str) -> Facility:
     from .state import LoginNodeStore
 
     control_dir, persist = _control_settings()  # multiplex all SSH over one ControlMaster (MFA-once)
-    key = os.environ.get("HPC_BRIDGE_SSH_KEY", "").strip()  # else defer to ~/.ssh/config IdentityFile
+    key = (config.ssh_key() or "")  # else defer to ~/.ssh/config IdentityFile
     target = SshTarget(
         host=alias,
         user=user,
@@ -222,13 +194,13 @@ def _facility_from_entry(entry, *, account: str, pinned_host: str | None = None)
     alias = pinned_host or entry.ssh_host
     # Login name: optional env override, else read live from ~/.ssh/config (`ssh -G`) — never a
     # *required* boot-env var. The key is deferred to the config's IdentityFile in _slurm_facility.
-    user = os.environ.get("HPC_BRIDGE_SSH_USER", "").strip() or _ssh_config_user(alias)
+    user = (config.ssh_user() or "") or _ssh_config_user(alias)
     profile = profile_from_catalog_entry(
         entry,
         user=user,
         account=account,
-        partition=os.environ.get("HPC_BRIDGE_PARTITION", "").strip() or None,
-        venv=os.environ.get("HPC_BRIDGE_REMOTE_VENV", "").strip() or None,
+        partition=config.partition(),
+        venv=config.remote_venv(),
     )
     return _slurm_facility(profile, alias=alias, user=user)
 
@@ -253,7 +225,7 @@ async def _catalog_facility(machine: str) -> Facility:
                 f"{machine}: HPC_BRIDGE_ENDPOINT_ID={env_eid} conflicts with the entry's "
                 f"compute_mep_uuid={entry.compute_mep_uuid}; unset it (the entry is the endpoint)"
             )
-        account = os.environ.get("HPC_BRIDGE_ACCOUNT", "").strip()
+        account = (config.account() or "")
         if entry.account_required and not account:
             account = _require_env("HPC_BRIDGE_ACCOUNT")  # raises with the standard message
         return _facility_from_entry(entry, account=account)
@@ -262,7 +234,7 @@ async def _catalog_facility(machine: str) -> Facility:
     return _facility_from_entry(
         entry,
         account=_require_env("HPC_BRIDGE_ACCOUNT"),
-        pinned_host=os.environ.get("HPC_BRIDGE_SSH_HOST", "").strip() or None,
+        pinned_host=config.ssh_host(),
     )
 
 
@@ -270,15 +242,15 @@ async def make_facility() -> Facility:
     """Select the facility: a catalog-described machine (HPC_BRIDGE_MACHINE — sourced from the
     Globus Search index), or local dev. Machines are catalog *data*, never hardcoded; the agent
     can also bind one at runtime via connect_facility. (lifespan boots resiliently if this raises.)"""
-    machine = os.environ.get("HPC_BRIDGE_MACHINE", "").strip()
-    if not machine and os.environ.get("HPC_BRIDGE_FACILITY", "").strip():
+    machine = (config.machine() or "")
+    if not machine and (config.env("HPC_BRIDGE_FACILITY") or ""):
         raise RuntimeError(
             "HPC_BRIDGE_FACILITY was removed — machines are catalog data now. Use "
             "HPC_BRIDGE_MACHINE=<id> (e.g. anvil), or let the agent pick via connect_facility."
         )
     if machine:
         return await _catalog_facility(machine)
-    user_dir = Path(os.environ.get("HPC_BRIDGE_USER_DIR", str(Path.home() / ".globus_compute")))
+    user_dir = config.user_dir()
     return LocalFacility(EndpointCLI(user_dir=user_dir))
 
 
@@ -292,7 +264,7 @@ def _resolve_scratch_root(facility) -> str:
     the exact bug a bound facility's scratch is meant to avoid. A `~/`/`$HOME/` root is instead
     expanded on the WORKER by `Session.quoted_state_dir()`, which is also what lets a multi-user
     endpoint (whose local username we can't know client-side) use a `$HOME`-relative scratch."""
-    root = os.environ.get("HPC_BRIDGE_SCRATCH") or getattr(facility, "scratch_root", None) or "~/.hpc-bridge"
+    root = config.scratch() or getattr(facility, "scratch_root", None) or "~/.hpc-bridge"
     return os.path.expanduser(root) if isinstance(facility, LocalFacility) else root
 
 
@@ -332,45 +304,15 @@ def make_catalog():
     soft agent-discovery fallback is a later slice). The bundled seed is the curator's ingest source
     (see `hpc-bridge-catalog`), never a runtime catalog.
     """
-    from .catalog.search import PUBLIC_REGISTRY_INDEX, SearchCatalog
+    from .catalog.search import SearchCatalog
 
-    index = os.environ.get("HPC_BRIDGE_SEARCH_INDEX", "").strip() or PUBLIC_REGISTRY_INDEX
+    index = config.search_index()
     client = _make_search_client()  # anonymous unless a Search-scoped login is already held
     cache_dir = (
-        Path(os.environ.get("CLAUDE_PLUGIN_DATA", str(Path.home() / ".hpc-bridge")))
+        config.plugin_data_dir()
         / "catalog-cache"
     )
     return SearchCatalog(index_id=index, client=client, cache_dir=cache_dir)
-
-
-def _env_float(name: str, default: float) -> float:
-    raw = os.environ.get(name)
-    if raw is None or raw.strip() == "":
-        return default
-    try:
-        return float(raw)
-    except ValueError:
-        print(f"hpc-bridge: ignoring invalid {name}={raw!r}; using {default}", file=sys.stderr)
-        return default
-
-
-def _env_mode(default: str = "batch") -> str:
-    mode = os.environ.get("HPC_BRIDGE_PROFILE", default)
-    if mode not in ("interactive", "batch"):
-        print(f"hpc-bridge: ignoring invalid HPC_BRIDGE_PROFILE={mode!r}; using {default}", file=sys.stderr)
-        return default
-    return mode
-
-
-def _env_endpoint_id() -> str | None:
-    """An existing endpoint UUID to dispatch to instead of provisioning a local one.
-
-    Set HPC_BRIDGE_ENDPOINT_ID to skip local provisioning entirely. Required on
-    macOS/Windows, where globus-compute-endpoint (the local endpoint daemon) cannot
-    run — the SDK dispatch path still reaches a remote/Linux endpoint by UUID.
-    """
-    eid = os.environ.get("HPC_BRIDGE_ENDPOINT_ID", "").strip()
-    return eid or None
 
 
 @asynccontextmanager
@@ -385,7 +327,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppCtx]:
             "unbound — use list_facilities / connect_facility to bind a machine.",
             file=sys.stderr,
         )
-        user_dir = Path(os.environ.get("HPC_BRIDGE_USER_DIR", str(Path.home() / ".globus_compute")))
+        user_dir = config.user_dir()
         facility = LocalFacility(EndpointCLI(user_dir=user_dir))
     scratch = _resolve_scratch_root(facility)
     app = AppCtx(
@@ -393,7 +335,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppCtx]:
         profile=Profile(mode=_env_mode()),  # type: ignore[arg-type]
         state=EndpointState(endpoint_id=_env_endpoint_id()),
         scratch_root=scratch,
-        charge_factor=_env_float("HPC_BRIDGE_CHARGE_FACTOR", 0.0),
+        charge_factor=config.charge_factor(),
         login_flow=LoginFlow(),
     )
     try:
@@ -409,22 +351,6 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppCtx]:
 # tools as plugin:<plugin>:<server>, so matching names would read the doubled plugin:hpc-bridge:hpc-bridge.
 # Keep in sync with the mcpServers key in .mcp.json — CC namespaces by that key, this name just mirrors it.
 mcp = FastMCP("endpoint", lifespan=lifespan)
-
-
-CANARY_TTL_S = 45.0  # trust a confirmed worker this long before re-canarying. Safe: an idle
-# block needs >= max_idletime (default 600s) of SILENCE to release, so a worker seen <45s ago
-# cannot have idle-released out from under us.
-TRANSIENT_CONFLICT_LIMIT = 3  # consecutive RESOURCE_CONFLICT dispatch refusals before we stop saying 'call again'
-CANARY_TIMEOUT_S = 8.0  # a live worker answers in ~1-2s; a cold block blows past this -> not warm
-
-# --- long-task submit/poll bounds (#21) ---
-# The client blocks up to SYNC_WAIT_S for a task's result; a task still running past it is NOT cut —
-# the caller gets a poll handle (poll_task) and the task runs on up to its ceiling. _runner_for clamps
-# the effective wait strictly below the ceiling so a task finishing near the boundary still returns.
-SYNC_WAIT_S = _env_float("HPC_BRIDGE_SYNC_WAIT_S", 120.0)
-# A task's ceiling = the block walltime − this margin, so the worker kills it (exit 124) gracefully
-# BEFORE the scheduler tears the block down (preserving the result). See _task_ceiling_s.
-TASK_CEILING_MARGIN_S = 20.0
 
 
 def _supported_shapes(app: AppCtx) -> tuple[str, ...]:
@@ -512,7 +438,7 @@ def _task_ceiling_s(uec: dict) -> float:
     ceiling = block_s - TASK_CEILING_MARGIN_S
     if ceiling <= 0:  # missing/tiny walltime (e.g. LocalFacility has none) -> a safe default
         ceiling = max(SYNC_WAIT_S + TASK_CEILING_MARGIN_S, 300.0)
-    cap = _env_float("HPC_BRIDGE_MAX_TASK_S", 0.0)
+    cap = config.max_task_s()
     if cap > 0:
         ceiling = min(ceiling, cap)
     return float(ceiling)
@@ -1134,7 +1060,7 @@ def _entry_from_details(facility: str, details: FacilityDetails) -> CatalogEntry
     # name — the shared ssh-host name + a shared test identity would otherwise collide one registration
     # across concurrent runs. Wins over an agent-supplied name too, so a flailing agent can't defeat run
     # isolation. Real users leave it unset and get the ssh-host key (_session_endpoint_name).
-    ep_name = (os.environ.get("HPC_BRIDGE_ENDPOINT_NAME", "").strip()
+    ep_name = ((config.endpoint_name() or "")
                or details.endpoint_name or _session_endpoint_name(details.ssh_host or facility))
     return CatalogEntry(
         id=facility,
@@ -1245,7 +1171,7 @@ async def _connect_facility(
         return ConnectFacilityResult(phase="unsupported", facility=facility, notice=reason)
     try:
         # off the loop: it may run `ssh -G` (a subprocess with a 10 s timeout) to read ~/.ssh/config
-        fac = await asyncio.to_thread(_facility_from_entry, entry, account=os.environ.get("HPC_BRIDGE_ACCOUNT", "").strip())
+        fac = await asyncio.to_thread(_facility_from_entry, entry, account=(config.account() or ""))
     except Exception as exc:  # noqa: BLE001 - surface a missing SSH_USER/KEY as a structured result
         return ConnectFacilityResult(
             phase="failed",
@@ -1360,7 +1286,7 @@ def _login_wait_s() -> float:
     """How long a tool call waits for a browser login to land before returning needs_login. Long enough
     for a real IdP round-trip (password + Duo), short enough to stay well under the flow's TTL and any
     MCP tool timeout (run_shell already blocks far longer)."""
-    return _env_float("HPC_BRIDGE_LOGIN_WAIT_S", 90.0)
+    return config.login_wait_s()
 
 
 async def _start_login_and_wait(flow: LoginFlow, mode: str | None = None) -> tuple[LoginStart, str]:
@@ -1451,7 +1377,7 @@ async def _propose_or_ask(
     config; otherwise ask the agent for the host (SSH access is the one irreducible input). The
     discovery target carries the same ControlMaster socket as the later bootstrap, so probing warms
     the master the bootstrap then rides — no extra authentication."""
-    host = (ssh_host or os.environ.get("HPC_BRIDGE_SSH_HOST", "")).strip()
+    host = (ssh_host or config.ssh_host() or "").strip()
     if not host:
         return ConnectFacilityResult(
             phase="needs_facility_details", facility=facility, notice=ask_notice
@@ -1460,10 +1386,10 @@ async def _propose_or_ask(
 
     try:
         control_dir, persist = _control_settings()
-        key = os.environ.get("HPC_BRIDGE_SSH_KEY", "").strip()
+        key = (config.ssh_key() or "")
         target = SshTarget(
             host=host,
-            user=os.environ.get("HPC_BRIDGE_SSH_USER", "").strip() or None,  # else ~/.ssh/config User
+            user=config.ssh_user(),  # else ~/.ssh/config User
             key_path=os.path.expanduser(key) if key else None,  # else config's IdentityFile
             control_dir=control_dir,
             control_persist=persist,
@@ -1478,7 +1404,7 @@ async def _propose_or_ask(
             phase="failed",
             facility=facility,
             notice=_explain_provision_error(
-                exc, host=host, user=os.environ.get("HPC_BRIDGE_SSH_USER", "").strip() or None,
+                exc, host=host, user=config.ssh_user(),
                 fallback=f"discovery over SSH to {host!r} failed: {type(exc).__name__}: {exc}"[:400],
             ),
         )
@@ -1572,8 +1498,8 @@ async def _release_blocks_over_login(app: AppCtx, eid: str) -> tuple[bool, str]:
     # of the Facility protocol.
     scheduler = getattr(getattr(app.facility, "profile", None), "scheduler", "slurm")
     cmd = _release_cmd(scheduler, eid)
-    attempts = max(1, int((os.environ.get("HPC_BRIDGE_RELEASE_ATTEMPTS", "3") or "3").strip()))
-    backoff = float((os.environ.get("HPC_BRIDGE_RELEASE_BACKOFF_S", "6") or "6").strip())
+    attempts = config.release_attempts()
+    backoff = config.release_backoff_s()
     detail = "unconfirmed"
     for i in range(attempts):
         out = await _run_shell(app, cmd, shape="login")
@@ -1609,12 +1535,6 @@ def _pilot_status_cmd(scheduler: str, eid: str) -> str:
         'squeue -u "$USER" -h -O "State:20,JobID:24,StdOut:1024" 2>/dev/null '
         f"| awk -v m={shlex.quote(marker)} 'index($0,m){{print $1\" \"$2}}'"
     )
-
-
-# A just-submitted pilot takes a beat to appear in squeue/qstat, so "no pilot" during the first ~45s
-# of a block's cold-start is NORMAL, not a rejection. Only past this grace do we surface the rejection
-# hint — else every healthy warm-up cries wolf (caught live on globus1, [#32]).
-PROVISION_GRACE_S = 45.0
 
 
 def _summarize_pilot(stdout: str, provisioning_elapsed_s: float) -> tuple[str, str]:

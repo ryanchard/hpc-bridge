@@ -52,3 +52,4 @@
 
 > [!note] Split in progress (2026-09-03)
 > Step 1 moved the runtime data types (`AppCtx`, `ShapeRuntime`, `TaskHandle`, `DEFAULT_SHAPE`) to [[context]]; `server` re-exports them. The plan and the remaining steps are in [[Review 2026-09-03 — code quality]] §1.
+> Step 2 moved the env reads (as typed accessors), the runtime tunables and the ControlMaster settings to [[config]].
