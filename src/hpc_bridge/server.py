@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import datetime
 import os
 import re
 import shlex
@@ -12,8 +11,22 @@ from contextlib import asynccontextmanager
 
 from mcp.server.fastmcp import Context, FastMCP
 
-from . import config, dispatch, session_shell
-from .catalog.entry import Allocation, CatalogEntry, CatalogSummary, Compute, Defaults
+from . import binding, config, dispatch, session_shell
+from .binding import (  # noqa: F401 - re-exported for imports; PATCH binding.<name>, not server.<name>
+    _catalog_facility,  # noqa: F401
+    _entry_from_details,  # noqa: F401
+    _facility_from_entry,  # noqa: F401
+    _facility_store,  # noqa: F401
+    _make_search_client,  # noqa: F401
+    _resolve_scratch_root,  # noqa: F401
+    _session_endpoint_name,  # noqa: F401
+    _slurm_facility,  # noqa: F401
+    _ssh_config_user,  # noqa: F401
+    _unsupported_entry_reason,  # noqa: F401
+    make_catalog,  # noqa: F401
+    make_facility,  # noqa: F401
+)
+from .catalog.entry import CatalogSummary
 from .catalog.parsers import PARSERS
 from .config import (  # noqa: F401 - re-exported: tests patch/import these on server
     CANARY_TIMEOUT_S,
@@ -51,7 +64,6 @@ from .cost import (  # re-exported
 )
 from .discovery import discover_facility_details
 from .endpoint import EndpointCLI
-from .facility.base import Facility
 from .facility.local import LocalFacility
 from .lifecycle import EndpointState, ensure_warm
 from .login import LoginFlow, LoginStart
@@ -96,217 +108,10 @@ from .session_shell import Session
 from .shapes import SHAPES, shape_config
 
 
-def _ssh_config_user(host: str) -> str:
-    """The login name OpenSSH would use for `host`, honoring ~/.ssh/config — via a local, no-connect
-    `ssh -G`. Sources the user from the config the user already maintains, not a boot-env var the
-    already-running server can't see. Falls back to the local username if `ssh -G` is unavailable."""
-    import getpass
-    import subprocess
-
-    try:
-        out = subprocess.run(["ssh", "-G", host], capture_output=True, text=True, timeout=10).stdout
-        for line in out.splitlines():
-            k, _, v = line.strip().partition(" ")
-            if k.lower() == "user" and v.strip():
-                return v.strip()
-    except Exception:  # noqa: BLE001 - no ssh binary / odd host -> local username
-        pass
-    return getpass.getuser()
-
-
-def _slurm_facility(profile, *, alias: str, user: str) -> Facility:
-    """Wire a Slurm `MachineProfile` into a `SlurmFacility` over SSH — shared by the catalog
-    and the hardcoded-Anvil paths."""
-    from .facility.remote import RemoteEndpointCLI, SlurmFacility, SshTarget, _routable_pin
-    from .state import LoginNodeStore
-
-    control_dir, persist = _control_settings()  # multiplex all SSH over one ControlMaster (MFA-once)
-    key = (config.ssh_key() or "")  # else defer to ~/.ssh/config IdentityFile
-    target = SshTarget(
-        host=alias,
-        user=user,
-        key_path=os.path.expanduser(key) if key else None,
-        control_dir=control_dir,
-        control_persist=persist,
-    )
-    cli = RemoteEndpointCLI(target, profile.env_setup)
-    store = LoginNodeStore()
-    rec = store.get(alias=alias, name=profile.endpoint_name)
-    pin = _routable_pin(rec.login_host) if rec is not None else None
-    if pin is not None:  # reconnect direct-to-node (routable pins only) instead of the round-robin alias
-        # An internal-only pin (e.g. Midway's beagle3-tbd1.rcc.local) is dropped -> stay on the alias.
-        # A routable-but-dead pin fails fast (BatchMode) -> CANNOT REACH, and connect_facility then DROPS
-        # the pin (_drop_dead_pin) so the next attempt resolves the canonical host again.
-        cli.rebind(pin)
-    return SlurmFacility(profile, cli, store=store, alias=alias)
-
-
-def _unsupported_entry_reason(entry) -> str | None:
-    """Why this catalog entry can't drive a stand-up, or None.
-
-    A `compute_mep_uuid` entry is a facility-run multi-user endpoint: consumed with zero SSH, and
-    with NO login shape — so an allocation LISTING (which runs over the free login node) has no
-    channel on it. Such an entry must omit `allocation`; the account (if any) is supplied directly."""
-    if entry.compute_mep_uuid:
-        if entry.allocation is not None:
-            return (
-                "a multi-user-endpoint entry cannot list allocations (no login-node channel on a "
-                "MEP) — drop `allocation` and let ensure_endpoint_up(account=…) take the account"
-            )
-        return None
-    if entry.compute.scheduler not in ("slurm", "pbs"):
-        return f"scheduler {entry.compute.scheduler!r} not supported yet (slurm/pbs only)"
-    return None
-
-
-def _facility_from_entry(entry, *, account: str, pinned_host: str | None = None) -> Facility:
-    """Build the facility for a catalog entry + per-user runtime values — shared by the startup
-    path (make_facility) and the runtime path (connect_facility). `account` may be empty for the
-    agentic flow; ensure_endpoint_up(account=…) overrides it per scheduler block.
-
-    A `compute_mep_uuid` entry builds a **MEPFacility** (zero SSH: no login name, no key, no host —
-    the facility's identity mapping is the access) and MEP wins if an entry somehow carries both
-    reaches. Otherwise a SlurmFacility over SSH.
-
-    `pinned_host` overrides the entry's `ssh_host` and is passed ONLY on the env-pinned startup path
-    (HPC_BRIDGE_MACHINE + HPC_BRIDGE_SSH_HOST). The agentic connect path leaves it None so the BOUND
-    facility's own `ssh_host` is authoritative — a process-wide env must never silently redirect an
-    agent-chosen facility to a different host (the "globus1 is Aurora" trap, [#35])."""
-    if entry.compute_mep_uuid:
-        from .facility.mep import MEPFacility
-
-        return MEPFacility.from_entry(entry, account=account or None)
-
-    from .facility.remote import profile_from_catalog_entry
-
-    alias = pinned_host or entry.ssh_host
-    # Login name: optional env override, else read live from ~/.ssh/config (`ssh -G`) — never a
-    # *required* boot-env var. The key is deferred to the config's IdentityFile in _slurm_facility.
-    user = (config.ssh_user() or "") or _ssh_config_user(alias)
-    profile = profile_from_catalog_entry(
-        entry,
-        user=user,
-        account=account,
-        partition=config.partition(),
-        venv=config.remote_venv(),
-    )
-    return _slurm_facility(profile, alias=alias, user=user)
-
-
-async def _catalog_facility(machine: str) -> Facility:
-    """Build a facility from a catalog entry (HPC_BRIDGE_MACHINE), sourcing the machine config
-    from `make_catalog()` (the live Globus Search index — HPC_BRIDGE_SEARCH_INDEX; no bundled
-    fallback). v1 slice: SSH-bootstrap Slurm/PBS machines only."""
-    entry = await make_catalog().get(machine)
-    if entry is None:
-        raise RuntimeError(f"HPC_BRIDGE_MACHINE={machine!r} not found in the catalog")
-    reason = _unsupported_entry_reason(entry)
-    if reason:
-        raise RuntimeError(f"{machine}: {reason}")
-    if entry.compute_mep_uuid:
-        # A MEP entry IS the endpoint: a stray HPC_BRIDGE_ENDPOINT_ID (the BYO-UUID hatch this entry
-        # supersedes) would otherwise seed app.state and silently win over the entry's UUID while
-        # the entry's UEC defaults were applied to it. Refuse the ambiguity rather than guess.
-        env_eid = _env_endpoint_id()
-        if env_eid and env_eid != entry.compute_mep_uuid:
-            raise RuntimeError(
-                f"{machine}: HPC_BRIDGE_ENDPOINT_ID={env_eid} conflicts with the entry's "
-                f"compute_mep_uuid={entry.compute_mep_uuid}; unset it (the entry is the endpoint)"
-            )
-        account = (config.account() or "")
-        if entry.account_required and not account:
-            account = _require_env("HPC_BRIDGE_ACCOUNT")  # raises with the standard message
-        return _facility_from_entry(entry, account=account)
-    # Startup pin only: HPC_BRIDGE_SSH_HOST may override the catalog's canonical ssh_host (your own
-    # alias / a login node, or the FQDN the container needs). The agentic connect path does NOT (#35).
-    return _facility_from_entry(
-        entry,
-        account=_require_env("HPC_BRIDGE_ACCOUNT"),
-        pinned_host=config.ssh_host(),
-    )
-
-
-async def make_facility() -> Facility:
-    """Select the facility: a catalog-described machine (HPC_BRIDGE_MACHINE — sourced from the
-    Globus Search index), or local dev. Machines are catalog *data*, never hardcoded; the agent
-    can also bind one at runtime via connect_facility. (lifespan boots resiliently if this raises.)"""
-    machine = (config.machine() or "")
-    if not machine and (config.env("HPC_BRIDGE_FACILITY") or ""):
-        raise RuntimeError(
-            "HPC_BRIDGE_FACILITY was removed — machines are catalog data now. Use "
-            "HPC_BRIDGE_MACHINE=<id> (e.g. anvil), or let the agent pick via connect_facility."
-        )
-    if machine:
-        return await _catalog_facility(machine)
-    user_dir = config.user_dir()
-    return LocalFacility(EndpointCLI(user_dir=user_dir))
-
-
-def _resolve_scratch_root(facility) -> str:
-    """The session-shell root for `facility`: explicit env wins, else the facility's shared-FS
-    scratch (e.g. Anvil $SCRATCH), else a home-relative default.
-
-    `~` is expanded CLIENT-side only for a LocalFacility, whose worker IS this machine. A remote
-    facility's root is kept verbatim: expanding `~/.hpc-bridge` here would bake the CLIENT's home
-    (e.g. /Users/me/.hpc-bridge) into a command that runs as a different user on a different host —
-    the exact bug a bound facility's scratch is meant to avoid. A `~/`/`$HOME/` root is instead
-    expanded on the WORKER by `Session.quoted_state_dir()`, which is also what lets a multi-user
-    endpoint (whose local username we can't know client-side) use a `$HOME`-relative scratch."""
-    root = config.scratch() or getattr(facility, "scratch_root", None) or "~/.hpc-bridge"
-    return os.path.expanduser(root) if isinstance(facility, LocalFacility) else root
-
-
-def _make_search_client(_app_factory=None):
-    """Build the Globus SearchClient for the facility registry.
-
-    The registry's entries are `visible_to: public`, and Globus Search requires authentication
-    ONLY for non-public entries (docs, verified 2026-09-03) — so the default is an **anonymous**
-    client: a fresh install can `list_facilities` with zero setup and no consent. If the user's
-    Compute identity already holds the Search scope (a curator who ran `hpc-bridge-catalog`, or a
-    later registry with `visible_to`-restricted entries), we use it — the authenticated client also
-    sees restricted entries. We never trigger a login here (a server runs non-interactively); a
-    restricted registry that needs one is the job of the `needs_login` flow, lazily. Isolated so
-    tests can substitute it.
-    """
-    from globus_sdk import SearchClient
-
-    try:
-        from globus_compute_sdk import Client
-
-        # do_version_check=False: the check is an AUTHENTICATED call — on a fresh install it would
-        # trigger the SDK's command-line login on the MCP transport (see the gate in _connect_facility).
-        app = (_app_factory or (lambda: Client(do_version_check=False).app))()
-        client = SearchClient(app=app)  # registers the search scope requirement on this app instance
-        if not app.login_required():  # non-prompting: the scope is already granted -> authenticated
-            return client
-    except Exception:  # noqa: BLE001 - no Compute login at all, unreadable storage, SDK trouble -> anonymous
-        pass
-    return SearchClient()  # anonymous: public entries only (the registry's default)
-
-
-def make_catalog():
-    """The runtime catalog is the PUBLIC REGISTRY — a Globus Search index, read anonymously. The
-    plugin ships its id (`PUBLIC_REGISTRY_INDEX`), so `list_facilities()` works out of the box with no
-    login and no configuration; HPC_BRIDGE_SEARCH_INDEX overrides it (a private/staging registry).
-    There is **no bundled fallback**: a machine the registry can't resolve is a hard failure (the
-    soft agent-discovery fallback is a later slice). The bundled seed is the curator's ingest source
-    (see `hpc-bridge-catalog`), never a runtime catalog.
-    """
-    from .catalog.search import SearchCatalog
-
-    index = config.search_index()
-    client = _make_search_client()  # anonymous unless a Search-scoped login is already held
-    cache_dir = (
-        config.plugin_data_dir()
-        / "catalog-cache"
-    )
-    return SearchCatalog(index_id=index, client=client, cache_dir=cache_dir)
-
-
 @asynccontextmanager
 async def lifespan(server: FastMCP) -> AsyncIterator[AppCtx]:
     try:
-        facility = await make_facility()
+        facility = await binding.make_facility()
     except Exception as exc:  # noqa: BLE001 - a config error must NOT brick the MCP server at boot
         # (a startup crash = the agent silently sees no tools). Start unbound/local and let the
         # catalog tools surface/bind: list_facilities / connect_facility.
@@ -317,7 +122,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppCtx]:
         )
         user_dir = config.user_dir()
         facility = LocalFacility(EndpointCLI(user_dir=user_dir))
-    scratch = _resolve_scratch_root(facility)
+    scratch = binding._resolve_scratch_root(facility)
     app = AppCtx(
         facility=facility,
         profile=Profile(mode=_env_mode()),  # type: ignore[arg-type]
@@ -753,7 +558,7 @@ def _registry_transport_error(exc: BaseException) -> bool:
 
 async def _list_facilities(query: str = "") -> list[CatalogSummary]:
     try:
-        return await make_catalog().discover(query)
+        return await binding.make_catalog().discover(query)
     except Exception as exc:  # noqa: BLE001 - classified below: transport -> [], anything else re-raised
         # The registry id is built in, so what lands here is either the network (an empty list is
         # honest: the agent can still BYO) or a BUG — which must not hide behind "no facilities"
@@ -827,24 +632,13 @@ async def list_facilities(query: str = "") -> list[CatalogSummary]:
     return await _list_facilities(query)
 
 
-def _session_endpoint_name(ssh_host: str) -> str:
-    """A stable endpoint name for a session (BYO) facility, keyed on the **SSH host** — the canonical
-    per-cluster identity — so it never SHARES a registration with another facility AND doesn't sprawl
-    when the agent picks different facility ids for the same host (`midway` vs `midway3` both →
-    `hpc-bridge-midway3`). Endpoints are keyed by (identity, name); a bare 'hpc-bridge' would collide
-    with the curated Anvil endpoint and any stale 'online' registration, which find_online_endpoint
-    would then wrongly reuse — leaving a canary that can never warm."""
-    slug = re.sub(r"[^a-z0-9]+", "-", (ssh_host or "session").lower()).strip("-") or "session"
-    return f"hpc-bridge-{slug}"
-
-
 def _commit_proven_facility(app: AppCtx, facility: str) -> None:
     """PROVEN: the login shape's canary answered — the only step that exercises the network interface
     the probe flags as its riskiest guess. Only now does a BYO config earn a zero-probe reconnect
     (decision 2026-09-03; caching on acceptance remembered a wrong interface every session)."""
     pending = app.pending_facility_cache.pop(facility, None)
     if pending is not None:
-        _facility_store().put(*pending)
+        binding._facility_store().put(*pending)
 
 
 def _drop_dead_pin(fac) -> bool:
@@ -862,58 +656,6 @@ def _drop_dead_pin(fac) -> bool:
     except Exception:  # noqa: BLE001 - best-effort hygiene; the structured failure is what matters
         return False
     return True
-
-
-def _facility_store():
-    """The persistent local-discovery cache of confirmed BYO facility configs (keyed by ssh_host).
-    A thin indirection so tests can point it at a tmp path."""
-    from .state import FacilityStore
-
-    return FacilityStore()
-
-
-def _entry_from_details(facility: str, details: FacilityDetails) -> CatalogEntry:
-    """Build a SESSION-LOCAL CatalogEntry from user-supplied details — the Socratic fallback for a
-    machine not in the catalog. provenance="session"; never written to the shared index. Identity is
-    defaulted from the id; the transfer endpoint is omitted (compute-only); the allocation block is
-    set only when a listing command + a parser were given (else the human supplies the account)."""
-    alloc = None
-    if details.allocation_command and details.allocation_parser:
-        alloc = Allocation(command=details.allocation_command, parser=details.allocation_parser)
-    # HPC_BRIDGE_ENDPOINT_NAME: opt-in override giving each agentic-harness RUN a DISTINCT endpoint
-    # name — the shared ssh-host name + a shared test identity would otherwise collide one registration
-    # across concurrent runs. Wins over an agent-supplied name too, so a flailing agent can't defeat run
-    # isolation. Real users leave it unset and get the ssh-host key (_session_endpoint_name).
-    ep_name = ((config.endpoint_name() or "")
-               or details.endpoint_name or _session_endpoint_name(details.ssh_host or facility))
-    return CatalogEntry(
-        id=facility,
-        facility_key="session",
-        facility=details.display_name or facility,
-        description="session-local facility (user-supplied, not catalogued)",
-        # The endpoint's UI title (manager config display_name) follows the same convention as its
-        # registration name — `hpc-bridge-<ssh_host>` (ssh-host-keyed) — so the two never diverge.
-        display_name=details.display_name or ep_name,
-        transfer_endpoint_uuid=None,
-        ssh_host=details.ssh_host,
-        allocation=alloc,
-        compute=Compute(
-            scheduler=details.scheduler,
-            interface=details.interface,
-            env_setup=details.env_setup,
-            scratch_root=details.scratch_root,
-            endpoint_name=ep_name,
-            amqp_port=details.amqp_port,
-            scheduler_options=details.scheduler_options,
-        ),
-        defaults=Defaults(
-            partition=details.partition,
-            walltime=details.walltime,
-            cpus_per_node=details.cpus_per_node,
-        ),
-        provenance="session",
-        last_validated=datetime.date.today(),
-    )
 
 
 async def _connect_facility(
@@ -939,7 +681,7 @@ async def _connect_facility(
         # (frozen on the FIRST call — even one that later failed) silently won, so a wrong field could
         # never be fixed and stranded the whole session (seen live on Midway).
         try:
-            entry = _entry_from_details(facility, details)
+            entry = binding._entry_from_details(facility, details)
         except Exception as exc:  # noqa: BLE001 - bad details -> structured failure, not a crash
             return ConnectFacilityResult(
                 phase="failed",
@@ -957,7 +699,7 @@ async def _connect_facility(
             # ones). Found live: the maintainer's local cache held an SSH-era `globus1` config that would
             # have shadowed the registry's MEP entry and silently taken the SSH path.
             try:
-                entry = await make_catalog().get(facility)
+                entry = await binding.make_catalog().get(facility)
             except Exception as exc:  # noqa: BLE001 - registry unreachable -> the cache may still serve
                 registry_error = exc
         if entry is None:
@@ -965,10 +707,10 @@ async def _connect_facility(
             # ssh_host, canonical; facility id as fallback) — only for facilities the registry does NOT
             # know (or when it is unreachable). Used with NO SSH probe; bootstrap then reuses the online
             # endpoint over the web. A stale/invalid cache falls through to the probe.
-            cached = _facility_store().get(ssh_host or facility)
+            cached = binding._facility_store().get(ssh_host or facility)
             if cached is not None:
                 try:
-                    entry = _entry_from_details(facility, FacilityDetails(**cached))
+                    entry = binding._entry_from_details(facility, FacilityDetails(**cached))
                     app.session_facilities[facility] = entry
                 except Exception:  # noqa: BLE001 - stale/invalid cached config
                     entry = None
@@ -985,7 +727,7 @@ async def _connect_facility(
                 "HPC_BRIDGE_SSH_HOST) and I'll probe the login node to propose a config, or supply "
                 "details= directly (or list_facilities() if you meant a catalogued one).",
             )
-    reason = _unsupported_entry_reason(entry)
+    reason = binding._unsupported_entry_reason(entry)
     if reason is None and entry.allocation is not None and entry.allocation.parser not in PARSERS:
         reason = (
             f"allocation parser {entry.allocation.parser!r} not implemented yet "
@@ -995,7 +737,7 @@ async def _connect_facility(
         return ConnectFacilityResult(phase="unsupported", facility=facility, notice=reason)
     try:
         # off the loop: it may run `ssh -G` (a subprocess with a 10 s timeout) to read ~/.ssh/config
-        fac = await asyncio.to_thread(_facility_from_entry, entry, account=(config.account() or ""))
+        fac = await asyncio.to_thread(binding._facility_from_entry, entry, account=(config.account() or ""))
     except Exception as exc:  # noqa: BLE001 - surface a missing SSH_USER/KEY as a structured result
         return ConnectFacilityResult(
             phase="failed",
@@ -1008,7 +750,7 @@ async def _connect_facility(
         app.machine = facility
         # The session-shell root follows the bound facility — else run_shell would use the local
         # ~/.hpc-bridge path on the remote node (same resolution as lifespan's).
-        app.scratch_root = _resolve_scratch_root(fac)
+        app.scratch_root = binding._resolve_scratch_root(fac)
         if not _has_login_shape(app):  # a facility-run multi-user endpoint: attach, don't provision
             return await _connect_mep(app, facility, fac)
         try:
@@ -1135,7 +877,7 @@ async def _propose_or_ask(
     from .facility.remote import NeedsPreauth, SshTarget
 
     try:
-        control_dir, persist = _control_settings()
+        control_dir, persist = config._control_settings()
         key = (config.ssh_key() or "")
         target = SshTarget(
             host=host,

@@ -2,6 +2,7 @@
 import pytest
 
 import hpc_bridge.server as server
+from hpc_bridge import binding
 from hpc_bridge.catalog.search import SearchCatalog
 
 
@@ -10,7 +11,7 @@ def test_make_catalog_defaults_to_the_public_registry(monkeypatch, tmp_path):
     from hpc_bridge.catalog.search import PUBLIC_REGISTRY_INDEX
     monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path))
     monkeypatch.delenv("HPC_BRIDGE_SEARCH_INDEX", raising=False)
-    monkeypatch.setattr(server, "_make_search_client", lambda: object())
+    monkeypatch.setattr(binding, "_make_search_client", lambda: object())
     cat = server.make_catalog()
     assert isinstance(cat, SearchCatalog) and cat._index_id == PUBLIC_REGISTRY_INDEX
     assert PUBLIC_REGISTRY_INDEX == "6ff95fb8-1113-42be-a811-3d1cb5a67bd5"
@@ -19,14 +20,14 @@ def test_make_catalog_defaults_to_the_public_registry(monkeypatch, tmp_path):
 def test_make_catalog_env_overrides_the_default(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path))
     monkeypatch.setenv("HPC_BRIDGE_SEARCH_INDEX", "staging-idx")
-    monkeypatch.setattr(server, "_make_search_client", lambda: object())
+    monkeypatch.setattr(binding, "_make_search_client", lambda: object())
     assert server.make_catalog()._index_id == "staging-idx"
 
 
 def test_make_catalog_uses_search_when_index_set(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path))
     monkeypatch.setenv("HPC_BRIDGE_SEARCH_INDEX", "idx-uuid")
-    monkeypatch.setattr(server, "_make_search_client", lambda: object())  # avoid real Globus auth
+    monkeypatch.setattr(binding, "_make_search_client", lambda: object())  # avoid real Globus auth
     assert isinstance(server.make_catalog(), SearchCatalog)
 
 
@@ -39,7 +40,7 @@ def test_make_catalog_propagates_search_client_failure(monkeypatch, tmp_path):
     def boom():
         raise RuntimeError("scope not granted")
 
-    monkeypatch.setattr(server, "_make_search_client", boom)
+    monkeypatch.setattr(binding, "_make_search_client", boom)
     with pytest.raises(RuntimeError, match="scope not granted"):
         server.make_catalog()
 

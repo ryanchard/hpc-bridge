@@ -4,6 +4,7 @@ import time
 
 import pytest
 
+from hpc_bridge import binding
 from hpc_bridge import login as login_mod
 from hpc_bridge.login import FLOW_TTL_S, LoginFlow, required_scopes
 from hpc_bridge.profile import Profile
@@ -225,9 +226,9 @@ async def test_connect_gates_on_login_before_any_ssh(monkeypatch):
 
     app = AppCtx(facility=FakeFacility(), profile=Profile())
     app.login_flow = _StubFlow(required=True)
-    monkeypatch.setattr(server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")]))
+    monkeypatch.setattr(binding, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")]))
     built = []
-    monkeypatch.setattr(server, "_facility_from_entry", lambda e, *, account: built.append(1))
+    monkeypatch.setattr(binding, "_facility_from_entry", lambda e, *, account: built.append(1))
     res = await server._connect_facility(app, "anvil")
     assert res.phase == "needs_login" and res.login_mode == "browser"
     assert res.login_url.startswith("https://auth.globus.org/")
@@ -248,8 +249,8 @@ async def test_connect_proceeds_when_logged_in_and_when_ungated(monkeypatch):
         app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, "", ""))
         entry = fake_entry(id="anvil", facility_key="purdue")
         entry.allocation = None
-        monkeypatch.setattr(server, "make_catalog", lambda: FakeCatalog([entry]))  # noqa: B023 - bound per iteration by the immediate call
-        monkeypatch.setattr(server, "_facility_from_entry", lambda e, *, account: f)  # noqa: B023 - bound per iteration by the immediate call
+        monkeypatch.setattr(binding, "make_catalog", lambda: FakeCatalog([entry]))  # noqa: B023 - bound per iteration by the immediate call
+        monkeypatch.setattr(binding, "_facility_from_entry", lambda e, *, account: f)  # noqa: B023 - bound per iteration by the immediate call
         res = await server._connect_facility(app, "anvil")
         assert res.phase == "needs_account", (flow, res.notice)
 
@@ -314,7 +315,7 @@ async def test_connect_gate_runs_before_the_catalog_read(monkeypatch):
     def no_catalog():
         raise AssertionError("catalog must not be touched before the login gate")
 
-    monkeypatch.setattr(server, "make_catalog", no_catalog)
+    monkeypatch.setattr(binding, "make_catalog", no_catalog)
     monkeypatch.setattr(server, "_propose_or_ask", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no SSH probe before login")))
     res = await server._connect_facility(app, "anything", ssh_host="login.example.edu")
     assert res.phase == "needs_login"
@@ -357,8 +358,8 @@ async def test_connect_continues_in_the_same_call_when_the_login_lands(monkeypat
     app = AppCtx(facility=FakeFacility(), profile=Profile())
     flow = app.login_flow = _StubFlow(required=True, wait_result="done")
     monkeypatch.setenv("HPC_BRIDGE_LOGIN_WAIT_S", "42")
-    monkeypatch.setattr(server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")]))
-    monkeypatch.setattr(server, "_facility_from_entry", lambda entry, account="": (_ for _ in ()).throw(RuntimeError("past the gate")))
+    monkeypatch.setattr(binding, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")]))
+    monkeypatch.setattr(binding, "_facility_from_entry", lambda entry, account="": (_ for _ in ()).throw(RuntimeError("past the gate")))
     res = await server._connect_facility(app, "anvil")
     assert res.phase != "needs_login" and "past the gate" in (res.notice or "")
     assert flow.waited == [42.0] and flow.started == 1

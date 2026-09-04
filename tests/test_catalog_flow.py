@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from hpc_bridge import binding, config
 from hpc_bridge.models import FacilityDetails
 from hpc_bridge.profile import Profile
 from hpc_bridge.runner import CanaryResult
@@ -110,12 +111,11 @@ async def test_login_shape_ignores_account():
 
 
 async def test_list_facilities_returns_summaries(monkeypatch):
-    from hpc_bridge import server
 
     cat = FakeCatalog(
         [fake_entry(id="anvil", facility_key="purdue"), fake_entry(id="polaris", facility_key="alcf")]
     )
-    monkeypatch.setattr(server, "make_catalog", lambda: cat)
+    monkeypatch.setattr(binding, "make_catalog", lambda: cat)
     out = await _list_facilities("")
     assert {s.id for s in out} == {"anvil", "polaris"}
     assert [s.id for s in await _list_facilities("polaris")] == ["polaris"]
@@ -159,7 +159,7 @@ async def test_connect_facility_brings_up_login_and_lists_allocations(monkeypatc
     monkeypatch.setattr(
         server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
     )
-    monkeypatch.setattr(server, "_facility_from_entry", lambda entry, *, account: f)
+    monkeypatch.setattr(binding, "_facility_from_entry", lambda entry, *, account: f)
 
     res = await server._connect_facility(app, "anvil")
     assert res.phase == "needs_account"
@@ -183,7 +183,7 @@ async def test_connect_facility_signals_reuse_when_endpoint_already_online(monke
     monkeypatch.setattr(
         server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
     )
-    monkeypatch.setattr(server, "_facility_from_entry", lambda entry, *, account: f)
+    monkeypatch.setattr(binding, "_facility_from_entry", lambda entry, *, account: f)
 
     res = await server._connect_facility(app, "anvil")
     assert res.phase == "needs_account"
@@ -221,7 +221,7 @@ async def test_connect_facility_provisioning_when_login_worker_cold(monkeypatch)
     monkeypatch.setattr(
         server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
     )
-    monkeypatch.setattr(server, "_facility_from_entry", lambda entry, *, account: f)
+    monkeypatch.setattr(binding, "_facility_from_entry", lambda entry, *, account: f)
     res = await server._connect_facility(app, "anvil")
     assert res.phase == "provisioning" and res.allocations == []
 
@@ -242,7 +242,7 @@ async def test_connect_facility_index_unavailable_falls_back_to_details(monkeypa
     # the agent can still proceed by supplying details=. (Index-down shouldn't block a BYO facility.)
     from hpc_bridge import server
 
-    monkeypatch.setattr(server, "make_catalog", _no_catalog)
+    monkeypatch.setattr(binding, "make_catalog", _no_catalog)
     monkeypatch.delenv("HPC_BRIDGE_SSH_HOST", raising=False)  # no host -> the ask path, not discovery
     app = AppCtx(facility=FakeFacility(), profile=Profile())
     res = await server._connect_facility(app, "anvil")
@@ -251,9 +251,8 @@ async def test_connect_facility_index_unavailable_falls_back_to_details(monkeypa
 
 
 async def test_list_facilities_empty_without_catalog(monkeypatch):
-    from hpc_bridge import server
 
-    monkeypatch.setattr(server, "make_catalog", _no_catalog)
+    monkeypatch.setattr(binding, "make_catalog", _no_catalog)
     assert await _list_facilities("") == []
 
 
@@ -275,7 +274,7 @@ async def test_connect_facility_moves_scratch_root_to_the_facility(monkeypatch):
     monkeypatch.setattr(
         server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
     )
-    monkeypatch.setattr(server, "_facility_from_entry", lambda entry, *, account: f)
+    monkeypatch.setattr(binding, "_facility_from_entry", lambda entry, *, account: f)
     await server._connect_facility(app, "anvil")
     assert app.scratch_root == "/anvil/scratch/me/.hpc-bridge"
 
@@ -328,7 +327,7 @@ def _byo_app(monkeypatch, f):
     monkeypatch.setattr(
         server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
     )
-    monkeypatch.setattr(server, "_facility_from_entry", lambda entry, *, account: f)
+    monkeypatch.setattr(binding, "_facility_from_entry", lambda entry, *, account: f)
     return app
 
 
@@ -382,8 +381,8 @@ async def test_connect_index_error_with_details_proceeds(monkeypatch):
     f.workers = 1
     app = AppCtx(facility=FakeFacility(), profile=Profile())
     app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, MYBALANCE, ""))
-    monkeypatch.setattr(server, "make_catalog", _no_catalog)  # raises
-    monkeypatch.setattr(server, "_facility_from_entry", lambda entry, *, account: f)
+    monkeypatch.setattr(binding, "make_catalog", _no_catalog)  # raises
+    monkeypatch.setattr(binding, "_facility_from_entry", lambda entry, *, account: f)
     res = await server._connect_facility(app, "frontier", details=_details())
     assert res.phase == "needs_account" and "frontier" in app.session_facilities
 
@@ -411,7 +410,7 @@ async def test_connect_unknown_with_ssh_host_proposes_discovered_details(monkeyp
     monkeypatch.setattr(server, "discover_facility_details", fake_discover)
     monkeypatch.setenv("HPC_BRIDGE_SSH_USER", "u")
     monkeypatch.setenv("HPC_BRIDGE_SSH_KEY", "/k")
-    monkeypatch.setattr(server, "_control_settings", lambda: (None, 60))  # no real socket dir in tests
+    monkeypatch.setattr(config, "_control_settings", lambda: (None, 60))  # no real socket dir in tests
     res = await server._connect_facility(app, "newfac", ssh_host="login.newfac.edu")
     assert res.phase == "proposed_facility_details"
     assert res.proposed_details is draft and res.proposed_details.interface == "ib0"
@@ -430,7 +429,7 @@ async def test_connect_unknown_needs_preauth_when_host_wants_a_password(monkeypa
     monkeypatch.setattr(
         server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
     )
-    monkeypatch.setattr(server, "_control_settings", lambda: ("/tmp/cm", 3600))  # multiplexing on
+    monkeypatch.setattr(config, "_control_settings", lambda: ("/tmp/cm", 3600))  # multiplexing on
 
     async def fake_discover(target):
         raise NeedsPreauth(target)
@@ -453,7 +452,7 @@ async def test_connect_needs_preauth_flags_multiplexing_off(monkeypatch):
     monkeypatch.setattr(
         server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
     )
-    monkeypatch.setattr(server, "_control_settings", lambda: (None, 0))  # multiplexing OFF
+    monkeypatch.setattr(config, "_control_settings", lambda: (None, 0))  # multiplexing OFF
 
     async def fake_discover(target):
         raise NeedsPreauth(target)
@@ -474,11 +473,11 @@ async def test_explicit_details_rebuild_overrides_cached_entry(monkeypatch):
     f.workers = 1
     app = AppCtx(facility=FakeFacility(), profile=Profile())
     app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, MYBALANCE, ""))
-    monkeypatch.setattr(server, "_facility_from_entry", lambda entry, *, account: f)
+    monkeypatch.setattr(binding, "_facility_from_entry", lambda entry, *, account: f)
     real = server._entry_from_details
     built = []
     monkeypatch.setattr(
-        server, "_entry_from_details",
+        binding, "_entry_from_details",
         lambda facility, details: (built.append(details.scratch_root), real(facility, details))[1],
     )
 
@@ -516,8 +515,8 @@ async def test_local_discovery_reuses_cached_config_without_probing(monkeypatch)
 
     f = FakeFacility()
     f.workers = 1
-    monkeypatch.setattr(server, "_facility_from_entry", lambda entry, *, account: f)
-    monkeypatch.setattr(server, "make_catalog", lambda: FakeCatalog([]))  # not catalogued
+    monkeypatch.setattr(binding, "_facility_from_entry", lambda entry, *, account: f)
+    monkeypatch.setattr(binding, "make_catalog", lambda: FakeCatalog([]))  # not catalogued
 
     # 1) confirm details -> persists to the cache keyed by ssh_host
     app = AppCtx(facility=FakeFacility(), profile=Profile())
@@ -559,7 +558,7 @@ async def test_connect_unknown_uses_ssh_host_from_env(monkeypatch):
     monkeypatch.setenv("HPC_BRIDGE_SSH_USER", "u")
     monkeypatch.setenv("HPC_BRIDGE_SSH_KEY", "/k")
     monkeypatch.setenv("HPC_BRIDGE_SSH_HOST", "envhost")
-    monkeypatch.setattr(server, "_control_settings", lambda: (None, 60))
+    monkeypatch.setattr(config, "_control_settings", lambda: (None, 60))
     res = await server._connect_facility(app, "newfac")  # no ssh_host param -> env fallback
     assert res.phase == "proposed_facility_details" and seen["host"] == "envhost"
 
@@ -598,7 +597,7 @@ async def test_connect_unknown_discovery_defers_creds_to_ssh_config(monkeypatch)
         )
 
     monkeypatch.setattr(server, "discover_facility_details", fake_discover)
-    monkeypatch.setattr(server, "_control_settings", lambda: (None, 60))
+    monkeypatch.setattr(config, "_control_settings", lambda: (None, 60))
     for v in ("HPC_BRIDGE_SSH_USER", "HPC_BRIDGE_SSH_KEY"):
         monkeypatch.delenv(v, raising=False)
     res = await server._connect_facility(app, "newfac", ssh_host="globus1")
@@ -711,7 +710,7 @@ async def test_startup_pin_on_a_mep_entry(monkeypatch):
 
     from hpc_bridge import server
     from hpc_bridge.facility.mep import MEPFacility
-    monkeypatch.setattr(server, "make_catalog", lambda: FakeCatalog([fake_mep_entry()]))
+    monkeypatch.setattr(binding, "make_catalog", lambda: FakeCatalog([fake_mep_entry()]))
     monkeypatch.delenv("HPC_BRIDGE_ACCOUNT", raising=False)
     monkeypatch.delenv("HPC_BRIDGE_ENDPOINT_ID", raising=False)
     assert isinstance(await server._catalog_facility("globus1"), MEPFacility)
@@ -721,7 +720,7 @@ async def test_startup_pin_on_a_mep_entry(monkeypatch):
     monkeypatch.setenv("HPC_BRIDGE_ENDPOINT_ID", MEP_UUID)  # equal -> fine
     assert isinstance(await server._catalog_facility("globus1"), MEPFacility)
     # an account-REQUIRED MEP entry still insists on HPC_BRIDGE_ACCOUNT at startup
-    monkeypatch.setattr(server, "make_catalog", lambda: FakeCatalog([fake_mep_entry(account_required=True)]))
+    monkeypatch.setattr(binding, "make_catalog", lambda: FakeCatalog([fake_mep_entry(account_required=True)]))
     with pytest.raises(RuntimeError, match="HPC_BRIDGE_ACCOUNT"):
         await server._catalog_facility("globus1")
 
@@ -734,14 +733,14 @@ async def test_registry_wins_over_a_stale_cached_config_for_a_catalogued_id(monk
     from tests.fakes import MEP_UUID, fake_mep_entry
 
     server._facility_store().put("globus1", _details(ssh_host="globus1").model_dump(mode="json"))
-    monkeypatch.setattr(server, "make_catalog", lambda: FakeCatalog([fake_mep_entry(id="globus1")]))
+    monkeypatch.setattr(binding, "make_catalog", lambda: FakeCatalog([fake_mep_entry(id="globus1")]))
     seen = []
 
     def stop(entry, *, account):
         seen.append(entry)
         raise RuntimeError("stop here")
 
-    monkeypatch.setattr(server, "_facility_from_entry", stop)
+    monkeypatch.setattr(binding, "_facility_from_entry", stop)
     app = AppCtx(facility=FakeFacility(), profile=Profile())
     res = await server._connect_facility(app, "globus1")
     assert res.phase == "failed" and "stop here" in (res.notice or "")
@@ -756,14 +755,14 @@ async def test_cached_config_still_serves_when_the_registry_is_unreachable(monke
     def down():
         raise RuntimeError("search down")
 
-    monkeypatch.setattr(server, "make_catalog", down)
+    monkeypatch.setattr(binding, "make_catalog", down)
     seen = []
 
     def stop(entry, *, account):
         seen.append(entry)
         raise RuntimeError("stop here")
 
-    monkeypatch.setattr(server, "_facility_from_entry", stop)
+    monkeypatch.setattr(binding, "_facility_from_entry", stop)
     app = AppCtx(facility=FakeFacility(), profile=Profile())
     res = await server._connect_facility(app, "midway3")
     assert len(seen) == 1 and seen[0].ssh_host == "midway3"  # the cache served; no probe, no 'registry unavailable'
@@ -776,7 +775,7 @@ async def test_registry_unreachable_and_nothing_cached_asks_for_a_host(monkeypat
     def down():
         raise RuntimeError("search down")
 
-    monkeypatch.setattr(server, "make_catalog", down)
+    monkeypatch.setattr(binding, "make_catalog", down)
     app = AppCtx(facility=FakeFacility(), profile=Profile())
     res = await server._connect_facility(app, "nowhere")
     assert res.phase == "needs_facility_details" and "registry unavailable" in (res.notice or "")
@@ -805,8 +804,8 @@ async def test_no_ssh_access_is_explained_not_dumped(monkeypatch):
     f = FakeFacility()
     f.alias = "anvil.rcac.purdue.edu"
     f.cli = SimpleNamespace(target=SimpleNamespace(host="anvil.rcac.purdue.edu", user="hpcbridge-stranger"))
-    monkeypatch.setattr(server, "_facility_from_entry", lambda entry, *, account: f)
-    monkeypatch.setattr(server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")]))
+    monkeypatch.setattr(binding, "_facility_from_entry", lambda entry, *, account: f)
+    monkeypatch.setattr(binding, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")]))
     monkeypatch.setenv("HPC_BRIDGE_SSH_USER", "hpcbridge-stranger")
 
     async def refused(app, shape, **kw):
@@ -838,7 +837,7 @@ async def test_probe_path_ssh_refusal_is_explained(monkeypatch):
     # "discovery probe failed (rc=255): Warning: Identity file … Permission denied (publickey)".
     from hpc_bridge import server
 
-    monkeypatch.setattr(server, "make_catalog", lambda: FakeCatalog([]))
+    monkeypatch.setattr(binding, "make_catalog", lambda: FakeCatalog([]))
     monkeypatch.setenv("HPC_BRIDGE_SSH_USER", "hpcbridge-stranger")
 
     async def refused(target):
