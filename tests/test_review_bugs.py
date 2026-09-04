@@ -309,3 +309,61 @@ async def test_warm_status_notice_never_renders_none():
     rt.last_canary = None  # the warm-by-live-task path leaves no canary
     res = await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
     assert res.notice and not res.notice.startswith("None")
+
+
+# --- "proven", not "accepted" (decision 2026-09-03) ------------------------------------------
+async def test_byo_details_cached_only_once_the_login_shape_is_proven_warm(monkeypatch):
+    from hpc_bridge import server
+    from hpc_bridge.models import FacilityDetails
+    details = FacilityDetails(ssh_host="h.example.edu", interface="ib0", env_setup="true", scratch_root="/s/{user}", partition="main")
+    f = FakeFacility()
+    f.workers = 1
+    monkeypatch.setattr(server, "_facility_from_entry", lambda entry, *, account: f)
+    outcomes = iter(["provisioning", "provisioning", "warm"])
+
+    async def provision(app, shape, **kw):
+        return next(outcomes)
+
+    monkeypatch.setattr(server, "_provision", provision)
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    assert (await _connect_facility(app, "byo", details=details)).phase == "provisioning"
+    assert server._facility_store().get("h.example.edu") is None      # accepted, not yet proven
+    assert (await _connect_facility(app, "byo")).phase == "provisioning"  # the session entry, no details
+    assert server._facility_store().get("h.example.edu") is None
+    res = await _connect_facility(app, "byo")                           # the canary answered
+    assert res.phase != "provisioning" and server._facility_store().get("h.example.edu") is not None
+    assert "byo" not in app.pending_facility_cache
+
+
+async def test_unreachable_pinned_login_node_drops_the_pin(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from hpc_bridge import server
+    from hpc_bridge.state import EndpointRecord, LoginNodeStore
+    from tests.fakes import FakeCatalog
+    store = LoginNodeStore(tmp_path / "endpoints.json")
+    store.put(EndpointRecord(endpoint_id="e1", login_host="login03.example.edu", alias="anvil", user="u",
+                             key_path="/k", name="hpc-bridge-anvil", provisioned_at="2026-09-03T00:00:00Z"))
+    fac = SimpleNamespace(store=store, alias="anvil", profile=SimpleNamespace(endpoint_name="hpc-bridge-anvil", scheduler="slurm"),
+                          cli=SimpleNamespace(target=SimpleNamespace(host="login03.example.edu", user="u")))
+    monkeypatch.setattr(server, "_facility_from_entry", lambda entry, *, account: fac)
+    monkeypatch.setattr(server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")]))
+
+    async def unreachable(app, shape, **kw):
+        raise RuntimeError("bootstrap failed: ssh: connect to host login03.example.edu port 22: Connection timed out")
+
+    monkeypatch.setattr(server, "_provision", unreachable)
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    res = await _connect_facility(app, "anvil")
+    assert res.phase == "failed" and res.notice.startswith("CANNOT REACH") and "pin was dropped" in res.notice
+    assert store.get(alias="anvil", name="hpc-bridge-anvil") is None
+    # a REFUSED login keeps the pin: the host is fine, the access is not
+    store.put(EndpointRecord(endpoint_id="e1", login_host="login03.example.edu", alias="anvil", user="u",
+                             key_path="/k", name="hpc-bridge-anvil", provisioned_at="2026-09-03T00:00:00Z"))
+
+    async def refused(app, shape, **kw):
+        raise RuntimeError("seed storage.db (mkdir) failed: u@login03.example.edu: Permission denied (publickey).")
+
+    monkeypatch.setattr(server, "_provision", refused)
+    res = await _connect_facility(app, "anvil")
+    assert res.notice.startswith("NO SSH ACCESS") and store.get(alias="anvil", name="hpc-bridge-anvil") is not None

@@ -104,6 +104,9 @@ class AppCtx:
     # Session-local facilities the agent supplied for machines NOT in the catalog (the Socratic
     # fallback) — keyed by the id passed to connect_facility. Never written to the shared index.
     session_facilities: dict[str, CatalogEntry] = field(default_factory=dict)
+    # BYO configs supplied this session but not yet PROVEN (login-shape canary answered) — written to
+    # facilities.json only then (decision 2026-09-03: "proven", not "accepted"): facility id -> (ssh_host, details)
+    pending_facility_cache: dict[str, tuple[str, dict]] = field(default_factory=dict)
     runner_factory: Callable[..., GlobusRunner] = GlobusRunner
     # serializes provision / runner-swap / teardown so concurrent tool calls can't race AppCtx state
     # The in-terminal Globus login (login.py). None ⇒ no login gating (hermetic tests / unbound dev);
@@ -244,8 +247,8 @@ def _slurm_facility(profile, *, alias: str, user: str) -> Facility:
     pin = _routable_pin(rec.login_host) if rec is not None else None
     if pin is not None:  # reconnect direct-to-node (routable pins only) instead of the round-robin alias
         # An internal-only pin (e.g. Midway's beagle3-tbd1.rcc.local) is dropped -> stay on the alias.
-        # Dead-pin limitation: a routable-but-dead pin still fails fast (BatchMode) -> structured error;
-        # delete ~/.hpc-bridge/endpoints.json to reset.
+        # A routable-but-dead pin fails fast (BatchMode) -> CANNOT REACH, and connect_facility then DROPS
+        # the pin (_drop_dead_pin) so the next attempt resolves the canonical host again.
         cli.rebind(pin)
     return SlurmFacility(profile, cli, store=store, alias=alias)
 
@@ -1157,6 +1160,32 @@ def _session_endpoint_name(ssh_host: str) -> str:
     return f"hpc-bridge-{slug}"
 
 
+def _commit_proven_facility(app: AppCtx, facility: str) -> None:
+    """PROVEN: the login shape's canary answered — the only step that exercises the network interface
+    the probe flags as its riskiest guess. Only now does a BYO config earn a zero-probe reconnect
+    (decision 2026-09-03; caching on acceptance remembered a wrong interface every session)."""
+    pending = app.pending_facility_cache.pop(facility, None)
+    if pending is not None:
+        _facility_store().put(*pending)
+
+
+def _drop_dead_pin(fac) -> bool:
+    """A login-node PIN (endpoints.json) that no longer answers is dropped, so the next connect goes
+    back to the facility's canonical host — pins used to be permanent (vault audit 2026-09-03). Only
+    an UNREACHABLE host qualifies: a refused login keeps the pin (the host is fine; the access isn't).
+    True when a pin was in use and got dropped."""
+    store, alias = getattr(fac, "store", None), getattr(fac, "alias", None)
+    target = getattr(getattr(fac, "cli", None), "target", None)
+    name = getattr(getattr(fac, "profile", None), "endpoint_name", None)
+    if store is None or not alias or target is None or not name or getattr(target, "host", alias) == alias:
+        return False
+    try:
+        store.remove(alias=alias, name=name)
+    except Exception:  # noqa: BLE001 - best-effort hygiene; the structured failure is what matters
+        return False
+    return True
+
+
 def _facility_store():
     """The persistent local-discovery cache of confirmed BYO facility configs (keyed by ssh_host).
     A thin indirection so tests can point it at a tmp path."""
@@ -1226,7 +1255,6 @@ async def _connect_facility(
         # the browser flow completed while we waited — carry straight on with the connection
     # Resolve the entry: a session-local one the agent already supplied wins; else the catalog. An
     # index error is treated as "unresolved" (the agent can still supply details), not a hard fail.
-    pending_cache: tuple[str, dict] | None = None
     if details is not None:
         # An explicit details= is a (re)definition — it OVERRIDES any cached session entry or catalog
         # match, so a correction after discovery actually takes effect. Previously the cached entry
@@ -1240,9 +1268,9 @@ async def _connect_facility(
                 facility=facility,
                 notice=f"invalid facility details: {type(exc).__name__}: {exc}"[:300],
             )
-        app.session_facilities[facility] = entry  # (re)remember the confirmed config for the loop
-        if details.ssh_host:  # persist for LOCAL DISCOVERY — but only once the bootstrap ACCEPTS it (below)
-            pending_cache = (details.ssh_host, details.model_dump(mode="json"))
+        app.session_facilities[facility] = entry  # this session's config; on disk only once PROVEN (below)
+        if details.ssh_host:  # persist for LOCAL DISCOVERY — but only once the login shape is PROVEN warm
+            app.pending_facility_cache[facility] = (details.ssh_host, details.model_dump(mode="json"))
     else:
         entry = app.session_facilities.get(facility)
         registry_error: Exception | None = None
@@ -1308,15 +1336,12 @@ async def _connect_facility(
         try:
             block = await _provision(app, "login", force_canary=True)
         except Exception as exc:  # noqa: BLE001 - provisioning unavailable (e.g. non-Linux host)
-            return ConnectFacilityResult(
-                phase="failed",
-                facility=facility,
-                notice=_explain_provision_error(exc, fac),
-            )
-        if pending_cache is not None:
-            # The bootstrap accepted this config: NOW it is a confirmed BYO facility worth a zero-probe
-            # reconnect. Caching before this point persisted known-bad configs (found in review).
-            _facility_store().put(*pending_cache)
+            notice = _explain_provision_error(exc, fac)
+            if notice.startswith("CANNOT REACH") and _drop_dead_pin(fac):
+                notice += " (The remembered login-node pin was dropped: the next connect resolves the facility's host afresh.)"
+            return ConnectFacilityResult(phase="failed", facility=facility, notice=notice)
+        if block == "warm":
+            _commit_proven_facility(app, facility)
     reused = app.state.reused  # reattached to an already-online endpoint (zero SSH), not a fresh bootstrap
     reuse_note = "reused the already-online endpoint (zero-SSH reconnect). " if reused else ""
     if prior_spend > 0:  # a re-bind released a warm block: say what it cost rather than lose the number
