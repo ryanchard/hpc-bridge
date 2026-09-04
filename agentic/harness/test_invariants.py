@@ -910,3 +910,51 @@ def test_refused_compute_start_is_not_a_billed_start():
     assert ends_with_stop(t).ok and spend_follows_question(t).ok and stop_confirmed_or_retried(t).ok
     started = ToolCall.of("mcp__endpoint__ensure_endpoint_up", {"shape": "compute", "confirm_spend": True}, {"status": "provisioning"})
     assert not ends_with_stop(Trace([started])).ok  # a real start with no stop still fails
+
+
+# ---- byo_teardown_clean graders ---------------------------------------------------------------------------------
+
+def _byo_trace(*, first_contact=True, false_reuse=False, teardown_notice="endpoint fully torn down (block released; manager gce-stopped + deleted; the Globus token copy hpc-bridge placed on the login node removed)"):
+    from invariants import ToolCall, Trace
+
+    c1 = "first contact over SSH: u@globus1; env_setup run there: 'true'. bringing up the login node" if first_contact else "bringing up the login node"
+    c2 = "reused the already-online endpoint (zero-SSH reconnect). login node is up" if false_reuse else "reconnected to the endpoint this session started (zero-SSH). login node is up"
+    return Trace([
+        ToolCall.of("connect_facility", {"facility": "f", "details": {}}, {"phase": "provisioning", "notice": c1}),
+        ToolCall.of("connect_facility", {"facility": "f"}, {"phase": "needs_account", "notice": c2}),
+        ToolCall.of("run_shell", {"command": "hostname", "shape": "login"}, {"phase": "complete", "exit_code": 0, "stdout": "globus1"}),
+        ToolCall.of("teardown_endpoint", {}, {"status": "down", "notice": teardown_notice}),
+    ])
+
+
+def test_byo_teardown_graders_pass_on_the_clean_walk():
+    from invariants import (
+        ends_with_teardown,
+        first_contact_noted,
+        login_shape_ran,
+        no_false_reuse_claim,
+        teardown_reported_clean,
+    )
+
+    t = _byo_trace()
+    for g in (first_contact_noted, no_false_reuse_claim, login_shape_ran, ends_with_teardown, teardown_reported_clean):
+        assert g(t).ok, g(t)
+
+
+def test_byo_teardown_graders_catch_the_three_live_failures():
+    from invariants import first_contact_noted, no_false_reuse_claim, teardown_reported_clean
+
+    assert not first_contact_noted(_byo_trace(first_contact=False)).ok
+    assert not no_false_reuse_claim(_byo_trace(false_reuse=True)).ok
+    # the tool used to claim success while doing nothing; now a failed delete / nothing-to-wipe is named
+    assert not teardown_reported_clean(_byo_trace(teardown_notice="endpoint fully torn down (block released; manager gce-stopped, but DELETE FAILED: the endpoint directory remains on the login node; no token store of ours on the login node to remove)")).ok
+    assert not teardown_reported_clean(_byo_trace(teardown_notice="block released; manager teardown reported RuntimeError: x")).ok
+
+
+def test_ends_with_teardown_requires_it_last():
+    from invariants import ToolCall, ends_with_teardown
+
+    t = _byo_trace()
+    t.calls.append(ToolCall.of("run_shell", {"command": "ls", "shape": "login"}, {"phase": "complete", "exit_code": 0}))
+    assert not ends_with_teardown(t).ok
+
