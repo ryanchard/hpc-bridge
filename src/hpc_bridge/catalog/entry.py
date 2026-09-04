@@ -1,6 +1,8 @@
 # src/hpc_bridge/catalog/entry.py
 from __future__ import annotations
 
+import re
+
 import datetime
 import uuid
 from typing import Any, Literal
@@ -19,6 +21,9 @@ class Allocation(BaseModel):
     parser: Literal["sbank", "iris", "mybalance"]
 
 
+SAFE_ENDPOINT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+
+
 class Compute(BaseModel):
     """Machine-invariant facts the plugin PINS — the user/agent cannot override these.
 
@@ -31,6 +36,16 @@ class Compute(BaseModel):
     env_setup: str  # bash that puts globus-compute-endpoint on PATH (module + venv)
     scratch_root: str  # session-shell root on the shared filesystem; {user} templated
     endpoint_name: str | None = None  # None ⇒ derive hpc-bridge-<id> (never the bare collision name)
+
+    @field_validator("endpoint_name")
+    @classmethod
+    def _safe_endpoint_name(cls, v: str | None) -> str | None:
+        # The name is spliced into a remote shell path (`cat > "$HOME/.globus_compute/<name>/…"`) where
+        # `$(…)` and backticks EXECUTE — and the endpoint's own validator lets them through (found in
+        # review). Same allowlist the harness/session naming uses.
+        if v is not None and not SAFE_ENDPOINT_NAME.match(v):
+            raise ValueError("endpoint_name must match [A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
+        return v
     amqp_port: int = 443  # facilities firewall AMQPS 5671; 443 is the near-universal allowed port
     scheduler_options: str | None = None  # raw scheduler directives, verbatim (e.g. #SBATCH for Slurm, #PBS for PBS)
 
@@ -117,8 +132,11 @@ class CatalogEntry(BaseModel):
                 "a catalog entry needs a reach: set compute_mep_uuid (facility MEP) "
                 "or ssh_host (SSH bootstrap)"
             )
-        if self.compute_mep_uuid is not None and self.ssh_host is None:
-            # A MEP-only entry is consumed with NO SSH, so there is no login name to resolve `{user}`
+        if self.compute_mep_uuid is not None:
+            # Any entry with a MEP is CONSUMED as a MEP (MEP wins over ssh_host in _facility_from_entry),
+            # so this guard must not be gated on ssh_host being absent (found in review: a dual-reach
+            # entry shipped literal templates to the worker).
+            # A MEP entry is consumed with NO SSH, so there is no login name to resolve `{user}`
             # and no client-managed venv for `{venv}` — the facility maps our identity to a local
             # account we never learn. Those tokens would reach the worker LITERALLY. Such an entry
             # must use worker-side forms ($HOME, $USER) that the mapped user's shell expands.

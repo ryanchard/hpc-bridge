@@ -171,6 +171,15 @@ def _short_control_dir(preferred: str) -> str:
     return preferred  # nothing short exists; ssh will say so
 
 
+# sshd's own denial lines — the method list in parentheses is the tell (a bare "Permission denied" is
+# usually the remote filesystem: `mkdir … : Permission denied` on an over-quota home, found in review).
+_SSH_AUTH_DENIED = re.compile(
+    r"permission denied \((?:publickey|password|keyboard-interactive|gssapi|hostbased)[^)]*\)"
+    r"|permission denied, please try again|authentication failed",
+    re.IGNORECASE,
+)
+
+
 def _explain_provision_error(exc: BaseException, fac=None, *, host: str | None = None,
                              user: str | None = None, fallback: str | None = None) -> str:
     """Turn a bootstrap failure into what a newcomer can act on. The raw text names an internal step
@@ -189,7 +198,7 @@ def _explain_provision_error(exc: BaseException, fac=None, *, host: str | None =
     host = host or getattr(target, "host", None) or getattr(fac, "alias", None) or "the login host"
     if user is None:
         user = getattr(target, "user", None)
-    if "permission denied" in low or "authentication fail" in low or "too many authentication failures" in low:
+    if _SSH_AUTH_DENIED.search(raw) or "too many authentication failures" in low:
         who = f"as {user!r}" if user else "as your local username (no login name is configured for this host)"
         src = ("HPC_BRIDGE_SSH_USER" if os.environ.get("HPC_BRIDGE_SSH_USER", "").strip()
                else "~/.ssh/config" if user else "nowhere")
@@ -200,6 +209,10 @@ def _explain_provision_error(exc: BaseException, fac=None, *, host: str | None =
             "connect_facility again; on a multi-factor facility, pre-open a session in your own terminal "
             f"first. The login name came from {src}. Nothing was started or billed."
         )
+    if "permission denied" in low:  # a denial from the remote FILESYSTEM (quota, read-only home), not from sshd
+        return (f"REMOTE FILESYSTEM refused a write on {host}: {ssh_line[:200]}. The login worked; the home "
+                "directory is over quota, read-only, or not writable. Free space or fix permissions there, then "
+                "call connect_facility again. Nothing was started or billed.")
     if any(k in low for k in ("could not resolve hostname", "connection timed out", "connection refused",
                               "no route to host", "network is unreachable")):
         return (f"CANNOT REACH {host}: {ssh_line[:200]}. Check the login host name and your network/VPN, "
@@ -538,13 +551,25 @@ def _parse_hhmmss(s: str | None) -> int:
     missing or malformed so callers fall back rather than crash; never negative."""
     if not s:
         return 0
-    parts = str(s).strip().split(":")
-    if not 1 <= len(parts) <= 3 or not all(p.strip().isdigit() for p in parts):
-        return 0
+    text = str(s).strip()
+    days = 0
+    if "-" in text:  # Slurm's "days-hours[:minutes[:seconds]]" (a 2-day walltime parsed as 0 -> a 300 s ceiling)
+        d, _, text = text.partition("-")
+        if not d.isdigit() or not text:
+            return 0
+        days = int(d)
+        parts = text.split(":")
+        if not 1 <= len(parts) <= 3 or not all(p.strip().isdigit() for p in parts):
+            return 0
+        parts = parts + ["0"] * (3 - len(parts))  # after a day count the first field is HOURS
+    else:
+        parts = text.split(":")
+        if not 1 <= len(parts) <= 3 or not all(p.strip().isdigit() for p in parts):
+            return 0
     secs = 0
     for p in parts:
         secs = secs * 60 + int(p)
-    return secs
+    return days * 86400 + secs
 
 
 def _task_ceiling_s(uec: dict) -> float:
@@ -584,6 +609,11 @@ def _runner_for(app: AppCtx, shape: str) -> GlobusRunner:
     rt = _shape_runtime(app, shape)
     eid = app.state.endpoint_id
     if rt.runner is None or rt.runner.endpoint_id != eid or rt.runner_stale:
+        if rt.runner is not None and rt.runner.endpoint_id == eid and _live_task_handles(app, shape):
+            # A credential/config-only swap (runner_stale, e.g. a new Globus login) must WAIT: closing
+            # this Executor would drop the live task's future and poll_task would report "no task"
+            # (found in review). The rebuild happens once the task has been polled.
+            return rt.runner
         if rt.runner is not None:
             # A config-only swap (runner_stale) is barred while a task runs (see _apply_partition/
             # _apply_account), so reaching here with a live task means the ENDPOINT changed — that
@@ -617,14 +647,17 @@ async def _confirm_worker(app: AppCtx, shape: str, *, force: bool) -> str:
     # flip us to 'not warm', banking the spend clock while the block is still burning (#21).
     if _live_task_handles(app, shape):
         rt.warm_confirmed_at = now
+        rt.provisioning_since = None
         return "warm"
     if not force and rt.warm_confirmed_at is not None and now - rt.warm_confirmed_at < CANARY_TTL_S:
+        rt.provisioning_since = None
         return "warm"
     result = await runner.canary(timeout=CANARY_TIMEOUT_S)
     rt.last_canary = result  # keep failures too: the error text is the diagnosis the caller needs
     if result.ok:
         rt.warm_confirmed_at = now
         rt.transient_conflicts = 0
+        rt.provisioning_since = None  # warm by any route: a later cold start must not inherit a stale clock
         return "warm"
     rt.warm_confirmed_at = None
     if result.error and result.error != "timeout":
@@ -1153,6 +1186,7 @@ async def _connect_facility(
         # the browser flow completed while we waited — carry straight on with the connection
     # Resolve the entry: a session-local one the agent already supplied wins; else the catalog. An
     # index error is treated as "unresolved" (the agent can still supply details), not a hard fail.
+    pending_cache: tuple[str, dict] | None = None
     if details is not None:
         # An explicit details= is a (re)definition — it OVERRIDES any cached session entry or catalog
         # match, so a correction after discovery actually takes effect. Previously the cached entry
@@ -1167,8 +1201,8 @@ async def _connect_facility(
                 notice=f"invalid facility details: {type(exc).__name__}: {exc}"[:300],
             )
         app.session_facilities[facility] = entry  # (re)remember the confirmed config for the loop
-        if details.ssh_host:  # persist for LOCAL DISCOVERY — a later session reconnects with no SSH probe
-            _facility_store().put(details.ssh_host, details.model_dump(mode="json"))
+        if details.ssh_host:  # persist for LOCAL DISCOVERY — but only once the bootstrap ACCEPTS it (below)
+            pending_cache = (details.ssh_host, details.model_dump(mode="json"))
     else:
         entry = app.session_facilities.get(facility)
         registry_error: Exception | None = None
@@ -1243,6 +1277,10 @@ async def _connect_facility(
                 facility=facility,
                 notice=_explain_provision_error(exc, fac),
             )
+        if pending_cache is not None:
+            # The bootstrap accepted this config: NOW it is a confirmed BYO facility worth a zero-probe
+            # reconnect. Caching before this point persisted known-bad configs (found in review).
+            _facility_store().put(*pending_cache)
     reused = app.state.reused  # reattached to an already-online endpoint (zero SSH), not a fresh bootstrap
     reuse_note = "reused the already-online endpoint (zero-SSH reconnect). " if reused else ""
     if block != "warm":  # login node still coming up — nothing to read yet
@@ -1729,6 +1767,17 @@ async def _stop_endpoint(app: AppCtx) -> EndpointStatus:
             notice=f"compute block released over AMQP ({detail}); the login endpoint stays online for "
             "reuse (reconnecting is zero-SSH).",
         )
+    if await _endpoint_gone(app):
+        # The login endpoint is OFFLINE/gone (the #44 liveness check poll_task got, applied here — found
+        # in review): "call again in a few seconds" would loop forever. A block whose manager is gone
+        # exits on its own (workers lose their manager), so nothing spends through hpc-bridge.
+        return EndpointStatus(
+            status="down", block_state="cold", endpoint_id=eid,
+            session_spend=_total_session_spend(app) + dropped,
+            notice=("the login endpoint is OFFLINE — the cancel cannot be dispatched through it (ORPHANED). "
+                    "A block without its manager exits on its own; nothing is spending through hpc-bridge. "
+                    "Do not call stop_endpoint again; connect_facility stands the endpoint up afresh."),
+        )
     return EndpointStatus(
         # HONEST unconfirmed release (#24): the cancel dispatched but the cold login channel couldn't
         # confirm it, so spend may still be running. NEVER "down" here — the agent must know.
@@ -1879,7 +1928,7 @@ def _transient_dispatch_failure(error: str | None) -> bool:
     """The web service's 409 RESOURCE_CONFLICT ('Endpoint … is already in use: possibly due to concurrent
     requests -- please try again'): seen live when a submit followed another within ~2 s."""
     e = (error or "").lower()
-    return "resource_conflict" in e or "already in use" in e
+    return "resource_conflict" in e or ("already in use" in e and ("endpoint" in e or "concurrent requests" in e))
 
 
 def _forget_identity_verdicts(app: AppCtx) -> None:

@@ -699,7 +699,7 @@ def test_mep_wins_when_an_entry_carries_both_reaches(monkeypatch):
     from hpc_bridge.server import _facility_from_entry
     monkeypatch.setenv("HPC_BRIDGE_SSH_USER", "u")
     both = fake_mep_entry(ssh_host="globus1.example.edu", compute={
-        "scheduler": "slurm", "interface": "enP7s7", "env_setup": "x", "scratch_root": "/s/{user}",
+        "scheduler": "slurm", "interface": "enP7s7", "env_setup": "x", "scratch_root": "$HOME/.hpc-bridge",
     })
     assert isinstance(_facility_from_entry(both, account=""), MEPFacility)
 
