@@ -77,3 +77,8 @@ failed — hence `ssh -G`). Second `start` on a running manager: adopted. OpenSS
 - Pin `hatchling` for the build (`[tool.uv] build-constraint-dependencies`) once the version is chosen (C-6).
 - Curator tooling: diff the seeds against the live index (`hpc-bridge-catalog verify`).
 - The production registry index at the org move (decision 2).
+
+## Regression cells (2026-09-04, both passed live)
+- `byo_teardown_clean` — the SSH bring-up as a stranger does it, login shape only; world-checks the login node is clean after the agent's own teardown. Also confirms #39's fix (`first_details_connect_succeeds` passes).
+- `unknown_host_key` — the boundary itself: phase 1 refused + explained on an empty known_hosts (no retry, no raw ssh); the harness trusts the key between phases as the user would from their terminal; phase 2 succeeds and tears down clean.
+

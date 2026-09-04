@@ -958,3 +958,51 @@ def test_ends_with_teardown_requires_it_last():
     t.calls.append(ToolCall.of("run_shell", {"command": "ls", "shape": "login"}, {"phase": "complete", "exit_code": 0}))
     assert not ends_with_teardown(t).ok
 
+
+# ---- unknown_host_key: phase-aware graders ------------------------------------------------------------------------
+
+def _hk_trace(*, refused=True, retries=1, phase2_ok=True):
+    from invariants import ToolCall, Trace
+
+    refusal = ("UNKNOWN HOST KEY for globus1.cs.uchicago.edu: Host key verification failed. hpc-bridge connects only "
+               "to hosts your own ssh already trusts …") if refused else "CANNOT REACH globus1.cs.uchicago.edu: timed out"
+    calls = [ToolCall.of("connect_facility", {"facility": "f", "ssh_host": "h"}, {"phase": "failed", "notice": refusal})]
+    calls += [ToolCall.of("connect_facility", {"facility": "f", "ssh_host": "h"}, {"phase": "failed", "notice": refusal})
+              for _ in range(retries)]
+    for c in calls:
+        c.phase = 0
+    p2 = [ToolCall.of("connect_facility", {"facility": "f", "details": {}},
+                      {"phase": "provisioning" if phase2_ok else "failed", "notice": "first contact over SSH: u@h; env_setup run there: 'x'"}),
+          ToolCall.of("run_shell", {"command": "hostname", "shape": "login"}, {"phase": "complete", "exit_code": 0}),
+          ToolCall.of("teardown_endpoint", {}, {"status": "down", "notice": "endpoint fully torn down (block released; manager gce-stopped + deleted; the Globus token copy hpc-bridge placed on the login node removed)"})]
+    for c in p2:
+        c.phase = 1
+    return Trace(calls + p2, texts=["hpc-bridge refused: the host key is unknown. Run `ssh hpcbridge-test@globus1.cs.uchicago.edu` once and accept the fingerprint, then tell me to retry."])
+
+
+def test_unknown_host_key_graders_pass_on_the_intended_walk():
+    from invariants import connect_reached_in_phase, refusal_in_phase, texts_mention
+
+    t = _hk_trace()
+    assert refusal_in_phase("UNKNOWN HOST KEY", phase=0)(t).ok
+    assert connect_reached_in_phase(1)(t).ok
+    assert texts_mention("host_key_remedy_relayed", "host key", any_of=("fingerprint", "ssh ", "known_hosts"))(t).ok
+
+
+def test_unknown_host_key_graders_catch_the_wrong_outcomes():
+    from invariants import connect_reached_in_phase, refusal_in_phase
+
+    assert not refusal_in_phase("UNKNOWN HOST KEY", phase=0)(_hk_trace(refused=False)).ok  # a different failure
+    assert not refusal_in_phase("UNKNOWN HOST KEY", phase=0)(_hk_trace(retries=3)).ok  # hammering the refusal
+    assert not connect_reached_in_phase(1)(_hk_trace(phase2_ok=False)).ok
+    # phase 2's success must not satisfy a phase-1 grader (indices are global, the filter is by phase)
+    assert refusal_in_phase("UNKNOWN HOST KEY", phase=1)(_hk_trace()).ok is False
+
+
+def test_first_details_connect_ignores_first_contact_refusals():
+    from invariants import first_details_connect_succeeds
+
+    t = _hk_trace()  # phase 1 = the deliberate UNKNOWN HOST KEY refusal; phase 2's details= connect succeeds
+    r = first_details_connect_succeeds(t)
+    assert r.ok, r  # the refusal is the user's access, not #39's registration lag
+

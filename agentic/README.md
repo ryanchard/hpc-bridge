@@ -29,7 +29,7 @@ agentic/
     regrade.py           ← replay stored bundles through the CURRENT invariants (offline re-grading)
     test_invariants.py   ← hermetic unit tests (52) for the grading core + scenario graders
     judge.py             ← optional LLM-judge rubric pass                                   [later]
-  scenarios/             ← happy_path · gated_provision · spend_refusal · spend_gate_enforced · session_persistence · mep_compute_only ·
+  scenarios/             ← happy_path · gated_provision · spend_refusal · spend_gate_enforced · session_persistence · mep_compute_only · byo_teardown_clean · unknown_host_key ·
                            long_job_30m · saturation · endpoint_reuse · endpoint_reuse_chain · facility_cache ·
                            long_task_via_handle · idle_release_kill · aurora_pbs_bringup
   runs/                  ← per-run provenance bundles (gitignored): record.json ·
@@ -111,6 +111,8 @@ python3 agentic/run_suite.py --scenarios gated_provision --repeat 2   # the spen
 HPCB_NO_SKILL=1 ./agentic/run_smoke.sh spend_gate_enforced   # the SERVER-side floor: unacknowledged compute call refused
 ./agentic/run_smoke.sh session_persistence    # session shell: cwd/env persist across calls, reset clears (login-only, free)
 ./agentic/run_smoke.sh mep_compute_only     # facility MEP: zero-SSH attach, compute-only run as glabs, draining-only stop (the registry id is built in — no index env needed)
+./agentic/run_smoke.sh byo_teardown_clean   # BYO bring-up + full teardown on the login shape only (no node needed); world-checks the login node is clean
+./agentic/run_smoke.sh unknown_host_key     # the host-key boundary, both halves: refused + explained on an unknown key (phase 1), succeeds once trusted (phase 2)
 ```
 
 Keep `--concurrency 3` (globus1 SSH headroom + the subscription 5h/7d cap; big sweeps → API creds).

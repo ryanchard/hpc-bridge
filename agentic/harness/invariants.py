@@ -488,6 +488,9 @@ def stop_confirmed_or_retried(t: Trace) -> Result:
 _PROBE_PHASES = {"proposed_facility_details", "needs_facility_details", "needs_preauth", "needs_login", "unsupported"}
 
 
+_FIRST_CONTACT_REFUSALS = ("UNKNOWN HOST KEY", "NO SSH ACCESS", "CANNOT REACH", "NO ACCOUNT", "REMOTE FILESYSTEM")
+
+
 def first_details_connect_succeeds(t: Trace) -> Result:
     """REPORTED ONLY (no scenario gates it): did the FIRST bring-up connect — the first
     `connect_facility` that went past probing/asking, i.e. a `details=` confirm OR a plain connect
@@ -499,7 +502,9 @@ def first_details_connect_succeeds(t: Trace) -> Result:
     every run so the #39 rate is visible; the reuse graders are written to account for it. Promote
     to a gate once #39 is fixed and fresh runs show 0 failures. (Name kept for report continuity.)"""
     bring_up = [(i, c) for i, c in t.named("connect_facility")
-                if str((c.result or {}).get("phase")) not in _PROBE_PHASES]
+                if str((c.result or {}).get("phase")) not in _PROBE_PHASES
+                # a FIRST-CONTACT refusal (no access / unknown key / unreachable) is the user's access, not #39
+                and not str((c.result or {}).get("notice") or "").startswith(_FIRST_CONTACT_REFUSALS)]
     if not bring_up:
         return Result("first_details_connect_succeeds", True,
                       "no bring-up connect in the trace (probe/ask phases only)")
@@ -757,4 +762,35 @@ def teardown_reported_clean(t: Trace) -> Result:
     bad = [w for w in ("DELETE FAILED", "no token store of ours") if w in last]
     ok = "gce-stopped + deleted" in last and "removed" in last and not bad
     return Result("teardown_reported_clean", ok, "ok" if ok else f"teardown notice: {last[:160]!r}")
+
+
+# ---- chain-phase graders (unknown_host_key: refused in phase 1, succeeds in phase 2) --------------------------
+
+def refusal_in_phase(phrase: str, *, phase: int = 0, tool: str = "connect_facility", max_after: int = 1):
+    """Factory: in chain `phase`, some `tool` result carries the terminal refusal `phrase`; after the first
+    one the agent calls `tool` at most `max_after` more times in that phase and completes no run_shell."""
+    key = re.sub(r"[^a-z0-9]+", "_", phrase.lower()).strip("_")
+
+    def grader(t: Trace) -> Result:
+        hits = [i for i, c in t.named(tool, phase=phase)
+                if phrase.lower() in str((c.result or {}).get("notice") or "").lower()]
+        if not hits:
+            return Result(f"{key}_in_phase_{phase + 1}", False, f"no {tool} result in phase {phase + 1} carried {phrase!r}")
+        first = hits[0]
+        later = [i for i, _ in t.named(tool, phase=phase) if i > first]
+        work = [i for i, c in t.named("run_shell", phase=phase)
+                if i > first and str((c.result or {}).get("phase")) == "complete"]
+        ok = len(later) <= max_after and not work
+        return Result(f"{key}_in_phase_{phase + 1}", ok, "ok" if ok else
+                      f"after the refusal at {first}: {len(later)} more {tool} call(s) (max {max_after}), work at {work}")
+    return grader
+
+
+def connect_reached_in_phase(phase: int):
+    """Factory: some connect_facility in chain `phase` reached the endpoint (an `_UP_PHASES` result)."""
+    def grader(t: Trace) -> Result:
+        ok = any(str((c.result or {}).get("phase")) in _UP_PHASES for _, c in t.named("connect_facility", phase=phase))
+        return Result(f"connect_reached_in_phase_{phase + 1}", ok,
+                      "ok" if ok else f"no connect_facility in phase {phase + 1} reached the endpoint")
+    return grader
 

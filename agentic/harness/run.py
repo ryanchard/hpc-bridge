@@ -91,9 +91,13 @@ async def _run_chain(phase_prompts, scen, *, model, effort, persona, user_goal, 
                                      extra_env=getattr(scen, "EXTRA_ENV", None) or None)
         results.append(r)
         print(f"  phase {i + 1}: {len(r.trace.calls)} calls · is_error={getattr(r.final, 'is_error', None)}")
-        if i + 1 < len(phase_prompts) and delay:
-            print(f"  … settling {delay}s so the endpoint registers online for the next phase")
-            await asyncio.sleep(delay)
+        if i + 1 < len(phase_prompts):
+            if not _interphase_setup(scen):
+                print("  chain ABORTED: interphase setup failed (later phases would be graded against the wrong world)")
+                break
+            if delay:
+                print(f"  … settling {delay}s so the endpoint registers online for the next phase")
+                await asyncio.sleep(delay)
     total = sum((getattr(r.final, "total_cost_usd", 0) or 0) for r in results)
     print(f"chain total cost ≈ ${total:.4f} across {len(results)} phases")
     return _combine(results)
@@ -131,6 +135,19 @@ def _seed_facility_cache(scen) -> None:
     p.write_text(json.dumps(dict(seed), indent=2, sort_keys=True))
     p.chmod(0o600)
     print(f"seeded facility cache: {sorted(seed)} -> {p}", file=sys.stderr, flush=True)
+
+
+def _interphase_setup(scen) -> bool:
+    """World changes BETWEEN chain phases (scenario INTERPHASE_SETUP commands, run as the test user
+    through the harness' own channel) — e.g. trust the cluster's host key the way a user does from
+    their own terminal, so phase 2 can succeed where phase 1 was refused (unknown_host_key)."""
+    for c in getattr(scen, "INTERPHASE_SETUP", []):
+        print(f"interphase setup: {c[:100]}", file=sys.stderr, flush=True)
+        rc, out = _ssh_run(c, timeout=240)
+        if rc != 0:
+            print(f"interphase setup FAILED (rc={rc}): {out.strip()[:400]}", file=sys.stderr, flush=True)
+            return False
+    return True
 
 
 def _setup(scen) -> bool:

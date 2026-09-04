@@ -102,6 +102,7 @@ def test_unknown_host_key_is_explained_with_the_user_terminal_remedy():
     msg = _explain_provision_error(exc, host="new.host.edu", user="me")
     assert msg.startswith("UNKNOWN HOST KEY for new.host.edu")
     assert "ssh me@new.host.edu" in msg and "Nothing was started" in msg
+    assert ".." not in msg  # OpenSSH's line ends with a full stop already (live 2026-09-04)
 
 
 def test_changed_host_key_says_changed():
