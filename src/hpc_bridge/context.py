@@ -101,6 +101,9 @@ class AppCtx:
     # The in-terminal Globus login (login.py). None ⇒ no login gating (hermetic tests / unbound dev);
     # lifespan installs the real one, which rides the Compute SDK's own client id + token storage.
     login_flow: LoginFlow | None = None
+    # The SSH target a connect_facility just refused with needs_preauth (facility id, target): what
+    # complete_preauth(code) opens the shared connection for. Cleared once opened.
+    pending_preauth: tuple[str, Any] | None = None
     # serializes provision / runner-swap / teardown so concurrent tool calls can't race AppCtx state
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 

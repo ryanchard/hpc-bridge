@@ -11,7 +11,7 @@ from __future__ import annotations
 import shlex
 from typing import Literal
 
-from .facility.remote import NeedsPreauth, SshTarget, is_interactive_auth_failure, ssh_exec
+from .facility.remote import NeedsPreauth, SshTarget, is_interactive_auth_failure, offers_one_time_code, ssh_exec
 from .models import FacilityDetails
 
 
@@ -87,7 +87,7 @@ async def discover_facility_details(target: SshTarget) -> tuple[FacilityDetails,
     rc, out, err = await ssh_exec(target, f"bash -lc {shlex.quote(_PROBE)}")
     if "HPCB_PROBE_BEGIN" not in out:  # never even ran the script (auth/connect failure)
         if is_interactive_auth_failure(rc, err):  # needs a one-time interactive pre-auth, not broken
-            raise NeedsPreauth(target)
+            raise NeedsPreauth(target, otp_ok=offers_one_time_code(err))
         raise RuntimeError(f"discovery probe failed (rc={rc}): {(err or out).strip()[:300]}")
     return parse_probe(out, ssh_host=target.host)
 

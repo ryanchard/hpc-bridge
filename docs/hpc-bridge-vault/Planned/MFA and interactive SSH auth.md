@@ -71,3 +71,18 @@ The harness itself still has no *automated* MFA facility (globus1 is key-only). 
 
 ## See also
 [[Two-channel architecture]] · [[Standing up the endpoint]] · [[facility-remote]] · [[Endpoint reuse and MEP integration]]
+
+## Update 2026-09-04 — one-time codes in-session (`complete_preauth`)
+
+The external-terminal handoff stays for passwords. For a facility whose remaining prompt is a **one-time code**
+(the denial lists `keyboard-interactive` and a key is installed — SDSC Expanse, TACC's token app, Duo passcodes),
+the agent may now ask the user for the CURRENT code and call `complete_preauth(code)`: `preauth.py` opens the
+ControlMaster with OpenSSH's `SSH_ASKPASS` hook (`SSH_ASKPASS_REQUIRE=force`), a helper that answers a code-shaped
+prompt from a 0600 file and REFUSES any prompt mentioning a password (→ `needs_terminal` with the manual command).
+Rationale: the same trade as the Globus paste code — single-use, expires in seconds, a transcript that holds it
+leaks nothing reusable. Guards: code shape `^[A-Za-z0-9]{4,16}$` (a pasted password is rejected before any ssh);
+the code is never in argv, logs or notices; the temp dir is removed after the attempt. `connect_facility`'s
+`needs_preauth` result carries `preauth_code_ok` so the agent knows which case it is; `AppCtx.pending_preauth`
+remembers the target. Exercised on Expanse: the probe's denial `(gssapi-with-mic,keyboard-interactive,hostbased)`.
+Follow-on: Duo *push* (no code; wait for approval) can ride the same askpass hook by answering the menu prompt.
+
