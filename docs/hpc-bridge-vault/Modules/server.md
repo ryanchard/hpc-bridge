@@ -49,3 +49,6 @@
 
 ## See also
 [[Two-channel architecture]] · [[Warmth, the canary & cold-start]] · [[Resource shapes & the spend floor]] · [[The MCP tools]] · [[login]] · [[facility-mep]] · [[runner]] · [[lifecycle]] · [[facility-remote]] · [[Facility catalog]] · [[Configuration]]
+
+> [!note] Split in progress (2026-09-03)
+> Step 1 moved the runtime data types (`AppCtx`, `ShapeRuntime`, `TaskHandle`, `DEFAULT_SHAPE`) to [[context]]; `server` re-exports them. The plan and the remaining steps are in [[Review 2026-09-03 — code quality]] §1.

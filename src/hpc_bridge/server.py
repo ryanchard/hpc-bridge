@@ -7,9 +7,8 @@ import re
 import shlex
 import sys
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
 from pathlib import Path
 
 from mcp.server.fastmcp import Context, FastMCP
@@ -17,6 +16,12 @@ from mcp.server.fastmcp import Context, FastMCP
 from . import dispatch, session_shell
 from .catalog.entry import Allocation, CatalogEntry, CatalogSummary, Compute, Defaults
 from .catalog.parsers import PARSERS
+from .context import (  # noqa: F401 - re-exported: tools + tests import them from here
+    DEFAULT_SHAPE,
+    AppCtx,
+    ShapeRuntime,
+    TaskHandle,
+)
 from .cost import cap_output, estimate_spend
 from .discovery import discover_facility_details
 from .endpoint import EndpointCLI
@@ -36,83 +41,6 @@ from .profile import Profile
 from .runner import CanaryResult, GlobusRunner
 from .session_shell import Session
 from .shapes import SHAPES, shape_config
-
-DEFAULT_SHAPE = "compute"
-
-
-@dataclass
-class ShapeRuntime:
-    """Warm/canary/spend state for ONE resource shape (its own Executor + AMQP sub)."""
-
-    user_endpoint_config: dict
-    runner: GlobusRunner | None = None
-    warm_since: float | None = None
-    warm_confirmed_at: float | None = None
-    # When this block first went 'provisioning' (cleared on warm) — the grace clock for the #32
-    # pilot-rejection hint, so a not-yet-visible pilot during normal cold-start isn't cried as rejected.
-    provisioning_since: float | None = None
-    spend_accrued: float = 0.0
-    last_canary: CanaryResult | None = None
-    # Set when user_endpoint_config changed under a live runner (e.g. a new partition): the
-    # cached Executor captured the old config at build time, so _runner_for must rebuild it.
-    runner_stale: bool = False
-    # A recorded NO-ACCOUNT refusal (the MEP could not map our identity). Sticky: later calls return
-    # it without re-submitting — a rapid re-submit got a transient RESOURCE_CONFLICT from the web
-    # service (live, 2026-09-03) that flipped the verdict back to 'allocating nodes…'. Cleared when the
-    # runtime is dropped (re-bind/teardown) or a new login lands (_forget_identity_verdicts).
-    no_account: str | None = None
-    # Consecutive TRANSIENT dispatch refusals (RESOURCE_CONFLICT). One is a race; three in a row means
-    # another session with the same Globus identity holds/starts this endpoint, or the manager is
-    # wedged — the 'call again' hint must stop (a model sweep showed Sonnet retrying 7× on it).
-    transient_conflicts: int = 0
-    # Deterministic spend floor: a scheduler compute shape may not start a block until spend is
-    # explicitly acknowledged via ensure_endpoint_up(confirm_spend=True). Persists for the
-    # session once given (no re-nagging); cleared on stop/reset when the shape state is dropped.
-    spend_confirmed: bool = False
-
-
-@dataclass
-class TaskHandle:
-    """A dispatched command still running past the client sync-wait — a poll handle (phase="running").
-    Its future lives on the shape's long-lived Executor, so poll_task can retrieve the result whenever
-    it resolves; the running task also keeps the block busy (a warmth signal) until it finishes."""
-
-    future: object  # concurrent.futures.Future from the Executor (opaque, to avoid the SDK import here)
-    shape: str
-    session_id: str
-    command: str
-    submitted_at: float
-    ceiling_s: float
-
-
-@dataclass
-class AppCtx:
-    facility: Facility
-    profile: Profile
-    # Catalog machine id bound by connect_facility (the agentic path); None when the facility was
-    # fixed at startup (HPC_BRIDGE_MACHINE/FACILITY) or is local dev.
-    machine: str | None = None
-    state: EndpointState = field(default_factory=EndpointState)
-    scratch_root: str = "~/.hpc-bridge"
-    charge_factor: float = 0.0
-    max_output_chars: int = 1_000_000
-    shapes: dict[str, ShapeRuntime] = field(default_factory=dict)
-    # Live long-task handles (phase="running") keyed by task_id. The future lives on the shape's
-    # Executor; poll_task resolves it. Drained when the block goes away (swap/stop/connect/teardown).
-    tasks: dict[str, TaskHandle] = field(default_factory=dict)
-    task_seq: int = 0  # monotonic task-id counter (bumped under app.lock)
-    # Session-local facilities the agent supplied for machines NOT in the catalog (the Socratic
-    # fallback) — keyed by the id passed to connect_facility. Never written to the shared index.
-    session_facilities: dict[str, CatalogEntry] = field(default_factory=dict)
-    # BYO configs supplied this session but not yet PROVEN (login-shape canary answered) — written to
-    # facilities.json only then (decision 2026-09-03: "proven", not "accepted"): facility id -> (ssh_host, details)
-    pending_facility_cache: dict[str, tuple[str, dict]] = field(default_factory=dict)
-    runner_factory: Callable[..., GlobusRunner] = GlobusRunner
-    # serializes provision / runner-swap / teardown so concurrent tool calls can't race AppCtx state
-    # The in-terminal Globus login (login.py). None ⇒ no login gating (hermetic tests / unbound dev);
-    # lifespan installs the real one, which rides the Compute SDK's own client id + token storage.
-    login_flow: LoginFlow | None = None
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 def _require_env(name: str) -> str:
