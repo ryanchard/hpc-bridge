@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from hpc_bridge import binding
+from hpc_bridge import binding, connect
 from hpc_bridge import login as login_mod
 from hpc_bridge.login import FLOW_TTL_S, LoginFlow, required_scopes
 from hpc_bridge.profile import Profile
@@ -316,7 +316,7 @@ async def test_connect_gate_runs_before_the_catalog_read(monkeypatch):
         raise AssertionError("catalog must not be touched before the login gate")
 
     monkeypatch.setattr(binding, "make_catalog", no_catalog)
-    monkeypatch.setattr(server, "_propose_or_ask", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no SSH probe before login")))
+    monkeypatch.setattr(connect, "_propose_or_ask", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no SSH probe before login")))
     res = await server._connect_facility(app, "anything", ssh_host="login.example.edu")
     assert res.phase == "needs_login"
 
