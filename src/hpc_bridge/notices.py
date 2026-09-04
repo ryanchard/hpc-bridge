@@ -27,6 +27,28 @@ _SSH_AUTH_DENIED = re.compile(
     re.IGNORECASE,
 )
 
+# OpenSSH's host-key refusals (StrictHostKeyChecking default + BatchMode): the fix is the USER's own ssh.
+_HOST_KEY_UNKNOWN = re.compile(
+    r"host key verification failed|no \S+ host key is known|remote host identification has changed"
+    r"|host key for \S+ has changed",
+    re.IGNORECASE,
+)
+
+
+def _first_contact_note(fac) -> str:
+    """What a fresh SSH bootstrap is about to trust, in the transcript: the login `user@host` and the shell
+    line (`env_setup`) that will run there. A registry entry or a `details=` used to be executed unseen
+    (security review 2026-09-04, A2/C-1)."""
+    cli = getattr(fac, "cli", None)
+    target = getattr(cli, "target", None)
+    if target is None:
+        return ""
+    who = f"{target.user}@{target.host}" if getattr(target, "user", None) else str(target.host)
+    env_setup = getattr(cli, "env_setup", None) or "(none)"
+    pinned = " (host pinned by HPC_BRIDGE_SSH_HOST)" if (config.ssh_host() or "") else ""
+    return f"first contact over SSH: {who}{pinned}; env_setup run there: {env_setup!r}. "
+
+
 def _explain_provision_error(exc: BaseException, fac=None, *, host: str | None = None,
                              user: str | None = None, fallback: str | None = None) -> str:
     """Turn a bootstrap failure into what a newcomer can act on. The raw text names an internal step
@@ -37,7 +59,8 @@ def _explain_provision_error(exc: BaseException, fac=None, *, host: str | None =
     low = raw.lower()
     ssh_line = raw.rsplit("failed: ", 1)[-1].strip() if "failed: " in raw else raw
     # ssh prefixes the verdict with warnings ("Identity file … not accessible") — quote the verdict line
-    verdict = [ln for ln in ssh_line.splitlines() if "permission denied" in ln.lower() or "denied" in ln.lower()]
+    verdict = [ln for ln in ssh_line.splitlines()
+               if "permission denied" in ln.lower() or "denied" in ln.lower() or "host key" in ln.lower()]
     if verdict:
         ssh_line = verdict[-1].strip()
     cli = getattr(fac, "cli", None)
@@ -56,6 +79,15 @@ def _explain_provision_error(exc: BaseException, fac=None, *, host: str | None =
             "connect_facility again; on a multi-factor facility, pre-open a session in your own terminal "
             f"first. The login name came from {src}. Nothing was started or billed."
         )
+    if _HOST_KEY_UNKNOWN.search(raw):
+        who = f"{user}@{host}" if user else host
+        changed = "identification has changed" in low or ("host key for" in low and "changed" in low)
+        why = ("its host key has CHANGED since you last connected — verify the new fingerprint with the facility "
+               "before trusting it" if changed else
+               "its host key is not in your ~/.ssh/known_hosts yet")
+        return (f"UNKNOWN HOST KEY for {host}: {ssh_line[:200]}. hpc-bridge connects only to hosts your own ssh "
+                f"already trusts, and {why}. Verify the fingerprint and connect once from your own terminal "
+                f"(`ssh {who}`), which saves the key; then call connect_facility again. Nothing was started or billed.")
     if "permission denied" in low:  # a denial from the remote FILESYSTEM (quota, read-only home), not from sshd
         return (f"REMOTE FILESYSTEM refused a write on {host}: {ssh_line[:200]}. The login worked; the home "
                 "directory is over quota, read-only, or not writable. Free space or fix permissions there, then "

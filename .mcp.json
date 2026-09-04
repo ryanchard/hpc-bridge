@@ -5,6 +5,7 @@
       "command": "${CLAUDE_PLUGIN_ROOT}/bin/run-with-uv",
       "args": [
         "run",
+        "--locked",
         "--directory",
         "${CLAUDE_PLUGIN_ROOT}",
         "--extra",

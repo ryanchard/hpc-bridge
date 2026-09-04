@@ -25,8 +25,8 @@ from .context import AppCtx, _has_login_shape
 from .discovery import discover_facility_details
 from .facility.remote import NeedsPreauth, SshTarget
 from .lifecycle import ensure_warm
-from .models import ConnectFacilityResult, FacilityDetails
-from .notices import _explain_provision_error, _needs_login_result, _needs_preauth_result
+from .models import ConnectFacilityResult, FacilityDetails, validate_host
+from .notices import _explain_provision_error, _first_contact_note, _needs_login_result, _needs_preauth_result
 from .scheduler_ops import LoginRunner
 from .warmth import _drop_all_shapes
 
@@ -89,6 +89,11 @@ async def _connect_facility(
     # the catalog on a fresh install would run the SDK's OWN command-line login: a URL on stdout and
     # input() on stdin — i.e. the MCP transport. A phase, not a prompt: the agent shows the link, the
     # user's browser completes it, the next call proceeds. (login_required() is a local SQLite read.)
+    if ssh_host:
+        try:
+            ssh_host = validate_host(ssh_host)
+        except ValueError as exc:
+            return ConnectFacilityResult(phase="failed", facility=facility, notice=f"hpc-bridge error: {exc}")
     if app.login_flow is not None and await asyncio.to_thread(app.login_flow.login_required):
         start, status = await login_gate._start_login_and_wait(app.login_flow)
         if status != "done":
@@ -131,6 +136,9 @@ async def _connect_facility(
             # know (or when it is unreachable). Used with NO SSH probe; bootstrap then reuses the online
             # endpoint over the web. A stale/invalid cache falls through to the probe.
             cached = binding._facility_store().get(ssh_host or facility)
+            if cached is not None and ssh_host and cached.get("ssh_host") != ssh_host:
+                # a record whose host is not the host it is filed under must never redirect the bootstrap (C-5)
+                cached = None
             if cached is not None:
                 try:
                     entry = binding._entry_from_details(facility, FacilityDetails(**cached))
@@ -183,13 +191,14 @@ async def _connect_facility(
             block = await warmth._provision(app, "login", force_canary=True)
         except Exception as exc:  # noqa: BLE001 - provisioning unavailable (e.g. non-Linux host)
             notice = _explain_provision_error(exc, fac)
-            if notice.startswith("CANNOT REACH") and await asyncio.to_thread(_drop_dead_pin, fac):
+            if notice.startswith(("CANNOT REACH", "UNKNOWN HOST KEY")) and await asyncio.to_thread(_drop_dead_pin, fac):
                 notice += " (The remembered login-node pin was dropped: the next connect resolves the facility's host afresh.)"  # noqa: E501
             return ConnectFacilityResult(phase="failed", facility=facility, notice=notice)
         if block == "warm":
             _commit_proven_facility(app, facility)
     reused = app.state.reused  # reattached to an already-online endpoint (zero SSH), not a fresh bootstrap
-    reuse_note = "reused the already-online endpoint (zero-SSH reconnect). " if reused else ""
+    reuse_note = ("reused the already-online endpoint (zero-SSH reconnect). " if reused
+                  else _first_contact_note(fac))
     if prior_spend > 0:  # a re-bind released a warm block: say what it cost rather than lose the number
         reuse_note = f"the previous facility's shapes were released (session spend so far ≈ {prior_spend:.2f}). " + reuse_note  # noqa: E501
     if block != "warm":  # login node still coming up — nothing to read yet

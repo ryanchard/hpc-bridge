@@ -6,6 +6,7 @@ Reference/Configuration.md is the human-readable twin of the accessors below.
 from __future__ import annotations
 
 import os
+import stat
 import sys
 from pathlib import Path
 
@@ -95,8 +96,10 @@ def _short_control_dir(preferred: str) -> str:
         return preferred
     for cand in (str(Path.home() / ".hpc-bridge" / "cm"), f"/tmp/hpcb-cm-{os.getuid()}"):
         if len(cand) <= _CONTROL_PATH_BUDGET:
-            if os.path.exists(cand) and os.stat(cand).st_uid != os.getuid():
-                continue  # a shared-host squat on our predictable name: never put our socket in someone else's dir
+            if os.path.lexists(cand):
+                st = os.lstat(cand)  # lstat: a planted SYMLINK at our predictable name must not pass as ours (B-04)
+                if stat.S_ISLNK(st.st_mode) or st.st_uid != os.getuid():
+                    continue  # a shared-host squat on our predictable name: never put our socket in someone else's dir
             return cand
     return preferred  # nothing short exists; ssh will say so
 

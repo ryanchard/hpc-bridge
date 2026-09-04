@@ -61,19 +61,31 @@ class SearchCatalog:
             by_id = None
         if by_id is not None:
             return by_id
-        cached = self._from_cache(machine_id)
-        if cached is not None:
-            return cached
-        if transport is not None:
+        if transport is not None:  # the registry could not answer: the offline copy is the only resilience
+            cached = self._from_cache(machine_id)
+            if cached is not None:
+                return cached
             raise transport
+        # The registry answered and does not have it: a curator's retraction must take effect, and a file
+        # planted in the cache dir must not impersonate a curated entry (security review 2026-09-04, C-3).
+        self._forget(machine_id)
         return None
+
+    def _forget(self, *keys: str) -> None:
+        for k in keys:
+            try:
+                self._cache_file(k).unlink()
+            except FileNotFoundError:
+                pass
 
     def _remember(self, entry: CatalogEntry, *keys: str) -> None:
         # write-through under EVERY name it was asked by (bare id, subject) so the offline cache hits
         # the same names the live registry resolves (found in review: id hits were cached under the
         # subject only, so a later offline get("anvil") missed)
         for k in {*keys, entry.subject, entry.id}:
-            self._cache_file(k).write_text(entry.model_dump_json())
+            f = self._cache_file(k)
+            f.write_text(entry.model_dump_json())
+            f.chmod(0o600)
 
     async def _by_id(self, machine_id: str) -> CatalogEntry | None:
         # connect_facility("anvil") should work, not only the full subject "purdue:anvil" — match

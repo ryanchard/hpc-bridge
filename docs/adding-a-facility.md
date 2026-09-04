@@ -13,6 +13,11 @@ fresh install can list facilities with no login. The plugin never writes to it. 
 3. Open a pull request. A curator ingests it with `hpc-bridge-catalog <index-uuid> <seed>.yaml`
    (idempotent, keyed by subject) and it is live for everyone at the next `list_facilities()`.
 
+Because an entry is trusted code, write access to the index is the trust root. Today the index is a
+Globus Search trial index owned by one maintainer identity; before the first stable release it moves to
+a production index owned by a maintainers group, and the seeds in this repository remain the public,
+reviewable record of what it contains.
+
 An un-catalogued cluster works today without any of this: give the agent an SSH login host and it
 discovers the configuration and caches it locally. For a catalogued id the registry always wins over that
 local cache, so curated entries are the stable ones.

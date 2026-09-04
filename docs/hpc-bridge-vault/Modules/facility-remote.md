@@ -45,3 +45,15 @@ the `test_39_*` tests). Three changes in `RemoteEndpointCLI`: `_gce` exports `CO
 `start` polls for the UUID for up to 30 s (the detached daemon registers ~3.6 s after `start` returns) via
 `_await_endpoint_id`; a refused `start` whose manager is already running adopts it instead of failing (gce 4.13 exits 73 with
 NOTHING on either stream, so the check is `status(name) == "running"`, not the "Another instance" text). The robust follow-up remains issue #8: read `endpoint.json` / the pid file instead of parsing the table.
+
+## Host trust (security review 2026-09-04)
+
+`SshTarget.argv` no longer overrides `StrictHostKeyChecking` (it was `accept-new`): hpc-bridge trusts exactly what the
+user's own `ssh` trusts — OpenSSH's default refuses an unknown host under `BatchMode`, and any relaxation in
+`~/.ssh/config` applies. An unknown/changed key surfaces as `UNKNOWN HOST KEY` (notices) with the remedy in the user's
+own terminal; while a pin is in use the pin is dropped like `CANNOT REACH`. A login-node PIN (`rebind`) sets
+`HostKeyAlias=<resolved HostName of the alias>` (via `ssh -G`, because known_hosts is keyed by the resolved name, found
+live) so a pin can never redirect the seeded credential to a machine whose key differs. `--` precedes the destination
+in every argv; hosts are allowlisted at the model boundary (`models.SAFE_HOST`) and again in `SshTarget.__post_init__`;
+`preauth_command` is shell-quoted. `teardown(wipe_credentials=True)` is what `teardown_endpoint` now calls.
+

@@ -13,6 +13,11 @@ mapping; ask the facility's support and quote the identity the agent shows. If y
 but logged in with a different, unlinked identity, log out of Globus in your browser and log in with
 the one the facility knows; see [The Globus login](login.md).
 
+**"UNKNOWN HOST KEY for <host>"**. hpc-bridge connects only to hosts your own `ssh` already trusts.
+Open your own terminal, run `ssh <user>@<host>` once, check the fingerprint the facility publishes and
+accept it, then ask the agent to connect again. If the message says the key *changed*, stop and check
+with the facility before accepting anything. Nothing was started or billed.
+
 **"NO SSH ACCESS to <host> as <login name>"** (SSH bootstrap). The login node refused your SSH. The
 message names the login name that was tried and where it came from. You need an account there and
 key-based SSH: put the host's `User` and `IdentityFile` in `~/.ssh/config`, or set

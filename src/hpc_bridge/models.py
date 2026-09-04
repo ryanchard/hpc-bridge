@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import re
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 NodeHours = float
 
@@ -64,6 +65,19 @@ class AllocationOption(BaseModel):
     type: str | None = None  # e.g. CPU / GPU, when the facility distinguishes them
 
 
+# A login host as ssh should see it: a hostname/alias/IPv4 literal. Rejects a leading "-" (which ssh
+# would parse as an OPTION — `-oProxyCommand=…` from a registry entry or a prompt-injected details= is
+# local command execution), whitespace and shell metacharacters (security review 2026-09-04, A3/C-2).
+SAFE_HOST = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$")
+
+
+def validate_host(v: str) -> str:
+    v = (v or "").strip()
+    if not SAFE_HOST.match(v):
+        raise ValueError(f"invalid login host {v!r}: a hostname or ssh alias only (letters, digits, '.', '-', '_')")
+    return v
+
+
 class FacilityDetails(BaseModel):
     """User-supplied config for a facility that isn't in the catalog — the elicitation template for
     `connect_facility`'s `needs_facility_details` phase. The field descriptions ARE the questions to
@@ -75,6 +89,11 @@ class FacilityDetails(BaseModel):
         description="Login host to SSH to for the one-time bootstrap.",
         examples=["anvil.rcac.purdue.edu", "frontier.olcf.ornl.gov"],
     )
+
+    @field_validator("ssh_host")
+    @classmethod
+    def _safe_host(cls, v: str) -> str:
+        return validate_host(v)
     interface: str = Field(
         description="High-speed network interface the compute workers bind to so they can phone "
         "home (address_by_interface). Wrong value ⇒ workers never register.",

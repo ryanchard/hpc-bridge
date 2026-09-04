@@ -22,7 +22,7 @@ from .config import _env_endpoint_id, _require_env
 from .endpoint import EndpointCLI
 from .facility.base import Facility
 from .facility.local import LocalFacility
-from .models import FacilityDetails
+from .models import FacilityDetails, validate_host
 from .state import FacilityStore
 
 
@@ -106,7 +106,7 @@ def _facility_from_entry(entry, *, account: str, pinned_host: str | None = None)
 
     from .facility.remote import profile_from_catalog_entry
 
-    alias = pinned_host or entry.ssh_host
+    alias = validate_host(pinned_host) if pinned_host else entry.ssh_host  # an env pin reaches ssh argv too
     # Login name: optional env override, else read live from ~/.ssh/config (`ssh -G`) — never a
     # *required* boot-env var. The key is deferred to the config's IdentityFile in _slurm_facility.
     user = (config.ssh_user() or "") or _ssh_config_user(alias)

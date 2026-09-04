@@ -61,6 +61,16 @@ class SshTarget:
     # what makes a multi-command discovery sweep cheap. None ⇒ no multiplexing (argv unchanged).
     control_dir: str | None = None
     control_persist: int = 60
+    # After a login-node PIN (rebind to the FQDN the manager landed on) the host key is verified against
+    # the name the USER trusted — the alias they connected to — via OpenSSH's HostKeyAlias. A pin can then
+    # never redirect the bearer credential to a machine whose key differs from the alias's (review A10).
+    host_key_alias: str | None = None
+
+    def __post_init__(self) -> None:
+        # Defence in depth behind the model validators: never let a "-…" or whitespace host reach argv.
+        h = self.host or ""
+        if h.startswith("-") or any(ch.isspace() for ch in h) or not h:
+            raise ValueError(f"invalid ssh host {self.host!r}")
 
     def _control_path(self) -> str:
         # %C hashes localhost/user/host/port: short (fits macOS' ~104-char socket-path limit) and
@@ -76,19 +86,27 @@ class SshTarget:
         opts = ["ssh"]
         if self.key_path:
             opts += ["-i", self.key_path, "-o", "IdentitiesOnly=yes"]
+        # Host keys: hpc-bridge trusts exactly what YOUR ssh trusts. No StrictHostKeyChecking override —
+        # OpenSSH's default (ask) refuses an unknown host under BatchMode, and any relaxation you made in
+        # ~/.ssh/config applies. `accept-new` used to accept an attacker-chosen registry/details= host and
+        # ship the seeded Globus tokens to it (security review 2026-09-04, A1/B-06/C-1).
         opts += [
             "-o", "BatchMode=yes",
             "-o", f"ConnectTimeout={self.connect_timeout}",
-            "-o", "StrictHostKeyChecking=accept-new",
         ]
+        if self.host_key_alias:
+            opts += ["-o", f"HostKeyAlias={self.host_key_alias}"]
         if self.control_dir:
             opts += [
                 "-o", "ControlMaster=auto",
                 "-o", f"ControlPath={self._control_path()}",
                 "-o", f"ControlPersist={self.control_persist}",
             ]
-        opts += [f"{self.user}@{self.host}" if self.user else self.host, remote_cmd]
+        opts += ["--", self._destination(), remote_cmd]  # `--`: the destination can never be read as an option
         return opts
+
+    def _destination(self) -> str:
+        return f"{self.user}@{self.host}" if self.user else self.host
 
     def control_argv(self, request: str) -> list[str]:
         """argv for an `ssh -O <request>` control command (e.g. 'exit', 'check') against this
@@ -96,7 +114,7 @@ class SshTarget:
         return [
             "ssh", "-O", request,
             "-o", f"ControlPath={self._control_path()}",
-            f"{self.user}@{self.host}" if self.user else self.host,
+            "--", self._destination(),
         ]
 
     def preauth_command(self) -> str:
@@ -109,14 +127,30 @@ class SshTarget:
                 "-o", f"ControlPath={self._control_path()}", "-o", "ControlPersist=1h"]
         if self.key_path:
             opts += ["-i", self.key_path]
-        opts.append(f"{self.user}@{self.host}" if self.user else self.host)
-        return " ".join(opts)
+        opts += ["--", self._destination()]
+        return " ".join(shlex.quote(o) for o in opts)  # pasted into the user's shell: every token quoted (A4)
 
 
 # Teardown SSH ops (gce stop, squeue, scancel) hit a possibly-loaded login node with *fresh*
 # connections; bound them tighter than the 120s default so stop_endpoint releases the allocation
 # promptly instead of dragging on a slow sshd.
 _TEARDOWN_SSH_S = 30.0
+
+
+def _resolved_hostname(host: str) -> str:
+    """The HostName OpenSSH would connect to for `host` (an alias resolves through ~/.ssh/config) — the
+    name known_hosts keys the host key by. Falls back to `host` itself when `ssh -G` is unavailable."""
+    import subprocess
+
+    try:
+        out = subprocess.run(["ssh", "-G", "--", host], capture_output=True, text=True, timeout=10, check=False).stdout
+    except Exception:  # noqa: BLE001 - no ssh binary / odd host -> the name as given
+        return host
+    for line in out.splitlines():
+        k, _, v = line.partition(" ")
+        if k.lower() == "hostname" and v.strip():
+            return v.strip()
+    return host
 
 
 async def ssh_exec(
@@ -549,8 +583,12 @@ class RemoteEndpointCLI:
         return rc == 0
 
     def rebind(self, host: str) -> None:
-        """Re-point this CLI at a specific host (the pinned FQDN) for reconnect."""
-        self.target = replace(self.target, host=host)
+        """Re-point this CLI at a specific host (the pinned FQDN) for reconnect. The host KEY is still
+        checked against the name the user trusted (HostKeyAlias), so a pin cannot redirect to a
+        different machine. known_hosts is keyed by the RESOLVED HostName (an ssh-config alias such as
+        `globus1` stores its key under `globus1.cs.uchicago.edu`), hence `ssh -G` (found live 2026-09-04)."""
+        alias = self.target.host_key_alias or _resolved_hostname(self.target.host)
+        self.target = replace(self.target, host=host, host_key_alias=alias)
 
     async def close(self) -> None:
         """Close the SSH ControlMaster for this target (best-effort, bounded).

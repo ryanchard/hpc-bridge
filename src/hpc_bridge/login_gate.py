@@ -13,7 +13,7 @@ import asyncio
 
 from . import config
 from .context import AppCtx
-from .login import LoginFlow, LoginMode, LoginStart
+from .login import LoginFlow, LoginMode, LoginStart, globus_identity_label
 from .models import LoginStatus
 from .notices import _login_notice
 from .warmth import _forget_identity_verdicts
@@ -41,7 +41,8 @@ async def _authenticate(app: AppCtx, force: bool = False, mode: LoginMode | None
     start, status = await _start_login_and_wait(flow, mode)
     if status == "done":
         _forget_identity_verdicts(app)
-        return LoginStatus(phase="logged_in", notice="Globus login completed in the browser; carry on.")
+        return LoginStatus(phase="logged_in",
+                           notice="Globus login completed in the browser" + await _as_identity() + "; carry on.")
     return LoginStatus(phase="needs_login", login_url=start.login_url, login_mode=start.mode,
                        notice=_login_notice(start, flow.error,
                                             waited_s=config.login_wait_s() if status == "waiting" else None))
@@ -56,4 +57,15 @@ async def _complete_login(app: AppCtx, code: str) -> LoginStatus:
         return LoginStatus(phase="failed", notice=f"login code not accepted: {type(exc).__name__}: {exc}"[:300]
                            + " — call authenticate() for a fresh link.")
     _forget_identity_verdicts(app)
-    return LoginStatus(phase="logged_in", notice="Globus login complete. Continue: connect_facility again.")
+    return LoginStatus(phase="logged_in",
+                       notice="Globus login complete" + await _as_identity() + ". Continue: connect_facility again.")
+
+
+async def _as_identity() -> str:
+    """" as <username>" for a login that just landed — so a foreign identity completing the link (anyone who
+    held the URL during its window) is visible at once in the transcript (security review 2026-09-04, B-02)."""
+    try:
+        label = await asyncio.to_thread(globus_identity_label)
+    except Exception:  # noqa: BLE001 - the label is a courtesy; the login itself already succeeded
+        label = None
+    return f" as {label}" if label else ""
