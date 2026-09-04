@@ -30,7 +30,7 @@ class FakeFacility:
 _FAKE_UUID = "11111111-2222-3333-4444-555555555555"
 
 
-def fake_entry(*, id: str, facility_key: str, description: str = "a machine") -> CatalogEntry:
+def fake_entry(*, id: str, facility_key: str, description: str = "a machine") -> CatalogEntry:  # noqa: A002 - mirrors the entry's field name
     """Build a valid CatalogEntry for tests. Aliases are passed to FakeCatalog(aliases=...),
     not to the entry — the schema has no alias field; aliases are a loader/index concern."""
     return CatalogEntry.model_validate({
@@ -54,7 +54,7 @@ def fake_entry(*, id: str, facility_key: str, description: str = "a machine") ->
 MEP_UUID = "da3df250-4013-4d69-942c-eef1568f860c"
 
 
-def fake_mep_entry(*, id: str = "globus1", facility_key: str = "globus", **over) -> CatalogEntry:
+def fake_mep_entry(*, id: str = "globus1", facility_key: str = "globus", **over) -> CatalogEntry:  # noqa: A002 - mirrors the entry's field name
     """A facility-MEP entry (the globus1 testbed shape): compute_mep_uuid, NO ssh_host, NO allocation,
     worker-side $HOME scratch, the unconditional version-pinned worker_init, a warm block."""
     raw = {

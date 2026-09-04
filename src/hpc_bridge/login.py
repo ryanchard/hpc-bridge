@@ -286,9 +286,9 @@ def _default_app_factory(manager):
     """The REAL app: the Compute SDK's client id + token storage (so the endpoint can refresh what
     we obtain), our scope set, and — when given — our capturing loopback manager. With
     manager=None it is a non-prompting instance for `login_required()` only."""
-    from globus_sdk import GlobusAppConfig, UserApp
     from globus_compute_sdk.sdk.auth.globus_app import DEFAULT_CLIENT_ID
     from globus_compute_sdk.sdk.auth.token_storage import get_token_storage
+    from globus_sdk import GlobusAppConfig, UserApp
 
     config = GlobusAppConfig(
         token_storage=get_token_storage(),

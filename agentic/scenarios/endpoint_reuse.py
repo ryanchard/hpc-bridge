@@ -21,7 +21,7 @@ confirmed live. The grader (`reuse_signalled`) keys on the `reused` FIELD only a
 bring-up → login work → reconnect structure (see its docstring for how #39 shapes the first connect).
 Login-shape only (no billed block): cheap (~3 min) and fast.
 """
-from invariants import Result, Trace, _UP_PHASES
+from invariants import _UP_PHASES, Result, Trace
 
 PROMPT = (
     "Connect me to the HPC facility with login host `globus1.cs.uchicago.edu` — use "

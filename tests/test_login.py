@@ -130,6 +130,7 @@ def test_expired_worker_cannot_clobber_the_rearmed_flow(monkeypatch):
     # review finding: after the TTL expires and a new attempt is armed, the OLD worker wakes up failing
     # and used to mark the NEW flow failed (and orphan its listener). Generation-guarded now.
     import threading as _th
+
     from hpc_bridge import login_flow_manager as lfm
     monkeypatch.setattr(lfm.CapturingLocalServerManager, "build", staticmethod(lambda *, on_url: _FakeManager(on_url)))
     monkeypatch.setattr(login_mod, "_browser_available", lambda: True)
@@ -247,8 +248,8 @@ async def test_connect_proceeds_when_logged_in_and_when_ungated(monkeypatch):
         app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, "", ""))
         entry = fake_entry(id="anvil", facility_key="purdue")
         entry.allocation = None
-        monkeypatch.setattr(server, "make_catalog", lambda: FakeCatalog([entry]))
-        monkeypatch.setattr(server, "_facility_from_entry", lambda e, *, account: f)
+        monkeypatch.setattr(server, "make_catalog", lambda: FakeCatalog([entry]))  # noqa: B023 - bound per iteration by the immediate call
+        monkeypatch.setattr(server, "_facility_from_entry", lambda e, *, account: f)  # noqa: B023 - bound per iteration by the immediate call
         res = await server._connect_facility(app, "anvil")
         assert res.phase == "needs_account", (flow, res.notice)
 
@@ -281,6 +282,7 @@ def test_loopback_handler_never_logs_the_request_line():
     # real server that lands in logs/transcripts. Our manager installs a quiet handler and keeps the
     # server handle for abort(). (Binds an ephemeral localhost port; no network beyond that.)
     from globus_sdk.login_flows.local_server_login_flow_manager.local_server import RedirectHandler
+
     from hpc_bridge.login_flow_manager import CapturingLocalServerManager
 
     m = CapturingLocalServerManager.build(on_url=lambda u: None)
@@ -326,8 +328,9 @@ async def test_authenticate_mode_override_forces_paste():
 
 
 def test_wait_returns_done_when_the_browser_flow_lands(monkeypatch):
-    from hpc_bridge import login_flow_manager as lfm
     import threading as _th
+
+    from hpc_bridge import login_flow_manager as lfm
     monkeypatch.setattr(lfm.CapturingLocalServerManager, "build", staticmethod(lambda *, on_url: _FakeManager(on_url)))
     monkeypatch.setattr(login_mod, "_browser_available", lambda: True)
     go = _th.Event()

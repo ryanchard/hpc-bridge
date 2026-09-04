@@ -59,7 +59,7 @@ async def test_bundled_rejects_a_malformed_entry():
     bad = FIX / "bad.yaml"
     bad.write_text("- id: x\n")  # missing required fields
     try:
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: B017 - any loader error is the point of the test
             BundledCatalog(bad)
     finally:
         bad.unlink()

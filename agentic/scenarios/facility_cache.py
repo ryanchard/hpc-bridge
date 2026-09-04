@@ -18,7 +18,7 @@ re-probe (a second `proposed_facility_details`).
 STATUS: GREEN with the local-discovery cache live (d61c068). Login-shape only, no billed block:
 ~6 min for the pair.
 """
-from invariants import Result, Trace, _UP_PHASES
+from invariants import _UP_PHASES, Result, Trace
 
 # Each phase is its own agent session. {facility} is this run's unique id; the cache is keyed by the
 # SSH host, so phase 2 must reconnect with the same login host for a hit — the prompt supplies it.

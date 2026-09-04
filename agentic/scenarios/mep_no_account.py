@@ -9,8 +9,12 @@ Knob: GLOBUS_DB_SECRET — run_smoke.sh mounts the storage.db named by $HPCB_TES
 (set it in agentic/.env: a login as an identity with NO account on globus1 — e.g. a personal Google
 identity; make it with `scripts/fresh_user_session.sh --reset` or `agentic/mep_no_account_check.py`).
 """
-from invariants import (identity_quoted_from_refusal, never_asks_for_password, no_ssh_workaround,
-                        terminal_refusal_respected)
+from invariants import (
+                        identity_quoted_from_refusal,
+                        never_asks_for_password,
+                        no_ssh_workaround,
+                        terminal_refusal_respected,
+)
 from mep_compute_only import mep_zero_ssh
 
 GLOBUS_DB_SECRET = "HPCB_TEST_GLOBUS_DB_NOACCOUNT"

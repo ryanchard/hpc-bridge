@@ -54,7 +54,7 @@ class ToolCall:
     def of(
         cls,
         raw_name: str,
-        input: dict[str, Any] | None = None,
+        input: dict[str, Any] | None = None,  # noqa: A002 - `input` mirrors the SDK's ToolUseBlock field name
         result: dict[str, Any] | None = None,
         answers: dict[str, str] | None = None,
         phase: int = 0,

@@ -609,10 +609,11 @@ async def test_stop_dispatches_pbs_release_cmd_when_facility_scheduler_is_pbs(mo
     # _release_blocks_over_login must branch on the facility's scheduler (PBS uses
     # qstat/qdel, never squeue/scancel) so a PBS block is actually cancelled, not silently
     # missed by a Slurm-only command.
+    from types import SimpleNamespace
+
     from hpc_bridge import server
     from hpc_bridge.models import ShellOutcome
     from hpc_bridge.server import ShapeRuntime, _stop_endpoint
-    from types import SimpleNamespace
 
     class _PbsFacility(FakeFacility):
         def __init__(self):
@@ -852,8 +853,8 @@ async def test_make_facility_reconnects_to_pinned_login_node(monkeypatch):
     import hpc_bridge.server as server
     import hpc_bridge.state as state_mod
     from hpc_bridge.catalog.bundled import BundledCatalog
-    from hpc_bridge.state import EndpointRecord
     from hpc_bridge.server import make_facility
+    from hpc_bridge.state import EndpointRecord
 
     rec = EndpointRecord(
         endpoint_id="eid", login_host="login05.anvil.rcac.purdue.edu",
@@ -1164,9 +1165,10 @@ async def test_run_shell_runs_after_spend_confirmed():
 
 
 def test_pbs_entry_is_supported():
-    from hpc_bridge.server import _unsupported_entry_reason
-    from hpc_bridge.catalog.entry import CatalogEntry, Compute, Defaults
     import datetime
+
+    from hpc_bridge.catalog.entry import CatalogEntry, Compute, Defaults
+    from hpc_bridge.server import _unsupported_entry_reason
     entry = CatalogEntry(
         id="polaris", facility_key="alcf", facility="ALCF", description="d",
         display_name="Polaris", ssh_host="polaris",

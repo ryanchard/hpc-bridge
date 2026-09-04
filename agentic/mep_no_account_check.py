@@ -65,6 +65,7 @@ def main(argv: list[str]) -> int:
 
     # who am I — and is a mapped identity hiding in my linked set?
     from globus_sdk import AuthClient
+
     from hpc_bridge.login import _default_app_factory
 
     # The EFFECTIVE identity is what the MEP maps ("Globus effective identity" in the 422): logging in
@@ -91,8 +92,7 @@ def main(argv: list[str]) -> int:
     from hpc_bridge.endpoint import EndpointCLI
     from hpc_bridge.facility.local import LocalFacility
     from hpc_bridge.profile import Profile
-    from hpc_bridge.server import (AppCtx, _connect_facility, _ensure_endpoint_up, _shape_runtime,
-                                   _teardown_endpoint)
+    from hpc_bridge.server import AppCtx, _connect_facility, _ensure_endpoint_up, _shape_runtime, _teardown_endpoint
 
     async def run() -> int:
         app = AppCtx(facility=LocalFacility(EndpointCLI(user_dir=fresh / "globus_compute")), profile=Profile())

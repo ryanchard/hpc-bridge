@@ -192,7 +192,7 @@ def test_behaviour_home_root_with_quoted_remainder_keeps_env_fingerprint_intact(
     assert r.returncode == 0 and "HB_OK" in r.stdout
     assert r.stderr.strip() == "", r.stderr
     env_file = tmp_path / "sub dir" / ".hpc-bridge" / "sessions" / "default" / ".env"
-    lines = [l for l in env_file.read_text().splitlines() if l.strip()]
+    lines = [ln for ln in env_file.read_text().splitlines() if ln.strip()]
     assert "export HB_ONLY=1" in lines
-    assert not any(l.startswith(("export PATH=", "export HOME=")) for l in lines), lines  # no ambient replay
+    assert not any(ln.startswith(("export PATH=", "export HOME=")) for ln in lines), lines  # no ambient replay
     assert len(lines) < 5, lines

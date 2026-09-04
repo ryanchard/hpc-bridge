@@ -1,4 +1,4 @@
-from hpc_bridge.facility.base import Facility, EndpointHandle
+from hpc_bridge.facility.base import EndpointHandle, Facility
 from hpc_bridge.profile import Profile
 from tests.fakes import FakeFacility
 

@@ -2,8 +2,13 @@
 
     python -m pytest agentic/harness/test_pool_and_cluster_ops.py -q
 """
-from cluster_ops import (capture_logs_cmd, delete_endpoint_cmd, endpoint_uuid_cmd, scoped_cancel_cmd,
-                         uep_dirs_cleanup_cmd)
+from cluster_ops import (
+    capture_logs_cmd,
+    delete_endpoint_cmd,
+    endpoint_uuid_cmd,
+    scoped_cancel_cmd,
+    uep_dirs_cleanup_cmd,
+)
 from pool import PoolClaims
 
 POOL = [f"hpcbridge-test-{i:02d}" for i in range(4)]
@@ -76,3 +81,23 @@ def test_uep_dir_cleanup_is_scoped_to_this_runs_uuids():
     assert "uep.11111111-2222" in two and f"uep.{EID}" in two
     none = uep_dirs_cleanup_cmd([])
     assert "rm" not in none and "removing nothing" in none
+
+
+def test_harness_cancel_matches_the_products_marker_scoping():
+    # The harness' scoped_cancel_cmd is a DELIBERATE copy of server._release_cmd (no import: the harness
+    # must survive a broken product). Pin the one thing that matters: both cancel ONLY jobs carrying the
+    # endpoint's `uep.<eid>` marker, never a whole user (code-quality review 2026-09-03).
+    import re
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+    from cluster_ops import scoped_cancel_cmd
+
+    from hpc_bridge.server import _release_cmd
+    eid = "abcd1234-0000-4000-8000-000000000001"
+    for scheduler in ("slurm", "pbs"):
+        prod, harn = _release_cmd(scheduler, eid), scoped_cancel_cmd(scheduler, [eid])
+        for cmd in (prod, harn):
+            assert f"uep.{eid}" in cmd
+            assert not re.search(r"(scancel|qdel)\s+-u\b", cmd)   # never user-wide
+            assert ("scancel $ids" in cmd) if scheduler == "slurm" else ("qdel $ids" in cmd)

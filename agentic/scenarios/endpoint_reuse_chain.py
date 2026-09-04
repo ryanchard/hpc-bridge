@@ -17,7 +17,7 @@ STATUS: GREEN with #20's `reused` signal live — the spec is that phase 1 repor
 the #39 registration-lag retry, tolerated there and reported by `first_details_connect_succeeds`.
 Login-shape only, no billed block: ~6 min for the pair.
 """
-from invariants import Result, Trace, _UP_PHASES
+from invariants import _UP_PHASES, Result, Trace
 
 # Each phase is its own agent session (fresh server). Both phases connect to the SAME ssh_host, so the
 # server computes the same endpoint name (hpc-bridge-<ssh_host> since #27) and phase 2 reattaches to

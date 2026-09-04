@@ -7,8 +7,13 @@ number of attempts. Cheap: no store mounted, no cluster.
 
 Knob: NO_GLOBUS_DB — run_smoke.sh mounts NO storage.db for this scenario.
 """
-from invariants import (calls_bounded, login_link_surfaced, never_asks_for_password,
-                        no_invented_login_code, no_shell_with_login_url)
+from invariants import (
+                        calls_bounded,
+                        login_link_surfaced,
+                        never_asks_for_password,
+                        no_invented_login_code,
+                        no_shell_with_login_url,
+)
 
 NO_GLOBUS_DB = True
 FACILITY_ID = "globus1"

@@ -636,6 +636,7 @@ def test_agent_engaged_counts_poll_task_and_teardown():
 
 def test_trace_from_bundle_stamps_phases_by_distinct_session(tmp_path):
     import json
+
     from trace_adapter import trace_from_bundle
 
     def init(sid):
@@ -706,7 +707,7 @@ def test_spend_gate_enforced_grader():
 def _session_trace(*, verify_reexports: bool = False, reset: bool = True, cleared: bool = True,
                    reset_shape: str = "login") -> Trace:
     root = "/scratch/u/.hpc-bridge/sessions/default"
-    setter = f"mkdir -p hpcb_sess_dir && cd hpcb_sess_dir && export HB_MARK=hpcb-mark-7f3a"
+    setter = "mkdir -p hpcb_sess_dir && cd hpcb_sess_dir && export HB_MARK=hpcb-mark-7f3a"
     verify_cmd = ("export HB_MARK=hpcb-mark-7f3a; " if verify_reexports else "") + "pwd; echo $HB_MARK"
     calls = [
         ToolCall.of("mcp__endpoint__connect_facility", {"facility": "g"}, {"phase": "needs_account"}),
@@ -799,10 +800,19 @@ def test_mep_compute_only_catches_the_failure_modes():
 
 
 # --- stranger / login / refusal graders (2026-09-03) ---------------------------------------
-from invariants import (calls_bounded, identity_quoted_from_refusal, list_before_connect,  # noqa: E402
-                        login_link_surfaced, never_asks_for_password, no_connect_unprompted,
-                        no_invented_login_code, no_shell_with_login_url, no_ssh_workaround,
-                        terminal_refusal_respected, texts_mention)
+from invariants import (  # noqa: E402
+    calls_bounded,
+    identity_quoted_from_refusal,
+    list_before_connect,
+    login_link_surfaced,
+    never_asks_for_password,
+    no_connect_unprompted,
+    no_invented_login_code,
+    no_shell_with_login_url,
+    no_ssh_workaround,
+    terminal_refusal_respected,
+    texts_mention,
+)
 
 
 def test_trace_texts_default_empty_keeps_old_construction_working():
@@ -862,6 +872,7 @@ def test_listing_graders():
 
 def test_build_trace_and_bundle_capture_assistant_text(tmp_path):
     import json
+
     from trace_adapter import build_trace, trace_from_bundle
 
     class TextBlock:

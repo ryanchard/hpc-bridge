@@ -110,7 +110,7 @@ class MEPFacility:
             status = await asyncio.to_thread(
                 lambda: self._client_factory().get_endpoint_status(endpoint_id)
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 - the canary is the real signal; a status hiccup must not read as offline
             # Best-effort: the MEP is administered infrastructure and the dispatch canary is the real
             # liveness check — a status-API error (or a foreign-endpoint read we can't see) must not
             # condemn a live endpoint to 'provisioning'.
