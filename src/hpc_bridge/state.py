@@ -31,6 +31,10 @@ class EndpointRecord:
     key_path: str | None  # None => the config's IdentityFile
     name: str
     provisioned_at: str  # ISO-8601 UTC
+    # True when hpc-bridge itself placed the Globus token store on this login node (bootstrap seeded it because
+    # the remote could not authenticate). Teardown wipes ONLY a store we seeded — never one that was already
+    # there, e.g. a shared account the facility's own endpoint uses (security review follow-up, 2026-09-04).
+    seeded_credentials: bool = False
 
 
 def _key(alias: str, name: str) -> str:

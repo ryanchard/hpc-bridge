@@ -251,3 +251,79 @@ async def test_logged_in_notice_names_the_identity(monkeypatch):
 
 def test_sync_helpers_are_importable():  # keeps `asyncio`/`subprocess` imports honest for the async tests above
     assert asyncio and subprocess
+
+
+# ---- teardown wipes ONLY the token store hpc-bridge seeded (B-03, refined) ------------------------------------
+
+def _bootstrap_parts(tmp_path, monkeypatch, *, remote_db_present):
+    from hpc_bridge.facility.remote import SlurmFacility
+    from hpc_bridge.state import LoginNodeStore
+    from tests.test_remote_facility import _BootstrapCLI, _no_endpoints, _profile
+
+    cli = _BootstrapCLI(status=None, remote_db_present=remote_db_present)
+    wiped = []
+
+    async def _wipe():
+        wiped.append(True)
+
+    cli.wipe_storage_db = _wipe
+    made = tmp_path / "trimmed.db"
+    made.write_bytes(b"db")
+    monkeypatch.setattr(remote, "build_minimal_storage_db", lambda **kw: made)
+    store = LoginNodeStore(tmp_path / "endpoints.json")
+    fac = SlurmFacility(_profile(), cli=cli, client_factory=_no_endpoints, store=store, alias="anvil.rcac.purdue.edu")
+    return fac, cli, store, wiped
+
+
+async def test_teardown_wipes_the_store_hpc_bridge_seeded(tmp_path, monkeypatch):
+    from hpc_bridge.profile import Profile
+
+    fac, cli, store, wiped = _bootstrap_parts(tmp_path, monkeypatch, remote_db_present=False)
+    handle = await fac.bootstrap(Profile(mode="interactive"))
+    assert cli.seeded is not None  # we placed it…
+    assert store.get(alias="anvil.rcac.purdue.edu", name=fac.profile.endpoint_name).seeded_credentials is True
+    await fac.teardown(handle.endpoint_id, wipe_credentials=True)
+    assert wiped == [True]  # …so teardown removes it
+
+
+async def test_teardown_never_wipes_a_store_that_was_already_there(tmp_path, monkeypatch):
+    from hpc_bridge.profile import Profile
+
+    fac, cli, _store, wiped = _bootstrap_parts(tmp_path, monkeypatch, remote_db_present=True)
+    handle = await fac.bootstrap(Profile(mode="interactive"))
+    assert cli.seeded is None  # the login node could already authenticate: not ours
+    await fac.teardown(handle.endpoint_id, wipe_credentials=True)
+    assert wiped == []  # a shared account's credential survives our teardown
+
+
+async def test_teardown_in_a_later_session_reads_the_record(tmp_path, monkeypatch):
+    from hpc_bridge.facility.remote import SlurmFacility
+    from hpc_bridge.profile import Profile
+    from tests.test_remote_facility import _BootstrapCLI, _no_endpoints, _profile
+
+    fac, _cli, store, _ = _bootstrap_parts(tmp_path, monkeypatch, remote_db_present=False)
+    handle = await fac.bootstrap(Profile(mode="interactive"))
+    # a new process: no in-memory flag, only the endpoint record
+    cli2 = _BootstrapCLI(status="running", remote_db_present=True)
+    wiped = []
+
+    async def _wipe():
+        wiped.append(True)
+
+    cli2.wipe_storage_db = _wipe
+    fac2 = SlurmFacility(_profile(), cli=cli2, client_factory=_no_endpoints, store=store, alias="anvil.rcac.purdue.edu")
+    await fac2.teardown(handle.endpoint_id, wipe_credentials=True)
+    assert wiped == [True]
+
+
+def test_old_endpoint_records_load_without_the_new_field(tmp_path):
+    import json
+
+    from hpc_bridge.state import LoginNodeStore
+
+    p = tmp_path / "endpoints.json"
+    p.write_text(json.dumps({"a::n": {"endpoint_id": "e", "login_host": "h", "alias": "a", "user": None,
+                                       "key_path": None, "name": "n", "provisioned_at": "t"}}))
+    rec = LoginNodeStore(p).get(alias="a", name="n")
+    assert rec is not None and rec.seeded_credentials is False  # unknown ⇒ never wipe
+

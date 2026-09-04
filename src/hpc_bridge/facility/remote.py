@@ -793,6 +793,7 @@ class SlurmFacility:
         reused = await self.find_online_endpoint(self.profile.endpoint_name)
         if reused is not None:
             return EndpointHandle(endpoint_id=reused, name=self.profile.endpoint_name, reused=True)
+        seeded = False
         if not await self.cli.whoami():
             with tempfile.TemporaryDirectory() as tmp:
                 trimmed = build_minimal_storage_db(
@@ -801,6 +802,8 @@ class SlurmFacility:
                     namespace=_resolve_namespace(),
                 )
                 await self.cli.seed_storage_db(trimmed)
+            seeded = True
+        self._seeded_credentials = seeded  # remembered for teardown in THIS process; the store keeps it across sessions
         handle = await self.provision(hpc)
         if handle.login_host is not None and self.store is not None and self.alias is not None:
             self.store.put(
@@ -812,9 +815,20 @@ class SlurmFacility:
                     key_path=self.cli.target.key_path,
                     name=handle.name,
                     provisioned_at=datetime.now(UTC).isoformat(),
+                    seeded_credentials=seeded,
                 )
             )
         return handle
+
+    def _seeded_by_us(self) -> bool:
+        """Did hpc-bridge place the remote token store? This process remembers its own bootstrap; across
+        sessions the endpoint record does. Unknown ⇒ False: never delete a credential we did not create."""
+        if getattr(self, "_seeded_credentials", False):
+            return True
+        if self.store is not None and self.alias is not None:
+            rec = self.store.get(alias=self.alias, name=self.profile.endpoint_name)
+            return bool(rec is not None and rec.seeded_credentials)
+        return False
 
     async def provision(self, hpc: Profile) -> EndpointHandle:
         # Idempotent: reuse a running endpoint; configure only if it doesn't exist yet
@@ -861,14 +875,15 @@ class SlurmFacility:
 
     async def teardown(self, endpoint_id: str, *, wipe_credentials: bool = False) -> None:
         """Stop the endpoint and cancel its scheduler block(s) — the cost-control exit. Both ops run
-        over SSH, each bounded by `_TEARDOWN_SSH_S`. Credentials are kept by default so a later
-        session can reconnect; pass wipe_credentials=True to also remove the remote storage.db."""
+        over SSH, each bounded by `_TEARDOWN_SSH_S`. `wipe_credentials=True` also removes the remote
+        storage.db — but ONLY if hpc-bridge seeded it (`_seeded_by_us`): a token store that was already on
+        the login node (a shared account the facility's own endpoint uses, say) is never ours to delete."""
         await self.cli.stop(self.profile.endpoint_name)
         # `stop` kills the manager, but an ungraceful stop leaves Parsl's block holding the
         # allocation until walltime (no manager left to scale it in). Explicitly cancel this
         # endpoint's blocks so "teardown released the compute" actually holds.
         await self.cli.cancel_blocks(endpoint_id, self.profile.scheduler)
-        if wipe_credentials:
+        if wipe_credentials and self._seeded_by_us():
             await self.cli.wipe_storage_db()
         await self.cli.close()  # drop the shared SSH master; the endpoint is gone
 

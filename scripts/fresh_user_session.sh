@@ -9,8 +9,12 @@
 #   scripts/fresh_user_session.sh           # 1st run: expect needs_login (browser), then the MEP attach
 #   scripts/fresh_user_session.sh           # 2nd run, same dirs: NO login (refresh tokens) -> straight to attach
 #   scripts/fresh_user_session.sh --reset   # wipe the scratch dirs first -> a brand-new user again
+#   scripts/fresh_user_session.sh --marketplace   # the BETA USER's path: a fresh Claude Code config dir with the
+#                                                 # plugin installed from the GitHub marketplace (main), not this checkout.
+#                                                 # Claude Code asks you to log in once in that config dir.
 #
-# In the session, say:  connect me to globus1
+# In the session, say:  connect me to globus1                              (zero-SSH facility endpoint)
+#                  or:  connect me to the cluster at globus1.cs.uchicago.edu   (SSH bootstrap as you, BYO path)
 #
 # DRY_RUN=1 prints the launch command instead of running it.
 set -euo pipefail
@@ -25,13 +29,27 @@ if [[ "${1:-}" == "--reset" ]]; then
   echo "reset: removed $FRESH"
   shift
 fi
+MODE=plugin-dir
+if [[ "${1:-}" == "--marketplace" ]]; then MODE=marketplace; shift; fi
 mkdir -p "$FRESH/globus_compute" "$FRESH/state"
 
 command -v claude >/dev/null || { echo "error: 'claude' is not on PATH" >&2; exit 1; }
 command -v uv >/dev/null || { echo "error: 'uv' is not on PATH (the plugin launches the server with 'uv run')" >&2; exit 1; }
 [[ -f "$REPO/.mcp.json" && -f "$REPO/.claude-plugin/plugin.json" ]] || { echo "error: $REPO is not an hpc-bridge checkout" >&2; exit 1; }
 
-echo "repo:        $REPO  (branch: $(git -C "$REPO" branch --show-current 2>/dev/null || echo '?'))"
+if [[ "$MODE" == "marketplace" ]]; then
+  export CLAUDE_CONFIG_DIR="$FRESH/claude-config"
+  mkdir -p "$CLAUDE_CONFIG_DIR"
+  if ! claude plugin list 2>/dev/null | grep -q "hpc-bridge@hpc-bridge"; then
+    echo "installing the plugin from the marketplace into $CLAUDE_CONFIG_DIR …"
+    claude plugin marketplace add ryanchard/hpc-bridge
+    claude plugin install hpc-bridge@hpc-bridge
+  fi
+  echo "plugin:      marketplace install (GitHub main) in a fresh Claude Code config: $CLAUDE_CONFIG_DIR"
+  echo "             (Claude Code will ask you to log in once in this config dir — your normal config is untouched)"
+else
+  echo "repo:        $REPO  (branch: $(git -C "$REPO" branch --show-current 2>/dev/null || echo '?'))"
+fi
 echo "registry:    ${INDEX:-(plugin default — no config, as a stranger would have)}"
 echo "compute sdk: $FRESH/globus_compute   (tokens land here, not in ~/.globus_compute)"
 echo "hpc-bridge:  $FRESH/state            (no cached facilities/endpoints)"
@@ -53,7 +71,9 @@ CMD=(env "${STRIP[@]}"
      GLOBUS_COMPUTE_USER_DIR="$FRESH/globus_compute"
      HPC_BRIDGE_STATE_DIR="$FRESH/state"
      ${INDEX:+HPC_BRIDGE_SEARCH_INDEX="$INDEX"}
-     claude --plugin-dir "$REPO" "$@")
+     ${CLAUDE_CONFIG_DIR:+CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_DIR"}
+     claude "$@")
+if [[ "$MODE" == "plugin-dir" ]]; then CMD+=(--plugin-dir "$REPO"); fi
 
 cd "$FRESH"
 if [[ -n "${DRY_RUN:-}" ]]; then

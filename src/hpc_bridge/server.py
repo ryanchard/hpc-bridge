@@ -588,7 +588,7 @@ async def _teardown_endpoint(app: AppCtx) -> EndpointStatus:
             ),
         )
     await scheduler_ops._release_blocks_over_login(app, eid, _login_runner(app))  # halt spend first (a confirmed stop is stop_endpoint's job)  # noqa: E501
-    notice = "endpoint fully torn down (block released; manager gce-stopped + deleted; the Globus token copy on the login node removed)"  # noqa: E501
+    notice = "endpoint fully torn down (block released; manager gce-stopped + deleted; a Globus token copy hpc-bridge had placed on the login node removed)"  # noqa: E501
     teardown = getattr(app.facility, "teardown", None)
     if teardown is not None:
         try:
