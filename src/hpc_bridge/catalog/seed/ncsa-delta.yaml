@@ -1,0 +1,36 @@
+# src/hpc_bridge/catalog/seed/ncsa-delta.yaml
+# NCSA Delta via its facility-run MULTI-USER endpoint (documented, GA): zero SSH; the facility maps the user's
+# Globus identity to their Delta account. The facility owns the template (SlurmProvider; consumes account,
+# partition, qos, walltime, cores_per_node, exclusive, mem_per_node, scheduler_options, worker_init;
+# additionalProperties: true). Its default worker_init would install the worker at the CLIENT's SDK version —
+# we pin the facility's own endpoint version instead ({gce_version}, read from its metadata at attach).
+# Source: https://docs.ncsa.illinois.edu/systems/delta/en/latest/user_guide/running_jobs.html (MEP section).
+- id: delta
+  facility_key: ncsa
+  facility: "NCSA / ACCESS"
+  description: "NCSA Delta (Slurm; CPU + A40/A100 GPU partitions) via its multi-user endpoint — zero SSH; an account is required"
+  display_name: "NCSA Delta (MEP)"
+  aliases: [ncsa-delta, delta-mep]
+  compute_mep_uuid: 4a266c83-3c68-4a75-99b3-9c7459f2f7ef
+  ssh_host: null
+  auth_method: ssh-key
+  allocation: null
+  account_required: true            # Slurm enforces accounting: --account <ncsa-project-code> is required
+  compute:
+    scheduler: slurm
+    interface: eth1                 # informational: the facility template pins its own address
+    env_setup: 'export PATH="$HOME/.local/bin:$PATH"; command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh; V=$HOME/hpc-bridge/gce-venv-{gce_version}-py{python_version}; [ -d $V ] || uv venv $V --python {python_version}; . $V/bin/activate; uv pip install -q "globus-compute-endpoint=={gce_version}"'
+    scratch_root: "$HOME/.hpc-bridge"
+    endpoint_name: ncsa-delta-mep
+  defaults:
+    partition: gpuA40x4             # the cheapest GPU partition; CPU partitions charge a CPU allocation
+    walltime: "00:15:00"
+    max_workers_per_node: 1
+    nodes_per_block: 1
+    init_blocks: 1
+    max_blocks: 1
+    extra:
+      cores_per_node: 1
+      scheduler_options: "#SBATCH --gpus-per-node=1"   # Delta's GPU partitions require a GPU request
+  provenance: curated
+  last_validated: 2026-09-04

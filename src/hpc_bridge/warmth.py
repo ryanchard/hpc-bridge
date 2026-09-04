@@ -59,6 +59,8 @@ def _shape_runtime(app: AppCtx, shape: str) -> ShapeRuntime:
         if not isinstance(defaults, dict):
             defaults = {}
         uec = {**defaults, **shape_config(shape)}
+        # a facility MEP fits the config to ITS published schema (drops keys it rejects, pins worker versions)
+        uec = getattr(app.facility, "sanitize_uec", lambda d: d)(uec)
         rt = ShapeRuntime(user_endpoint_config=uec)
         app.shapes[shape] = rt
     return rt
