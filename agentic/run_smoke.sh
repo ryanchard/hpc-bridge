@@ -49,7 +49,8 @@ SSH_USER="${HPCB_TEST_SSH_USER:-hpcbridge-test}"
 GLOBUS_DB="${HPCB_TEST_GLOBUS_DB:-}"
 # Per-scenario HOST knobs (read from the scenario module): run with NO Globus store (a logged-out
 # stranger: needs_login), or with an ALTERNATE store (a second identity — e.g. one the MEP does not map).
-eval "$(python3 "$REPO_ROOT/agentic/harness/scenario_knobs.py" "$SCENARIO")"
+KNOBS="$(python3 "$REPO_ROOT/agentic/harness/scenario_knobs.py" "$SCENARIO")" || { echo "ERROR: scenario knobs could not be read for '$SCENARIO' (unknown scenario?) — refusing to guess what to mount"; exit 1; }
+eval "$KNOBS"
 if [ -n "${HPCB_KNOB_GLOBUS_DB_SECRET:-}" ]; then
   GLOBUS_DB="${!HPCB_KNOB_GLOBUS_DB_SECRET:-}"
   [ -n "$GLOBUS_DB" ] || { echo "ERROR: scenario '$SCENARIO' needs \$$HPCB_KNOB_GLOBUS_DB_SECRET (path to a storage.db) — set it in agentic/.env"; exit 1; }

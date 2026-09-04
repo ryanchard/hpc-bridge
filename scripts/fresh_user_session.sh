@@ -46,8 +46,10 @@ echo ">>> in the session, say:  connect me to globus1"
 echo
 
 # Stray hpc-bridge overrides from this shell must not leak in (an endpoint id would even be refused for a MEP).
-CMD=(env -u HPC_BRIDGE_ENDPOINT_ID -u HPC_BRIDGE_ENDPOINT_NAME -u HPC_BRIDGE_MACHINE -u HPC_BRIDGE_ACCOUNT
-     -u HPC_BRIDGE_SSH_USER -u HPC_BRIDGE_SSH_KEY -u HPC_BRIDGE_USER_DIR -u HPC_BRIDGE_SEARCH_INDEX
+# Strip EVERY hpc-bridge variable from this shell (a leaked HPC_BRIDGE_SSH_HOST would probe the maintainer's
+# host instead of asking a stranger for one — review 2), then set only the scratch dirs.
+STRIP=(); for v in $(env | grep -oE '^HPC_BRIDGE_[A-Z_]+'); do STRIP+=(-u "$v"); done
+CMD=(env "${STRIP[@]}"
      GLOBUS_COMPUTE_USER_DIR="$FRESH/globus_compute"
      HPC_BRIDGE_STATE_DIR="$FRESH/state"
      ${INDEX:+HPC_BRIDGE_SEARCH_INDEX="$INDEX"}

@@ -174,6 +174,8 @@ def _parse_hhmmss(s: str | None) -> int:
         parts = text.split(":")
         if not 1 <= len(parts) <= 3 or not all(p.strip().isdigit() for p in parts):
             return 0
+        if len(parts) == 1:  # Slurm: a bare number is MINUTES (`--time=30`), not seconds (review 2)
+            return int(parts[0]) * 60
     secs = 0
     for p in parts:
         secs = secs * 60 + int(p)

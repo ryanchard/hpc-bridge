@@ -106,8 +106,10 @@ class SearchCatalog:
             resp = await asyncio.to_thread(
                 self._client.post_search, self._index_id, {"q": query or "*"}
             )
-        except Exception:  # noqa: BLE001 - a corrupt cache file is a miss, not a crash
-            return []  # offline: no fallback (discover isn't cached)
+        except Exception as exc:
+            if _not_found(exc):
+                return []
+            raise
         out = []
         for gmeta in resp.get("gmeta", []):
             entries = gmeta.get("entries") or []

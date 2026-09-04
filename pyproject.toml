@@ -49,5 +49,5 @@ extend-exclude = ["agentic/runs", "agentic/fakecluster", "docs"]
 # The rule set the code's existing `# noqa` annotations already imply (E/F/I/B/BLE/A); they were
 # ornamental until CI ran ruff (dependency audit 2026-09-03). E501 is deferred: the code wraps at
 # ~110 by hand and the long lines are notices; tighten after the server-module split.
-select = ["E", "F", "I", "B", "BLE", "A"]
+select = ["E", "F", "I", "B", "BLE", "A", "RUF100"]
 ignore = ["E501"]

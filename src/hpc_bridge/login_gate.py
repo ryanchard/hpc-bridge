@@ -11,14 +11,11 @@ from __future__ import annotations
 
 import asyncio
 
+from . import config
 from .context import AppCtx
 from .login import LoginFlow, LoginStart
 from .models import LoginStatus
-from .notices import (  # noqa: F401 - _needs_login_result is used by connect
-    _login_notice,
-    _login_wait_s,
-    _needs_login_result,
-)
+from .notices import _login_notice
 from .warmth import _forget_identity_verdicts
 
 
@@ -29,7 +26,7 @@ async def _start_login_and_wait(flow: LoginFlow, mode: str | None = None) -> tup
     start = await asyncio.to_thread(flow.start, mode)
     if start.mode != "browser":
         return start, "waiting"  # paste mode: nothing to wait for — the user must hand us a code
-    status = await asyncio.to_thread(flow.wait, _login_wait_s())
+    status = await asyncio.to_thread(flow.wait, config.login_wait_s())
     if status == "failed":
         start = await asyncio.to_thread(flow.start)  # goes to paste (browser failure remembered)
         status = "waiting"
@@ -47,7 +44,7 @@ async def _authenticate(app: AppCtx, force: bool = False, mode: str | None = Non
         return LoginStatus(phase="logged_in", notice="Globus login completed in the browser; carry on.")
     return LoginStatus(phase="needs_login", login_url=start.login_url, login_mode=start.mode,
                        notice=_login_notice(start, flow.error,
-                                            waited_s=_login_wait_s() if status == "waiting" else None))
+                                            waited_s=config.login_wait_s() if status == "waiting" else None))
 
 async def _complete_login(app: AppCtx, code: str) -> LoginStatus:
     flow = app.login_flow

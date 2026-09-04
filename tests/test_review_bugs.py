@@ -9,8 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from hpc_bridge import binding, scheduler_ops, warmth
+from hpc_bridge import binding, connect, scheduler_ops, warmth
 from hpc_bridge.profile import Profile
+from hpc_bridge.runner import CanaryResult
 from hpc_bridge.server import (
     AppCtx,
     ShapeRuntime,
@@ -350,7 +351,11 @@ async def test_unreachable_pinned_login_node_drops_the_pin(monkeypatch, tmp_path
         raise RuntimeError("bootstrap failed: ssh: connect to host login03.example.edu port 22: Connection timed out")
 
     monkeypatch.setattr(warmth, "_provision", unreachable)
+    monkeypatch.setattr(connect, "_ALIAS_PROBE", lambda host: False)  # the alias is down too: a CLIENT outage
     app = AppCtx(facility=FakeFacility(), profile=Profile())
+    res = await _connect_facility(app, "anvil")
+    assert res.notice.startswith("CANNOT REACH") and store.get(alias="anvil", name="hpc-bridge-anvil") is not None
+    monkeypatch.setattr(connect, "_ALIAS_PROBE", lambda host: True)  # the alias answers: the PIN is dead
     res = await _connect_facility(app, "anvil")
     assert res.phase == "failed" and res.notice.startswith("CANNOT REACH") and "pin was dropped" in res.notice
     assert store.get(alias="anvil", name="hpc-bridge-anvil") is None
@@ -364,3 +369,94 @@ async def test_unreachable_pinned_login_node_drops_the_pin(monkeypatch, tmp_path
     monkeypatch.setattr(warmth, "_provision", refused)
     res = await _connect_facility(app, "anvil")
     assert res.notice.startswith("NO SSH ACCESS") and store.get(alias="anvil", name="hpc-bridge-anvil") is not None
+
+
+# --- review 2 (2026-09-03, late) -------------------------------------------------------------
+def test_cannot_reach_recognises_macos_and_ssh_prefixes():
+    from hpc_bridge.notices import _explain_provision_error
+    for text in ("seed storage.db (mkdir) failed: ssh: connect to host 10.255.255.1 port 22: Operation timed out",
+                 "bootstrap failed: ssh: connect to host h port 22: Host is down",
+                 "x failed: kex_exchange_identification: read: Connection reset by peer"):
+        assert _explain_provision_error(RuntimeError(text), host="h", user="u").startswith("CANNOT REACH"), text
+
+
+async def test_canary_timeout_resets_the_conflict_streak(monkeypatch):
+    app = _warm_app()
+    rt = _shape_runtime(app, "compute")
+    rt.transient_conflicts = 3
+    app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, "", ""), canary_result=CanaryResult(ok=False, error="timeout"))
+    assert await _confirm_worker(app, "compute", force=True) == "provisioning"
+    assert rt.transient_conflicts == 0  # an ACCEPTED submit waiting on the scheduler is not a conflict
+
+
+async def test_rebind_to_a_mep_keeps_the_prior_spend_note(monkeypatch):
+    from hpc_bridge import binding
+    from hpc_bridge.facility.mep import MEPFacility
+    from tests.fakes import FakeCatalog, fake_mep_entry
+    app = _warm_app()
+    app.charge_factor = 1.0
+    rt = _shape_runtime(app, "compute")
+    rt.warm_since = time.monotonic() - 3600
+    rt.runner = _FakeRunner("eid-1", _Res(0, "", ""))
+    mep = MEPFacility.from_entry(fake_mep_entry(), account=None)
+    monkeypatch.setattr(binding, "_facility_from_entry", lambda entry, *, account: mep)
+    monkeypatch.setattr(binding, "make_catalog", lambda: FakeCatalog([fake_mep_entry()]))
+    res = await _connect_facility(app, "globus1")
+    assert "session spend so far" in (res.notice or "")
+
+
+async def test_proven_commit_from_ensure_endpoint_up_and_skipped_on_reuse(monkeypatch):
+    from hpc_bridge import binding
+    from hpc_bridge.models import FacilityDetails
+    from hpc_bridge.server import _ensure_endpoint_up
+    details = FacilityDetails(ssh_host="h.example.edu", interface="ib0", env_setup="true", scratch_root="/s/{user}", partition="main")
+    f = FakeFacility()
+    f.workers = 1
+    monkeypatch.setattr(binding, "_facility_from_entry", lambda entry, *, account: f)
+    prov = iter(["provisioning", "warm"])
+
+    async def provision(app, shape, **kw):
+        return next(prov)
+
+    monkeypatch.setattr(warmth, "_provision", provision)
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    await _connect_facility(app, "byo", details=details)  # provisioning: not yet proven
+    assert binding._facility_store().get("h.example.edu") is None
+    await _ensure_endpoint_up(app, shape="login")  # the login shape warms HERE
+    assert binding._facility_store().get("h.example.edu") is not None
+    app2 = AppCtx(facility=FakeFacility(), profile=Profile())
+    app2.state.reused = True  # a REUSED endpoint proves nothing about new details
+    app2.pending_facility_cache["x"] = ("other.example.edu", details.model_dump(mode="json"))
+    connect._commit_proven_facility(app2, "x")
+    assert binding._facility_store().get("other.example.edu") is None and "x" not in app2.pending_facility_cache
+
+
+async def test_discover_transport_error_is_no_facilities_but_a_bug_raises(monkeypatch, tmp_path):
+    from hpc_bridge import binding, server
+    from hpc_bridge.catalog.search import SearchCatalog
+    from tests.test_catalog_search import _FakeSearchClient
+
+    class _Down(_FakeSearchClient):
+        def post_search(self, index_id, query):
+            raise OSError("network down")
+
+    class _Buggy(_FakeSearchClient):
+        def post_search(self, index_id, query):
+            raise AttributeError("'NoneType' object has no attribute 'get'")
+
+    monkeypatch.setattr(binding, "make_catalog", lambda: SearchCatalog(index_id="idx", client=_Down(), cache_dir=tmp_path))
+    assert await server._list_facilities("") == []
+    monkeypatch.setattr(binding, "make_catalog", lambda: SearchCatalog(index_id="idx", client=_Buggy(), cache_dir=tmp_path))
+    with pytest.raises(AttributeError):
+        await server._list_facilities("")
+
+
+def test_bare_walltime_is_slurm_minutes():
+    assert _parse_hhmmss("30") == 1800 and _parse_hhmmss("0:30") == 30 and _parse_hhmmss("00:30:00") == 1800
+
+
+def test_identity_label_reset_on_new_login(monkeypatch):
+    from hpc_bridge import login as login_mod
+    login_mod._IDENTITY_LABEL = "old@example.edu"
+    _forget_identity_verdicts(_warm_app())
+    assert login_mod._IDENTITY_LABEL is None

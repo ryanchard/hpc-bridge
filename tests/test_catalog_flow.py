@@ -679,7 +679,7 @@ def test_facility_from_mep_entry_builds_mepfacility_with_no_ssh(monkeypatch):
     from hpc_bridge.facility.mep import MEPFacility
     from hpc_bridge.server import _facility_from_entry
     # if the SSH user lookup ran we'd see it; a MEP must never consult ~/.ssh/config
-    monkeypatch.setattr("hpc_bridge.server._ssh_config_user", lambda alias: (_ for _ in ()).throw(AssertionError("SSH lookup on a MEP")))
+    monkeypatch.setattr("hpc_bridge.binding._ssh_config_user", lambda alias: (_ for _ in ()).throw(AssertionError("SSH lookup on a MEP")))
     fac = _facility_from_entry(fake_mep_entry(), account="")
     assert isinstance(fac, MEPFacility)
     assert fac.endpoint_id == MEP_UUID

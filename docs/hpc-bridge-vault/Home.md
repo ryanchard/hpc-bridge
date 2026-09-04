@@ -54,3 +54,6 @@ This vault has two halves:
 ---
 > [!note] Status
 > **Section 1 (implemented) is complete** — all Concept, Module, and Reference notes track the codebase as of the 2026-09-03 audit (`main` after [#50](https://github.com/ryanchard/hpc-bridge/issues/50): in-terminal login, public registry, stranger's-walk fixes), with [[Happy path]] as the end-to-end spine. **Section 2 (Planned)** carries the design records for what shipped and the plan of record ([[V1 release]]); the rest of `docs/design/` is absorbed as work proceeds.
+
+> [!note] The server split (2026-09-03)
+> `server.py` is now the FastMCP app + orchestration only; the runtime lives in [[context]], [[config]], [[notices]], [[cost]], [[binding]], [[scheduler_ops]], [[warmth]], [[login_gate]] and [[connect]] — see [[server]] for the map and [[Review 2026-09-03 — code quality]] §1 for the plan that produced it.

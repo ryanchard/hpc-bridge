@@ -984,7 +984,7 @@ def test_total_session_spend_sums_only_billable_shapes(monkeypatch):
 def test_worker_notice_flags_dill_skew(monkeypatch):
     import hpc_bridge.server as srv
 
-    monkeypatch.setattr(srv, "_local_dill", lambda: "0.3.9")
+    monkeypatch.setattr("hpc_bridge.notices._local_dill", lambda: "0.3.9")
     skewed = srv._worker_notice(
         CanaryResult(ok=True, worker_host="a070", worker_python="3.11.7", worker_dill="0.3.8")
     )
@@ -1325,7 +1325,7 @@ def test_parse_hhmmss_and_task_ceiling():
 
     assert _parse_hhmmss("00:30:00") == 1800
     assert _parse_hhmmss("48:00:00") == 172800
-    assert _parse_hhmmss("90") == 90 and _parse_hhmmss("5:00") == 300
+    assert _parse_hhmmss("90") == 5400 and _parse_hhmmss("5:00") == 300  # a bare number is Slurm minutes
     assert _parse_hhmmss("") == 0 and _parse_hhmmss(None) == 0 and _parse_hhmmss("abc") == 0
     assert _task_ceiling_s({"walltime": "00:30:00"}) == 1780.0  # block walltime - margin
     assert _task_ceiling_s({}) >= 300.0  # missing walltime -> safe non-zero fallback, not 0/crash
@@ -1401,10 +1401,10 @@ async def test_ssh_teardown_reports_the_spend_it_ended(monkeypatch):
     await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
     _shape_runtime(app, "compute").spend_accrued = 3.5
 
-    async def _released(app_, eid):
+    async def _released(app_, eid, *rest):
         return True, "released"
 
-    monkeypatch.setattr(srv, "_release_blocks_over_login", _released)
+    monkeypatch.setattr("hpc_bridge.scheduler_ops._release_blocks_over_login", _released)
     res = await srv._teardown_endpoint(app)
     assert res.status == "down" and res.session_spend >= 3.5
 

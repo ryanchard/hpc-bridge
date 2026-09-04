@@ -10,18 +10,18 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from . import binding, config, connect, dispatch, login_gate, scheduler_ops, session_shell, warmth
 from .binding import (  # noqa: F401 - re-exported for imports; PATCH binding.<name>, not server.<name>
-    _catalog_facility,  # noqa: F401
-    _entry_from_details,  # noqa: F401
-    _facility_from_entry,  # noqa: F401
-    _facility_store,  # noqa: F401
-    _make_search_client,  # noqa: F401
-    _resolve_scratch_root,  # noqa: F401
-    _session_endpoint_name,  # noqa: F401
-    _slurm_facility,  # noqa: F401
-    _ssh_config_user,  # noqa: F401
-    _unsupported_entry_reason,  # noqa: F401
-    make_catalog,  # noqa: F401
-    make_facility,  # noqa: F401
+    _catalog_facility,
+    _entry_from_details,
+    _facility_from_entry,
+    _facility_store,
+    _make_search_client,
+    _resolve_scratch_root,
+    _session_endpoint_name,
+    _slurm_facility,
+    _ssh_config_user,
+    _unsupported_entry_reason,
+    make_catalog,
+    make_facility,
 )
 from .catalog.entry import CatalogSummary
 from .config import (  # noqa: F401 - re-exported: tests patch/import these on server
@@ -35,33 +35,33 @@ from .config import (  # noqa: F401 - re-exported: tests patch/import these on s
     _env_endpoint_id,
     _env_float,
     _env_mode,
-    _parse_hhmmss,  # noqa: F401
+    _parse_hhmmss,
     _require_env,
     _short_control_dir,
-    _task_ceiling_s,  # noqa: F401
+    _task_ceiling_s,
 )
 from .connect import (  # noqa: F401 - re-exported for imports; PATCH connect.discover_facility_details / connect._propose_or_ask
-    _commit_proven_facility,  # noqa: F401
-    _connect_mep,  # noqa: F401
-    _drop_dead_pin,  # noqa: F401
-    _propose_or_ask,  # noqa: F401
+    _commit_proven_facility,
+    _connect_mep,
+    _drop_dead_pin,
+    _propose_or_ask,
 )
 from .context import (  # noqa: F401 - re-exported: tools + tests import them from here
     DEFAULT_SHAPE,
     AppCtx,
     ShapeRuntime,
     TaskHandle,
-    _has_login_shape,  # noqa: F401
-    _idle_release_s,  # noqa: F401
-    _supported_shapes,  # noqa: F401
+    _has_login_shape,
+    _idle_release_s,
+    _supported_shapes,
 )
-from .cost import (  # re-exported
-    _bank_warm_interval,  # noqa: F401
-    _billable,  # noqa: F401
-    _session_spend,  # noqa: F401
-    _settle_billing,  # noqa: F401
-    _total_session_spend,  # noqa: F401
-    _with_spend,  # noqa: F401
+from .cost import (  # noqa: F401 - re-exported
+    _bank_warm_interval,
+    _billable,
+    _session_spend,
+    _settle_billing,
+    _total_session_spend,
+    _with_spend,
     cap_output,
 )
 from .endpoint import EndpointCLI
@@ -69,9 +69,9 @@ from .facility.local import LocalFacility
 from .lifecycle import EndpointState
 from .login import LoginFlow
 from .login_gate import (  # noqa: F401 - re-exported for imports
-    _authenticate,  # noqa: F401
-    _complete_login,  # noqa: F401
-    _start_login_and_wait,  # noqa: F401
+    _authenticate,
+    _complete_login,
+    _start_login_and_wait,
 )
 from .models import (
     ConnectFacilityResult,
@@ -81,65 +81,64 @@ from .models import (
     LoginStatus,
     ShellOutcome,
 )
-from .notices import (  # re-exported
-    _GLOBUS_USERNAME_RE,  # noqa: F401
-    _NO_ACCOUNT_MARKERS,  # noqa: F401
-    _SSH_AUTH_DENIED,  # noqa: F401
-    _billed_bounds_note,  # noqa: F401
-    _busy_session_outcome,  # noqa: F401
-    _cold_outcome,  # noqa: F401
-    _dispatch_error_suffix,  # noqa: F401
-    _error_outcome,  # noqa: F401
-    _explain_provision_error,  # noqa: F401
-    _identity_from_error,  # noqa: F401
-    _local_dill,  # noqa: F401
-    _login_notice,  # noqa: F401
-    _login_wait_s,  # noqa: F401
-    _needs_confirmation_notice,  # noqa: F401
-    _needs_confirmation_outcome,  # noqa: F401
-    _needs_login_result,  # noqa: F401
-    _needs_preauth_result,  # noqa: F401
-    _no_account_failure,  # noqa: F401
-    _no_account_notice,  # noqa: F401
-    _orphaned_outcome,  # noqa: F401
-    _running_outcome,  # noqa: F401
-    _shape_reject_outcome,  # noqa: F401
-    _spend_floor_guidance,  # noqa: F401
-    _transient_dispatch_failure,  # noqa: F401
-    _worker_notice,  # noqa: F401
+from .notices import (  # noqa: F401 - re-exported
+    _GLOBUS_USERNAME_RE,
+    _NO_ACCOUNT_MARKERS,
+    _SSH_AUTH_DENIED,
+    _billed_bounds_note,
+    _busy_session_outcome,
+    _cold_outcome,
+    _dispatch_error_suffix,
+    _error_outcome,
+    _explain_provision_error,
+    _identity_from_error,
+    _local_dill,
+    _login_notice,
+    _needs_confirmation_notice,
+    _needs_confirmation_outcome,
+    _needs_login_result,
+    _needs_preauth_result,
+    _no_account_failure,
+    _no_account_notice,
+    _orphaned_outcome,
+    _running_outcome,
+    _shape_reject_outcome,
+    _spend_floor_guidance,
+    _transient_dispatch_failure,
+    _worker_notice,
 )
 from .profile import Profile
 from .runner import GlobusRunner
 from .scheduler_ops import (  # noqa: F401 - re-exported for imports; PATCH scheduler_ops.<name>
-    _augment_provisioning_notice,  # noqa: F401
-    _pilot_status_cmd,  # noqa: F401
-    _pilot_status_over_login,  # noqa: F401
-    _release_blocks_over_login,  # noqa: F401
-    _release_cmd,  # noqa: F401
-    _summarize_pilot,  # noqa: F401
+    _augment_provisioning_notice,
+    _pilot_status_cmd,
+    _pilot_status_over_login,
+    _release_blocks_over_login,
+    _release_cmd,
+    _summarize_pilot,
 )
 from .session_shell import Session
 from .warmth import (  # noqa: F401 - re-exported for imports; PATCH warmth._provision / warmth._drop_compute_shape
-    _VALID_ACCOUNT,  # noqa: F401
-    _VALID_PARTITION,  # noqa: F401
-    _apply_account,  # noqa: F401
-    _apply_partition,  # noqa: F401
-    _busy_session,  # noqa: F401
-    _confirm_worker,  # noqa: F401
-    _drain_shape_tasks,  # noqa: F401
-    _drop_all_shapes,  # noqa: F401
-    _drop_compute_shape,  # noqa: F401
-    _endpoint_gone,  # noqa: F401
-    _ensure_warm_runner,  # noqa: F401
-    _forget_identity_verdicts,  # noqa: F401
-    _live_task_handles,  # noqa: F401
-    _note_dispatch,  # noqa: F401
-    _provision,  # noqa: F401
-    _register_task,  # noqa: F401
-    _resolve_task,  # noqa: F401
-    _runner_for,  # noqa: F401
-    _shape_reject,  # noqa: F401
-    _shape_runtime,  # noqa: F401
+    _VALID_ACCOUNT,
+    _VALID_PARTITION,
+    _apply_account,
+    _apply_partition,
+    _busy_session,
+    _confirm_worker,
+    _drain_shape_tasks,
+    _drop_all_shapes,
+    _drop_compute_shape,
+    _endpoint_gone,
+    _ensure_warm_runner,
+    _forget_identity_verdicts,
+    _live_task_handles,
+    _note_dispatch,
+    _provision,
+    _register_task,
+    _resolve_task,
+    _runner_for,
+    _shape_reject,
+    _shape_runtime,
 )
 
 
@@ -254,6 +253,8 @@ async def _ensure_endpoint_up(
         if block == "warm":
             status, notice = "up", _worker_notice(rt.last_canary) or "worker live"
             rt.provisioning_since = None  # warm -> the cold-start grace clock resets (#32)
+            if shape == "login" and app.machine:  # the login shape is PROVEN here too, not only inside connect
+                connect._commit_proven_facility(app, app.machine)
             if billable:  # #21: name the block's bounds so a caller runs long work as a task
                 bounds = _billed_bounds_note(app, rt)
                 notice = f"{notice}. {bounds}" if notice else bounds
@@ -282,7 +283,7 @@ async def _ensure_endpoint_up(
                 # 'allocating nodes' — a terminal `down`, so the agent stops polling and tells the user.
                 from .login import globus_identity_label
 
-                identity = await asyncio.to_thread(globus_identity_label)
+                identity = globus_identity_label(fetch=False)  # never a network call under app.lock
                 rt.provisioning_since = None
                 return EndpointStatus(
                     status="down", block_state="cold", endpoint_id=eid, session_spend=spend,
@@ -359,7 +360,7 @@ def _registry_transport_error(exc: BaseException) -> bool:
 async def _list_facilities(query: str = "") -> list[CatalogSummary]:
     try:
         return await binding.make_catalog().discover(query)
-    except Exception as exc:  # noqa: BLE001 - classified below: transport -> [], anything else re-raised
+    except Exception as exc:
         # The registry id is built in, so what lands here is either the network (an empty list is
         # honest: the agent can still BYO) or a BUG — which must not hide behind "no facilities"
         # (found in review: the old blanket net reported an AttributeError as an empty registry).
