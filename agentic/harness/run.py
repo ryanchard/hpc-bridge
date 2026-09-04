@@ -151,7 +151,7 @@ def _setup(scen) -> bool:
 # agent, and saturation sleepers are the harness', not the agent's. Scheduler-specific: Slurm's
 # `squeue` vs PBS's `qstat` (a scenario declares `SCHEDULER = "pbs"`; default slurm).
 def _universal_postchecks(scheduler: str) -> list[dict]:
-    if scheduler == "pbs":
+    if scheduler == "pbs":  # noqa: SIM108
         # -w (wide) so the pilot job name isn't truncated; `|| true` -> empty output reads as "no leak".
         cmd = 'qstat -u "$(whoami)" -w 2>/dev/null || true'
     else:

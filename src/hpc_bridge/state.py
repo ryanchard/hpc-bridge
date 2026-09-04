@@ -27,8 +27,8 @@ class EndpointRecord:
     endpoint_id: str
     login_host: str  # resolved FQDN (hostname -f) the manager daemon runs on
     alias: str  # the round-robin SSH alias originally connected to
-    user: str
-    key_path: str
+    user: str | None  # None => ~/.ssh/config decides (SshTarget.user)
+    key_path: str | None  # None => the config's IdentityFile
     name: str
     provisioned_at: str  # ISO-8601 UTC
 
@@ -80,8 +80,8 @@ class FacilityStore:
     """Persistent cache of PROVEN session (BYO) facility configs, keyed by **ssh_host** — the
     'local discovery' cache. PROVEN = the login shape's canary answered on that config (which is
     what exercises the discovered network interface); a config merely supplied or merely accepted
-    by the bootstrap is NOT written (decision 2026-09-03). A fresh session resolves a previously-connected facility from here (no
-    SSH probe), then reuses its endpoint over the Globus web service. Lives in
+    by the bootstrap is NOT written (decision 2026-09-03). A fresh session resolves a previously-connected facility
+    from here (no SSH probe), then reuses its endpoint over the Globus web service. Lives in
     ~/.hpc-bridge/facilities.json, 0600 — config only (ssh_host, interface, env_setup, paths, …),
     never a secret (password/keys stay in ~/.ssh). Keyed on ssh_host so it lines up 1:1 with the
     ssh-host-based endpoint name and doesn't sprawl across facility-id choices."""

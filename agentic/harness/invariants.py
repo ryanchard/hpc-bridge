@@ -19,8 +19,9 @@ Pure + unit-testable: build a ``Trace`` from synthetic ``ToolCall``s and call
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 
 def logical_name(raw: str) -> str:
@@ -58,7 +59,7 @@ class ToolCall:
         result: dict[str, Any] | None = None,
         answers: dict[str, str] | None = None,
         phase: int = 0,
-    ) -> "ToolCall":
+    ) -> ToolCall:
         return cls(
             name=logical_name(raw_name),
             input=input or {},
@@ -80,7 +81,7 @@ def _shape(c: ToolCall) -> str:
     return str(c.input.get("shape") or "compute")
 
 
-def _billed_start_idxs(t: "Trace") -> list[int]:
+def _billed_start_idxs(t: Trace) -> list[int]:
     """Confirmed compute starts that actually REQUESTED a block. A refusal (status down: no account,
     bad partition) or a spend gate (needs_confirmation) started nothing — counting it made
     ends_with_stop/spend_follows_question fire on a run where nothing was ever billed (seen on
@@ -92,7 +93,7 @@ def _billed_start_idxs(t: "Trace") -> list[int]:
     ]
 
 
-def _slurm_work_idxs(t: "Trace") -> list[int]:
+def _slurm_work_idxs(t: Trace) -> list[int]:
     """run_shell calls that actually EXECUTED on the billed shape (result phase complete) —
     evidence a block was live, even if provisioning happened implicitly."""
     return [

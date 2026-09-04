@@ -21,7 +21,7 @@ def _run_session(steps, root):
             ["bash", "-c", wrap(cmd, sess)], capture_output=True, text=True,
             env={**os.environ, **amb},
         )
-        env_text = open(f"{sd}/.env").read() if os.path.exists(f"{sd}/.env") else ""
+        env_text = open(f"{sd}/.env").read() if os.path.exists(f"{sd}/.env") else ""  # noqa: SIM115
         out.append((r.stdout, env_text))
     return out
 
@@ -121,7 +121,7 @@ def test_wrap_persists_only_command_changed_env_not_runtime_vars():
 def test_behaviour_scheduler_vars_dropped_user_vars_persist(tmp_path):
     # A user var persists across calls; the live $SLURM_JOB_ID flows through (not frozen);
     # scheduler vars never land in .env.
-    (out1, env1), (out2, out2env) = _run_session(
+    (_out1, env1), (out2, _out2env) = _run_session(
         [
             ('export DEMO=keep; echo "JOB=$SLURM_JOB_ID"', {"SLURM_JOB_ID": "L1", "HOSTNAME": "n1"}),
             ('echo "JOB=$SLURM_JOB_ID DEMO=$DEMO"', {"SLURM_JOB_ID": "L2", "HOSTNAME": "n2"}),

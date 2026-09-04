@@ -49,5 +49,32 @@ extend-exclude = ["agentic/runs", "agentic/fakecluster", "docs"]
 # The rule set the code's existing `# noqa` annotations already imply (E/F/I/B/BLE/A); they were
 # ornamental until CI ran ruff (dependency audit 2026-09-03). E501 is deferred: the code wraps at
 # ~110 by hand and the long lines are notices; tighten after the server-module split.
-select = ["E", "F", "I", "B", "BLE", "A", "RUF100"]
-ignore = ["E501"]
+select = ["E", "F", "I", "B", "BLE", "A", "RUF", "UP", "RET", "PIE", "PLE", "PLW1510", "SIM", "ISC", "ERA", "T10", "PGH",
+          "S102", "S602", "S604", "S605", "S606", "S108"]
+ignore = ["SIM105", "RUF001", "RUF002", "RUF003", "ISC004", "PLW1510", "RUF005"]  # PLW1510: every subprocess.run here handles rc explicitly; RUF005: style  # SIM105 would delete reasoned BLE001 noqas; RUF00x = deliberate ×/–; ISC004 = wrapped strings
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501", "S108"]
+"agentic/*" = ["E501"]
+"src/hpc_bridge/config.py" = ["S108"]  # the third-fallback ControlMaster dir; owner-checked below
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src/hpc_bridge"]
+ignore_missing_imports = true      # mcp / globus_sdk / globus_compute_sdk stubs are partial
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+[[tool.mypy.overrides]]            # strict on the pure leaves (mypy has no per-module `strict`)
+module = ["hpc_bridge.context", "hpc_bridge.config", "hpc_bridge.cost", "hpc_bridge.models",
+          "hpc_bridge.shapes", "hpc_bridge.lifecycle", "hpc_bridge.profile"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_calls = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_return_any = true
+strict_equality = true
+extra_checks = true
+disallow_subclassing_any = true

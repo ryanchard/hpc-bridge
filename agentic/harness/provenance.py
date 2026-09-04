@@ -20,7 +20,7 @@ import dataclasses
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -78,7 +78,7 @@ def _transcript_md(config: dict, messages: list[Any], dialogue: list[Any],
     lines = [
         f"# {config.get('scenario', 'run')} — {config.get('runid', '')}",
         "",
-        f"*{datetime.now(timezone.utc).isoformat(timespec='seconds')} · model "
+        f"*{datetime.now(UTC).isoformat(timespec='seconds')} · model "
         f"{config.get('model')} · effort {config.get('effort') or 'default'} · persona "
         f"{config.get('persona') or 'autonomous'}"
         f"{' · ABLATED: skill' if config.get('ablate_skill') else ''} · rc {rc}*",
@@ -133,7 +133,7 @@ def write_run_record(
                 fh.write(json.dumps(_jsonable(m), default=str) + "\n")
         record = {
             "schema": 1,
-            "written_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "written_at": datetime.now(UTC).isoformat(timespec="seconds"),
             "config": config,
             "env": _safe_env(),
             "grading": [{"name": r.name, "ok": r.ok, "detail": r.detail} for r in grading],

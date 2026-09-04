@@ -1,4 +1,5 @@
-"""The server's runtime state (split step 1, 2026-09-03): data plus the three derived reads on it (`_supported_shapes`, `_has_login_shape`, `_idle_release_s`).
+"""The server's runtime state (split step 1, 2026-09-03): data plus the three derived reads on it
+(`_supported_shapes`, `_has_login_shape`, `_idle_release_s`).
 
 `AppCtx` is the one object every tool call shares (installed by the server's lifespan); a `ShapeRuntime`
 per resource shape carries that shape's Executor, warmth/canary state and spend clock; a `TaskHandle`
@@ -10,7 +11,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from concurrent.futures import Future
 from dataclasses import dataclass, field
+from typing import Any
 
 from .catalog.entry import CatalogEntry
 from .facility.base import Facility
@@ -60,7 +63,7 @@ class TaskHandle:
     Its future lives on the shape's long-lived Executor, so poll_task can retrieve the result whenever
     it resolves; the running task also keeps the block busy (a warmth signal) until it finishes."""
 
-    future: object  # concurrent.futures.Future from the Executor (opaque, to avoid the SDK import here)
+    future: Future[Any]  # a stdlib concurrent.futures.Future from the Executor (no SDK import needed)
     shape: str
     session_id: str
     command: str

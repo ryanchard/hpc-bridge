@@ -7,6 +7,8 @@ from .facility.base import Facility
 from .profile import Profile
 
 BlockState = Literal["warm", "cold", "provisioning"]
+# What _provision may answer: a block state, or the spend floor refusing to start one.
+ProvisionResult = Literal["warm", "cold", "provisioning", "needs_confirmation"]
 
 
 @dataclass

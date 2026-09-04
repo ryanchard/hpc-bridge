@@ -59,7 +59,7 @@ def _read(path: Path, namespace=NS) -> dict[str, TokenStorageData]:
 
 
 def test_required_resource_servers_are_compute_and_auth():
-    assert REQUIRED_RESOURCE_SERVERS == frozenset({"funcx_service", "auth.globus.org"})
+    assert frozenset({"funcx_service", "auth.globus.org"}) == REQUIRED_RESOURCE_SERVERS
 
 
 def test_build_keeps_only_required_resource_servers(tmp_path):
@@ -80,7 +80,7 @@ def test_build_keeps_only_required_resource_servers(tmp_path):
 def test_build_raises_when_required_token_missing(tmp_path):
     src = tmp_path / "src.db"
     _seed_source(src, {"funcx_service": _td("funcx_service")})  # auth.globus.org absent
-    with pytest.raises(MissingCredentials, match="auth.globus.org"):
+    with pytest.raises(MissingCredentials, match="auth.globus.org"):  # noqa: RUF043
         build_minimal_storage_db(
             src_path=src, dst_path=tmp_path / "out.db", namespace=NS
         )

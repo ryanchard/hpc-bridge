@@ -4,8 +4,8 @@ import asyncio
 import json
 import os
 import sys
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Awaitable, Callable
 
 Runner = Callable[..., Awaitable[tuple[int, str, str]]]
 
@@ -24,9 +24,6 @@ class EndpointCLI:
     def _ep_dir(self, name: str) -> Path:
         base = self.user_dir or (Path.home() / ".globus_compute")
         return base / name
-
-    def config_path(self, name: str) -> Path:
-        return self._ep_dir(name) / "config.yaml"
 
     def user_template_path(self, name: str) -> Path:
         # globus-compute-endpoint 4.x runs `start` as an EndpointManager whose

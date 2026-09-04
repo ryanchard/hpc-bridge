@@ -14,6 +14,8 @@ The vault holds the *why*; `HANDOFF.md` holds the *now*. Read both before making
 ```bash
 python -m pytest -q                                    # unit tier (hermetic, fast) — the default gate
 python -m pytest agentic/harness/test_invariants.py -q # the agentic grading core (also hermetic)
+uv run ruff check .                                    # lint — CI-enforced
+uv run --with mypy python -m mypy                      # types — CI-enforced; strict on the leaf modules (see pyproject)
 ```
 
 `agentic/` is a **separate live-agent regression tier**: it drives a headless agent against the real globus1 cluster in a container and **costs money** (bills the Claude subscription). It is NOT part of `pytest -q`. Do not launch a live agentic run unprompted — see `agentic/README.md`.

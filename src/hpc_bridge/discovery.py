@@ -9,6 +9,7 @@ catalog entry or `SlurmFacility` exists.
 from __future__ import annotations
 
 import shlex
+from typing import Literal
 
 from .facility.remote import NeedsPreauth, SshTarget, is_interactive_auth_failure, ssh_exec
 from .models import FacilityDetails
@@ -35,7 +36,9 @@ echo "HOME=${HOME:-}"
 echo "SCRATCH=${SCRATCH:-}"
 echo "WORK=${WORK:-}"
 echo "PSCRATCH=${PSCRATCH:-}"
-if command -v sbatch >/dev/null 2>&1; then echo SCHED=slurm; elif command -v qsub >/dev/null 2>&1; then echo SCHED=pbs; else echo SCHED=none; fi
+if command -v sbatch >/dev/null 2>&1; then echo SCHED=slurm;
+elif command -v qsub >/dev/null 2>&1; then echo SCHED=pbs;
+else echo SCHED=none; fi
 echo "GCE=$(command -v globus-compute-endpoint 2>/dev/null)"
 echo "UV=$(command -v uv 2>/dev/null)"
 echo "MYBALANCE=$(command -v mybalance 2>/dev/null)"
@@ -73,7 +76,7 @@ def parse_probe(stdout: str, *, ssh_host: str) -> tuple[FacilityDetails, list[st
 
     sched = f.get("SCHED")
     if sched == "pbs":
-        scheduler = "pbs"
+        scheduler: Literal["slurm", "pbs"] = "pbs"
         partition = _default_queue(f.get("QUEUE", []))
         if not f.get("QUEUE"):
             notes.append("queue: `qstat -Q` returned nothing; confirm the PBS queue to use.")
@@ -152,7 +155,7 @@ def _scratch(scratch_src: str | None, home: str | None, user: str) -> tuple[str,
             f"scratch_root: $SCRATCH={base} has no per-user component; proposed {base}/{{user}}/"
             ".hpc-bridge — CONFIRM it's a writable per-user path (a shared base ⇒ Permission denied "
             "on every session cd).")
-    return _templatize((home or "/tmp").rstrip("/"), user) + "/.hpc-bridge", (
+    return _templatize((home or "/tmp").rstrip("/"), user) + "/.hpc-bridge", (  # noqa: S108 - a REMOTE path default, not a local temp file
         "scratch_root: no $SCRATCH/$WORK set; defaulted under $HOME — confirm a shared, non-purged path.")
 
 
@@ -216,7 +219,7 @@ def _env_setup(gce: str | None, uv: str | None, user: str) -> tuple[str, str]:
             "PATH (a `module load` and/or `source <venv>/bin/activate`).")
 
 
-def _allocation(f: dict) -> tuple[str | None, str | None, str | None]:
+def _allocation(f: dict) -> tuple[str | None, Literal["sbank", "iris", "mybalance"] | None, str | None]:
     """Detect an allocation-listing command; only `mybalance` has a parser today."""
     if f.get("MYBALANCE"):
         return "mybalance", "mybalance", None

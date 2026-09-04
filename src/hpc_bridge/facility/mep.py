@@ -63,7 +63,7 @@ class MEPFacility:
         self._client_factory = client_factory or self._default_client
 
     @classmethod
-    def from_entry(cls, entry, *, account: str | None = None, client_factory=None) -> "MEPFacility":
+    def from_entry(cls, entry, *, account: str | None = None, client_factory=None) -> MEPFacility:
         """Build from a catalog entry that carries `compute_mep_uuid`.
 
         The entry's `compute`/`defaults` split maps straight onto the MEP's schema: pinned

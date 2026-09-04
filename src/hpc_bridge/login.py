@@ -29,8 +29,9 @@ import os
 import platform
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, Literal
+from typing import Literal
 
 LoginMode = Literal["browser", "paste"]
 FLOW_TTL_S = 600.0  # a login URL / listener lives this long, then a fresh needs_login re-arms one

@@ -907,7 +907,7 @@ async def test_make_facility_builds_from_catalog_when_machine_set(monkeypatch):
     assert fac.cli.target.user == "x-u"
     assert "{venv}" not in fac.profile.env_setup  # template resolved
     assert "/home/x-u/hpc-bridge/gce-venv/bin/activate" in fac.profile.env_setup
-    assert "/anvil/scratch/x-u/.hpc-bridge" == fac.profile.scratch_root
+    assert fac.profile.scratch_root == "/anvil/scratch/x-u/.hpc-bridge"
 
 
 async def test_make_facility_catalog_unknown_machine_errors(monkeypatch):

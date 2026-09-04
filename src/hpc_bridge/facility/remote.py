@@ -16,7 +16,7 @@ import shlex
 import sys
 import tempfile
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -516,16 +516,6 @@ class RemoteEndpointCLI:
         rc, _out, _err = await self._gce("whoami")
         return rc == 0
 
-    async def hostname_fqdn(self) -> str:
-        """The fully-qualified hostname of the login node this SSH connection landed on.
-
-        Anvil-style aliases round-robin; this is how we learn the *specific* node the
-        manager daemon will run on, so we can return to it later."""
-        rc, out, err = await ssh_exec(self.target, "hostname -f")
-        if rc != 0 or not out.strip():
-            raise RuntimeError(f"hostname -f failed: {(err or out).strip()}")
-        return out.strip().splitlines()[0]
-
     def rebind(self, host: str) -> None:
         """Re-point this CLI at a specific host (the pinned FQDN) for reconnect."""
         self.target = replace(self.target, host=host)
@@ -751,7 +741,7 @@ class SlurmFacility:
                     user=self.cli.target.user,
                     key_path=self.cli.target.key_path,
                     name=handle.name,
-                    provisioned_at=datetime.now(timezone.utc).isoformat(),
+                    provisioned_at=datetime.now(UTC).isoformat(),
                 )
             )
         return handle

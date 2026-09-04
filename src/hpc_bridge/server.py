@@ -5,6 +5,7 @@ import sys
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Literal
 
 from mcp.server.fastmcp import Context, FastMCP
 
@@ -67,7 +68,7 @@ from .cost import (  # noqa: F401 - re-exported
 from .endpoint import EndpointCLI
 from .facility.local import LocalFacility
 from .lifecycle import EndpointState
-from .login import LoginFlow
+from .login import LoginFlow, LoginMode
 from .login_gate import (  # noqa: F401 - re-exported for imports
     _authenticate,
     _complete_login,
@@ -250,6 +251,7 @@ async def _ensure_endpoint_up(
         eid = app.state.endpoint_id
         spend = _total_session_spend(app)
         provisioning_elapsed = 0.0
+        status: Literal["up", "provisioning"]
         if block == "warm":
             status, notice = "up", _worker_notice(rt.last_canary) or "worker live"
             rt.provisioning_since = None  # warm -> the cold-start grace clock resets (#32)
@@ -273,10 +275,10 @@ async def _ensure_endpoint_up(
                     status="down", block_state="cold", endpoint_id=eid, session_spend=spend,
                     partition=active_partition, account=active_account,
                     notice=(f"the endpoint refused to start for this identity {rt.transient_conflicts} times in a row "
-                            f"(RESOURCE_CONFLICT: 'already in use … concurrent requests'). This is NO LONGER transient: "
+                            f"(RESOURCE_CONFLICT: 'already in use … concurrent requests'). This is NO LONGER transient: "  # noqa: E501
                             "another session with the SAME Globus identity is starting or holding a user endpoint here "
-                            "(a concurrent hpc-bridge run?), or the facility's manager is wedged. Stop retrying: end the "
-                            "other session or wait a few minutes, then call ensure_endpoint_up again. Nothing was started."),
+                            "(a concurrent hpc-bridge run?), or the facility's manager is wedged. Stop retrying: end the "  # noqa: E501
+                            "other session or wait a few minutes, then call ensure_endpoint_up again. Nothing was started."),  # noqa: E501
                 )
             if rt.last_canary is not None and _no_account_failure(rt.last_canary.error):
                 # The manager refused to start a user endpoint for THIS identity: no local account. Not
@@ -311,7 +313,7 @@ async def _ensure_endpoint_up(
     # (The query rides the free login shape — a compute-only facility has none, so skip it there; the
     # #37 failure-signal path for a MEP is the dispatch-error suffix already on the notice.)
     if status == "provisioning" and billable and eid and _has_login_shape(app):
-        notice = await scheduler_ops._augment_provisioning_notice(app, eid, notice, provisioning_elapsed, _login_runner(app))
+        notice = await scheduler_ops._augment_provisioning_notice(app, eid, notice, provisioning_elapsed, _login_runner(app))  # noqa: E501
     return EndpointStatus(
         status=status,
         block_state=block,
@@ -371,7 +373,7 @@ async def _list_facilities(query: str = "") -> list[CatalogSummary]:
 
 
 @mcp.tool()
-async def authenticate(ctx: Context, force: bool = False, mode: str | None = None) -> LoginStatus:
+async def authenticate(ctx: Context, force: bool = False, mode: LoginMode | None = None) -> LoginStatus:
     """Log in to Globus from the terminal — the ONE credential hpc-bridge needs (it covers computing,
     starting an endpoint, and reading the facility registry). Normally you don't call this: a
     connect_facility that needs it returns phase="needs_login" with the same link. Call it to log in
@@ -585,7 +587,7 @@ async def _teardown_endpoint(app: AppCtx) -> EndpointStatus:
                 "connect_facility re-attaches with zero SSH."
             ),
         )
-    await scheduler_ops._release_blocks_over_login(app, eid, _login_runner(app))  # halt spend first (a confirmed stop is stop_endpoint's job)
+    await scheduler_ops._release_blocks_over_login(app, eid, _login_runner(app))  # halt spend first (a confirmed stop is stop_endpoint's job)  # noqa: E501
     notice = "endpoint fully torn down (block released; manager gce-stopped + deleted)"
     teardown = getattr(app.facility, "teardown", None)
     if teardown is not None:
@@ -678,6 +680,7 @@ async def _ready_session(app: AppCtx, shape: str, session_id: str) -> tuple[Glob
         return _cold_outcome(not_warm, _shape_runtime(app, shape).last_canary)
     if busy is not None:  # a live task owns this session's cwd/env -> don't dispatch a second command
         return _busy_session_outcome(busy, shape, session_id)
+    assert runner is not None  # _ensure_warm_runner returns None only after binding the runner
     return runner, session
 
 
@@ -748,9 +751,9 @@ async def _poll_task(app: AppCtx, task_id: str, wait: float = 0.0) -> ShellOutco
             resolved = _resolve_task(app, task_id)
             if resolved is not None:
                 return resolved
-            handle = app.tasks.get(task_id)
-            if handle is not None:
-                ceiling_s = handle.ceiling_s
+            still = app.tasks.get(task_id)  # re-read: a rebuild may have re-registered the task
+            if still is not None:
+                ceiling_s = still.ceiling_s
     # Still pending: can anything resolve it? (web call — off the lock; then claim under the lock)
     if await _endpoint_gone(app):
         async with app.lock:

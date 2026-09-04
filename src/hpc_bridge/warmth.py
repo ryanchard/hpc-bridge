@@ -7,7 +7,9 @@ shapes (`_drop_compute_shape`, `_drop_all_shapes`, `_forget_identity_verdicts`).
 still running past the sync-wait — are registered, resolved and drained here too, because the runner
 rebuild and the canary consult them (a live task IS warmth), which is why steps 7 and 8 ship together.
 
-Every function here runs under `app.lock` held by the caller in `server` — except `_drop_compute_shape`, which takes the lock itself, and `_endpoint_gone`, a web call deliberately made OFF the lock (don't add one inside either). Tests patch
+Every function here runs under `app.lock` held by the caller in `server` — except `_drop_compute_shape`, which
+takes the lock itself, and `_endpoint_gone`, a web call deliberately made OFF the lock (don't add one inside
+either). Tests patch
 `warmth._provision` / `warmth._drop_compute_shape`; `server` calls those two through the module and
 re-exports every name for imports.
 """
@@ -20,7 +22,7 @@ from . import dispatch
 from .config import CANARY_TIMEOUT_S, CANARY_TTL_S, SYNC_WAIT_S, TASK_CEILING_MARGIN_S, _task_ceiling_s
 from .context import DEFAULT_SHAPE, AppCtx, ShapeRuntime, TaskHandle, _supported_shapes
 from .cost import _bank_warm_interval, _billable, _settle_billing, _total_session_spend, _with_spend
-from .lifecycle import EndpointState, ensure_warm
+from .lifecycle import BlockState, EndpointState, ProvisionResult, ensure_warm
 from .models import ShellOutcome
 from .notices import _no_account_failure, _transient_dispatch_failure
 from .runner import GlobusRunner
@@ -102,7 +104,7 @@ def _runner_for(app: AppCtx, shape: str) -> GlobusRunner:
         rt.warm_confirmed_at = None
     return rt.runner
 
-async def _confirm_worker(app: AppCtx, shape: str, *, force: bool) -> str:
+async def _confirm_worker(app: AppCtx, shape: str, *, force: bool) -> BlockState:
     """Upgrade a manager-online endpoint to truly 'warm' by confirming a worker answers a
     canary. Returns 'warm' if a worker is live, else 'provisioning' — the manager is up but the
     compute block is still cold-starting (the gap manager_online cannot see; the canary submit
@@ -176,7 +178,7 @@ def _note_dispatch(rt: ShapeRuntime, out: ShellOutcome) -> None:
 
 async def _provision(
     app: AppCtx, shape: str, *, force_canary: bool = False, confirm_spend: bool = False
-) -> str:
+) -> ProvisionResult:
     """Provision/probe under the session profile and update the spend clock. Returns the
     block state. 'warm' means a WORKER answered a canary — not merely that the manager is
     online; that distinction is the cold-start gap this closes.
@@ -283,7 +285,7 @@ def _forget_identity_verdicts(app: AppCtx) -> None:
             rt.last_canary = None
         rt.runner_stale = True
 
-async def _ensure_warm_runner(app: AppCtx, shape: str) -> str | None:
+async def _ensure_warm_runner(app: AppCtx, shape: str) -> ProvisionResult | None:
     """Ensure a worker is live and the shape's runner is bound to it; returns the block state
     if NOT warm (caller returns a cold_start), else None. _provision -> _confirm_worker
     (re)creates the runner and proves a worker answered, so on 'warm' the runner is ready."""

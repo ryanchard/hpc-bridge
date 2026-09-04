@@ -13,13 +13,13 @@ import asyncio
 
 from . import config
 from .context import AppCtx
-from .login import LoginFlow, LoginStart
+from .login import LoginFlow, LoginMode, LoginStart
 from .models import LoginStatus
 from .notices import _login_notice
 from .warmth import _forget_identity_verdicts
 
 
-async def _start_login_and_wait(flow: LoginFlow, mode: str | None = None) -> tuple[LoginStart, str]:
+async def _start_login_and_wait(flow: LoginFlow, mode: LoginMode | None = None) -> tuple[LoginStart, str]:
     """Arm a login and, in browser mode, wait for it. Returns (start, status). A browser attempt that
     FAILS during the wait (no browser after all, Globus rejected the redirect) is re-armed at once in
     paste mode — the failure is remembered by the flow — so the caller shows a usable link, not an error."""
@@ -32,7 +32,7 @@ async def _start_login_and_wait(flow: LoginFlow, mode: str | None = None) -> tup
         status = "waiting"
     return start, status
 
-async def _authenticate(app: AppCtx, force: bool = False, mode: str | None = None) -> LoginStatus:
+async def _authenticate(app: AppCtx, force: bool = False, mode: LoginMode | None = None) -> LoginStatus:
     flow = app.login_flow
     if flow is None:
         flow = app.login_flow = LoginFlow()
