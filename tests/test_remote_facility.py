@@ -938,10 +938,17 @@ async def test_teardown_keeps_credentials_by_default():
     assert ("wipe", ) not in [(c[0],) for c in cli.calls]  # default keeps creds for reconnect
 
 
-async def test_teardown_wipes_credentials_when_requested():
+async def test_teardown_wipes_credentials_only_when_hpc_bridge_seeded_them():
+    # the store hpc-bridge placed goes with the endpoint…
     cli = _FakeRemoteCLI()
-    await SlurmFacility(_profile(), cli=cli).teardown("fake-eid", wipe_credentials=True)
+    fac = SlurmFacility(_profile(), cli=cli)
+    fac._seeded_credentials = True
+    await fac.teardown("fake-eid", wipe_credentials=True)
     assert ("wipe", "hpc-bridge") in cli.calls
+    # …a store that was already there (a shared account, say) is never ours to delete (2026-09-04)
+    cli2 = _FakeRemoteCLI()
+    await SlurmFacility(_profile(), cli=cli2).teardown("fake-eid", wipe_credentials=True)
+    assert ("wipe", "hpc-bridge") not in cli2.calls
 
 
 # --- Persistent SSH (ControlMaster multiplexing) --------------------------------------------
