@@ -202,5 +202,5 @@ def test_needs_preauth_notice_explains_the_pinned_node_second_connection():
     cli.rebind("login02.expanse.sdsc.edu")
     res = _needs_preauth_result("expanse", cli.target, otp_ok=True)
     assert res.notice.startswith("The endpoint runs on login node login02.expanse.sdsc.edu")
-    assert "one more code, once per session" in res.notice and "complete_preauth" in res.notice
+    assert "one code per session" in res.notice and "not to login.expanse.sdsc.edu" in res.notice and "complete_preauth" in res.notice
 

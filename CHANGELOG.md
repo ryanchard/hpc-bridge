@@ -3,6 +3,51 @@
 All notable changes to hpc-bridge. The plugin version lives in `.claude-plugin/plugin.json` (Claude Code updates an
 installed plugin only when that version changes); git tags mark releases.
 
+## 0.1.2 — 2026-09-04 — one-time codes in the chat; three more facilities (`v0.1.2-beta.1`)
+
+The second beta. It exists so installed plugins pick up this week's fixes (Claude Code refreshes a plugin only when the
+manifest version moves) and to add the facilities validated in the ACCESS campaign.
+
+### Added
+- **One-time codes in the conversation.** A facility that requires a TOTP or Duo passcode at SSH login (SDSC Expanse)
+  no longer needs your own terminal: the agent asks for the current code, `complete_preauth(code)` opens the shared
+  SSH connection with it, and the bootstrap rides that connection. The code is single-use and never stored. A
+  **password** is still never handled: the opener refuses a password prompt (and an unknown-host-key prompt) and
+  hands you the `ssh` line for your own terminal instead. (#86, #87, #88)
+- **Facility multi-user endpoints read their own contract.** At attach, the endpoint's template metadata is fetched
+  and the configuration is checked against its schema; keys the facility rejects are dropped before dispatch, so a
+  strict schema (Anvil) gets the account and nothing it refuses. Worker environments can pin the endpoint version
+  the facility's manager runs, or the client's. (#83, #84)
+- **Registry entries:** **NCSA Delta** (multi-user endpoint), **Purdue Anvil's multi-user endpoint** alongside its SSH
+  entry, and **SDSC Expanse** (SSH with a one-time code). Each validated live before ingest. (#83, #84, #85)
+- Bring-your-own on a bare login node (no `uv`, no usable Python): the bootstrap installs `uv` and builds the
+  endpoint's environment itself, with a longer budget and a plain explanation when it runs out. (#84)
+
+### Fixed
+- A curated one-time-code facility came back as "NO SSH ACCESS" on the registry path, and the agent went editing
+  `~/.ssh/config`. A key that is accepted but still awaits a second factor is now recognised as the pre-auth handoff,
+  the handoff is raised before any failing attempt, and the skill forbids touching the user's SSH configuration. (#87)
+- The second code for a pinned login node hung until timeout when that node's key was not in `known_hosts`: the
+  code-opener now verifies the pinned node against the alias you trusted, and the notice explains why a pinned
+  node needs its own connection. (#88)
+- Teardown waits for the endpoint to stop before deleting, and a token store seeded by an aborted bootstrap is
+  remembered so teardown still removes it. (#84)
+
+### Verified
+- Live on **NCSA Delta** (multi-user endpoint, `hostname` on a compute node), **Purdue Anvil** (multi-user endpoint,
+  account applied on the strict schema) and **SDSC Expanse** (SSH bootstrap with one code, login shape on `login02`).
+- A fresh-user session against Expanse from a clean plugin install: one code requested with the reason, the
+  connection opened in three seconds, the endpoint reattached with no further prompt.
+
+### Known limitations
+- Duo *push* (approve on your phone, no code) is not yet driven from the chat; use the `ssh` line in your own
+  terminal for those facilities.
+- A pinned login node on a one-time-code facility costs one code per session even when the endpoint is already
+  running; whether to pin at all on such facilities is an open design question.
+- ACES and Stampede3 are not yet validated (accounts pending); ALCF and NeSI multi-user endpoints are not catalogued.
+- Windows is untested; the SSH path relies on OpenSSH connection multiplexing.
+- The registry index is a trial index owned by one maintainer until the org transfer.
+
 ## 0.1.1 — 2026-09-04 — first public beta (`v0.1.1-beta.1`)
 
 hpc-bridge lets Claude Code work on a supercomputer for you: it finds the facility, logs you in to Globus once, starts

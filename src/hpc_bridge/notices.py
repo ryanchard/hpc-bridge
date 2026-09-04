@@ -227,8 +227,8 @@ def _needs_preauth_result(facility: str, target, *, otp_ok: bool = False) -> Con
     pinned = ""
     alias = getattr(target, "host_key_alias", None)
     if alias and alias != target.host:
-        pinned = (f"The endpoint runs on login node {target.host} (the facility placed it there), which needs its own "
-                  f"shared connection separate from {alias}'s — one more code, once per session. ")
+        pinned = (f"The endpoint runs on login node {target.host} (the facility placed it there); the code opens a "
+                  f"shared connection to that node itself, not to {alias} — one code per session, not per command. ")
     if otp_ok:
         notice = pinned + (
             f"{target.host} needs a one-time login step: the facility accepts a ONE-TIME CODE (TOTP / Duo "
