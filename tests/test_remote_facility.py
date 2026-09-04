@@ -1046,3 +1046,120 @@ def test_control_argv_bare_host_when_user_absent():
     assert SshTarget("globus1", control_dir="/cm").control_argv("exit") == [
         "ssh", "-O", "exit", "-o", "ControlPath=/cm/%C", "globus1",
     ]
+
+
+# ---- issue #39: the "registration lag" was a WRAPPED `list` table (+ a real ~3.6 s lag) ------------------------
+LONG_NAME = "hpc-bridge-globus1-1788535474-99999"  # 34 chars: the harness's per-run shape; hpc-bridge-<fqdn> too
+WRAPPED_LIST = (  # captured verbatim on globus1 (gce 4.13, no TTY, COLUMNS unset)
+    "+--------------------------------------+---------+-----------------------------+\n"
+    "|             Endpoint ID              | Status  |        Endpoint Name        |\n"
+    "+======================================+=========+=============================+\n"
+    "| ec844b37-fba8-4053-bbbf-e8f1848964d3 | Running | hpc-bridge-                 |\n"
+    "|                                      |         | globus1-1788535474-99999    |\n"
+    "+--------------------------------------+---------+-----------------------------+\n"
+)
+WIDE_LIST = (  # the same listing with COLUMNS=300
+    "| ec844b37-fba8-4053-bbbf-e8f1848964d3 | Running | hpc-bridge-globus1-1788535474-99999    |\n"
+)
+
+
+def _gce_fake(list_for_call):
+    """ssh_exec fake: `list` output chosen per (call index, cmd); everything else succeeds silently."""
+    calls: list[str] = []
+
+    async def fake(target, cmd, **kw):
+        calls.append(cmd)
+        if "endpoint list" in cmd:
+            return (0, list_for_call(sum("endpoint list" in c for c in calls) - 1, cmd), "")
+        return (0, "HPCB_HOST=login1.example\n", "")
+
+    return fake, calls
+
+
+async def test_39_list_runs_with_a_wide_columns_so_long_names_do_not_wrap(monkeypatch):
+    fake, calls = _gce_fake(lambda n, cmd: WIDE_LIST if "COLUMNS=" in cmd else WRAPPED_LIST)
+    monkeypatch.setattr(remote, "ssh_exec", fake)
+    cli = RemoteEndpointCLI(SshTarget("h", "u", "k"), "true")
+    assert await cli.status(LONG_NAME) == "running"
+    assert await cli.endpoint_id(LONG_NAME) == "ec844b37-fba8-4053-bbbf-e8f1848964d3"
+    assert all("export COLUMNS=" in c for c in calls)
+
+
+async def test_39_without_the_wide_render_the_wrapped_row_never_matches(monkeypatch):
+    # the pre-fix behaviour, kept as the explanation: per-line parsing sees the name cell as "hpc-bridge-"
+    rows = RemoteEndpointCLI._list_rows(WRAPPED_LIST)
+    data = [r for r in rows if r[0].startswith("ec844b37")]
+    assert data and data[0][-1] == "hpc-bridge-"  # the continuation row has 1 cell and is dropped
+
+
+async def test_39_start_waits_for_the_uuid_to_register(monkeypatch):
+    fake, calls = _gce_fake(lambda n, cmd: "No endpoints configured!\n" if n == 0 else WIDE_LIST)
+    monkeypatch.setattr(remote, "ssh_exec", fake)
+    slept: list[float] = []
+
+    async def no_sleep(s):
+        slept.append(s)
+
+    monkeypatch.setattr(remote, "_sleep", no_sleep)
+    cli = RemoteEndpointCLI(SshTarget("h", "u", "k"), "true")
+    eid, host = await cli.start(LONG_NAME)
+    assert eid == "ec844b37-fba8-4053-bbbf-e8f1848964d3" and host == "login1.example"
+    assert sum("endpoint list" in c for c in calls) == 2 and slept == [remote._START_REGISTER_POLL_S]
+
+
+async def test_39_start_gives_up_after_the_bounded_wait(monkeypatch):
+    fake, calls = _gce_fake(lambda n, cmd: "No endpoints configured!\n")
+    monkeypatch.setattr(remote, "ssh_exec", fake)
+    clock = {"t": 0.0}
+
+    async def no_sleep(s):
+        clock["t"] += s
+
+    monkeypatch.setattr(remote, "_sleep", no_sleep)
+    monkeypatch.setattr(remote.time, "monotonic", lambda: clock["t"])
+    cli = RemoteEndpointCLI(SshTarget("h", "u", "k"), "true")
+    with pytest.raises(RuntimeError, match="could not find endpoint"):
+        await cli.start(LONG_NAME)
+    n = sum("endpoint list" in c for c in calls)
+    assert 2 <= n <= int(remote._START_REGISTER_WAIT_S / remote._START_REGISTER_POLL_S) + 2
+
+
+@pytest.mark.parametrize("refusal", [
+    (73, "", ""),  # gce 4.13 live: exit 73, nothing on either stream
+    (1, "", "Another instance of this endpoint is running. Refusing to start."),  # the documented text
+])
+async def test_39_start_adopts_an_already_running_manager(monkeypatch, refusal):
+    calls: list[str] = []
+
+    async def fake(target, cmd, **kw):
+        calls.append(cmd)
+        if "endpoint list" in cmd:
+            return (0, WIDE_LIST, "")  # the manager IS running
+        return refusal
+
+    monkeypatch.setattr(remote, "ssh_exec", fake)
+    cli = RemoteEndpointCLI(SshTarget("h", "u", "k"), "true")
+    eid, host = await cli.start(LONG_NAME)  # no raise: the running manager is the endpoint we want
+    assert eid == "ec844b37-fba8-4053-bbbf-e8f1848964d3" and host is None
+
+
+async def test_39_start_still_fails_on_a_real_start_error(monkeypatch):
+    async def fake(target, cmd, **kw):
+        return (1, "", "ModuleNotFoundError: No module named 'parsl'")
+
+    monkeypatch.setattr(remote, "ssh_exec", fake)
+    cli = RemoteEndpointCLI(SshTarget("h", "u", "k"), "true")
+    with pytest.raises(RuntimeError, match=r"remote start failed \(rc=1\): ModuleNotFoundError"):
+        await cli.start(LONG_NAME)
+
+
+async def test_39_refused_start_with_no_running_manager_is_a_real_failure(monkeypatch):
+    async def fake(target, cmd, **kw):
+        if "endpoint list" in cmd:
+            return (0, "No endpoints configured!\n", "")  # nothing running -> not an adopt
+        return (73, "", "")
+
+    monkeypatch.setattr(remote, "ssh_exec", fake)
+    cli = RemoteEndpointCLI(SshTarget("h", "u", "k"), "true")
+    with pytest.raises(RuntimeError, match=r"rc=73.*no output"):
+        await cli.start(LONG_NAME)

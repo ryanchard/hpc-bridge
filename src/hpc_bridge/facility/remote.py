@@ -15,6 +15,7 @@ import re
 import shlex
 import sys
 import tempfile
+import time
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -267,6 +268,18 @@ def profile_from_catalog_entry(
 
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+# `globus-compute-endpoint list` renders an 80-column table when there is no TTY (how we run it over
+# SSH) and WRAPS an Endpoint Name longer than ~27 chars onto a second row — so `hpc-bridge-<fqdn>`
+# names were never matched (issue #39: the "registration lag" that wasn't; measured on globus1, gce 4.13).
+# A wide COLUMNS is honoured without a TTY and keeps the name on one row.
+_GCE_COLUMNS = 400
+# After `start --detach` returns, the daemon still has to register: the UUID (endpoint.json) landed
+# ~3.6 s later on globus1. Poll the listing for it, bounded.
+_START_REGISTER_WAIT_S = 30.0
+_START_REGISTER_POLL_S = 1.5
+_ANOTHER_INSTANCE = "another instance"
+_sleep = asyncio.sleep  # indirection so tests can run the poll loop without waiting
 _JOBID = re.compile(r"^\d+(_\d+)?$")  # plain or array slurm job id (guards what we scancel)
 _JOBID_PBS = re.compile(r"^\d+(\.\S+)?$")  # PBS: bare or host-qualified (1234567.polaris-pbs-01)
 
@@ -284,7 +297,8 @@ class RemoteEndpointCLI:
         self.remote_dir = remote_dir
 
     async def _gce(self, *args: str, timeout: float = 120.0) -> tuple[int, str, str]:
-        inner = f"{self.env_setup} && globus-compute-endpoint " + " ".join(shlex.quote(a) for a in args)
+        inner = (f"export COLUMNS={_GCE_COLUMNS}; {self.env_setup} && globus-compute-endpoint "
+                 + " ".join(shlex.quote(a) for a in args))
         return await ssh_exec(self.target, f"bash -lc {shlex.quote(inner)}", timeout=timeout)
 
     async def login_exec(self, command: str) -> tuple[int, str, str]:
@@ -400,12 +414,30 @@ class RemoteEndpointCLI:
         )
         rc, out, err = await ssh_exec(self.target, f"bash -lc {shlex.quote(inner)}")
         if rc != 0:
-            raise RuntimeError(f"remote start failed: {(err or out).strip()}")
+            # A refused start whose manager is ALREADY running (its pidfile blocks a second start; gce 4.13
+            # exits 73 and prints nothing at all — the "Another instance is running" text is not reliable)
+            # is the endpoint we want: adopt it instead of failing (#39's second symptom).
+            if _ANOTHER_INSTANCE in (err + out).lower() or await self.status(name) == "running":
+                out = ""
+            else:
+                raise RuntimeError(f"remote start failed (rc={rc}): {(err or out).strip() or 'no output'}")
         host = None
         for line in out.splitlines():
             if line.startswith("HPCB_HOST="):
                 host = line[len("HPCB_HOST=") :].strip() or None
-        return await self.endpoint_id(name), host
+        return await self._await_endpoint_id(name), host
+
+    async def _await_endpoint_id(self, name: str) -> str:
+        """`endpoint_id`, polled for up to `_START_REGISTER_WAIT_S` after a fresh start: the detached
+        daemon registers (and the UUID appears in `list`) a few seconds after `start` returns."""
+        deadline = time.monotonic() + _START_REGISTER_WAIT_S
+        while True:
+            try:
+                return await self.endpoint_id(name)
+            except RuntimeError as exc:
+                if "could not find endpoint" not in str(exc) or time.monotonic() >= deadline:
+                    raise
+            await _sleep(_START_REGISTER_POLL_S)
 
     async def stop(self, name: str) -> None:
         # Best-effort + bounded: `stop` can throw a psutil traceback yet still cancel the block, and
