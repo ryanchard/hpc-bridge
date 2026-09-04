@@ -12,9 +12,10 @@ comes at the first command.
 
 A block is a scheduler job of one node, held for as long as you are active plus the facility's idle
 timeout. Its walltime is the facility's default unless you ask for another. The agent reports a
-session spend estimate; it is a real number only where a charge factor is configured, and reads as
-zero on unmetered facilities such as the lab cluster. Zero does not mean free tier, it means
-unmetered.
+session spend estimate; it is a real number only if you have set `HPC_BRIDGE_CHARGE_FACTOR` to your
+allocation's service-unit rate per node-hour (hpc-bridge does not know your facility's rates), and reads
+as zero otherwise, as it always does on unmetered machines such as Globus Labs' cluster. Zero does not
+mean free tier, it means unmetered.
 
 ## Warm between commands
 
@@ -30,13 +31,20 @@ busy, so the idle timeout never reclaims it under you. Do not ask for work to be
 is still running. If the endpoint disappears while a task is pending, the task is reported as
 orphaned rather than left to poll forever.
 
+A task cannot outlive its block. When the block's walltime expires (30 minutes on Anvil's `debug`
+partition by default), the task is killed with exit code 124 and you get the output it produced up to
+then; hpc-bridge does not resubmit it. For work longer than a block, ask the agent to submit a batch job
+from the login node with `sbatch` or `qsub` and check on it later.
+
 ## Stopping
 
 "Stop" means stop spending, not tear everything down.
 
 - **SSH-bootstrap facility:** the agent cancels the block through the scheduler and confirms it is
-  gone. Your personal endpoint on the login node stays online, costing nothing, so the next session
-  reconnects with no SSH. Ask for a teardown only if you want that endpoint removed entirely.
+  gone. Your personal endpoint on the login node stays online, costing nothing (it is a
+  `globus-compute-endpoint` process in your home directory there), so the next session reconnects with
+  no SSH. Ask for a teardown only if you want that endpoint removed entirely, for instance because your
+  facility forbids persistent processes on login nodes.
 - **Facility-run endpoint:** hpc-bridge has no cancel channel into the facility's block. The agent
   drains it, no more work is accepted, and reports `draining` as the final state; the facility's idle
   timeout reclaims the block, about ten minutes on `globus1`. Spend can accrue for that tail. The

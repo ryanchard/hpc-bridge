@@ -1,8 +1,8 @@
 # The Globus login
 
 hpc-bridge needs exactly one credential: a Globus login on the machine where Claude Code runs. It
-covers everything, submitting work to a facility-run endpoint, standing up and reusing your own
-endpoint, and it is stored once.
+covers everything, from submitting work to a facility-run endpoint to standing up and reusing your own,
+and it is stored once.
 
 ## What happens
 
@@ -43,7 +43,7 @@ login link into a shell. If an agent ever asks you for a password, do not give i
 
 Tokens are stored in Globus Compute's standard token store, `~/.globus_compute/storage.db`, and
 refreshed automatically, so later sessions never prompt. To switch Globus identity, log out at
-app.globus.org in your browser and ask the agent to log in again with `force`. Deleting the token
+app.globus.org in your browser and ask the agent to force a fresh Globus login. Deleting the token
 store logs you out entirely.
 
 If you quit Claude Code in the middle of a login, the listener waiting for your browser goes with it.

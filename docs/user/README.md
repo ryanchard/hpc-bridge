@@ -7,24 +7,20 @@ it spends anything), runs your commands on a node, and releases the block when y
 | Page | Read it when |
 |---|---|
 | [Install](install.md) | you are setting it up: the two commands, prerequisites, updating |
-| [Quickstart](quickstart.md) | your first session, step by step, with what the agent will say |
+| [Quickstart](quickstart.md) | your first session, step by step, and what to expect |
 | [Facilities](facilities.md) | choosing a machine: what each facility needs from you |
 | [The Globus login](login.md) | the one credential hpc-bridge needs, and why your browser opens |
 | [Costs and stopping](costs-and-stopping.md) | how spend is gated, what "stop" means, long-running work |
 | [Troubleshooting](troubleshooting.md) | what a refusal or a stuck state means and what to do |
 
-## What you bring, by how the facility is reached
+**Three ways a facility is reached**, decided for you from the registry: a facility-run endpoint (zero SSH;
+you need an account there with your Globus identity mapped), an SSH bootstrap (an account plus key-based SSH
+to the login node), or your own un-catalogued cluster (the same, plus a minute to confirm what the agent
+discovers). [Facilities](facilities.md) has the table and the registered machines.
 
-Which row applies is decided for you from the registry. Everything in the right column is included.
-
-| Facility | You bring | hpc-bridge does |
-|---|---|---|
-| **Facility-run endpoint**, zero SSH (e.g. `globus1`) | an account there with your Globus identity mapped to it | attaches to the facility's endpoint; nothing to set up on the machine |
-| **SSH bootstrap** (e.g. Purdue Anvil) | an account and key-based SSH to the login node, as a `Host` block in `~/.ssh/config` | one SSH to install a personal endpoint in your home directory, then reconnects with no SSH |
-| **Your own cluster**, not in the registry | the same as SSH bootstrap, plus a minute to confirm the settings it discovers | probes the login node, proposes a configuration, caches it once you confirm |
-
-In every case you also bring Claude Code, Python 3.11 with `uv`, and a Globus account; the plugin
-brings the registry, the terminal Globus login, the spend gate and idle self-release.
+**What it is not, yet:** it moves command output, not files (use Globus Transfer or `scp` for results);
+Slurm and PBS are the supported schedulers; it is interactive, though you can submit batch jobs from the login
+node through it.
 
 The developer documentation (design, internals, the tool reference) lives in the
 [vault](../hpc-bridge-vault/Home.md).

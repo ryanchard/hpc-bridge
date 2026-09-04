@@ -1,13 +1,13 @@
 # Facilities
 
-`list_facilities` answers from a public registry. Each entry says how it is reached, and that
-decides what you need before you connect.
+Asking *What HPC facilities can I use?* answers from a public registry. Each entry says how it is
+reached, and that decides what you need before you connect.
 
 ## What each access kind needs from you
 
 | Access | You need | hpc-bridge does |
 |---|---|---|
-| **Facility-run endpoint** (zero SSH) | an account at the facility with your Globus identity mapped to it | attaches to the facility's endpoint; the first block start tests your mapping |
+| **Facility-run endpoint** (a Globus Compute *multi-user endpoint*, "MEP", run by the facility; zero SSH) | an account at the facility with your Globus identity mapped to it | attaches to the facility's endpoint; the first block start tests your mapping |
 | **SSH bootstrap** | an account and key-based SSH to the login node (`~/.ssh/config` with `User` and `IdentityFile`) | one SSH to stand up a personal endpoint in your home directory, then reuses it with no further SSH |
 | **Bring your own cluster** | the same as SSH bootstrap, plus a minute to confirm the discovered configuration | probes the login node, proposes a configuration, caches it once you confirm |
 
@@ -16,7 +16,7 @@ decides what you need before you connect.
 | Facility | Access | Scheduler | Notes |
 |---|---|---|---|
 | **Purdue Anvil** (ACCESS) | SSH bootstrap on `anvil.rcac.purdue.edu` | Slurm | your allocations come from `mybalance`; default partition `debug`, 30-minute walltime; the endpoint lives under `~/hpc-bridge/` in your Anvil home; scratch under `/anvil/scratch/<you>/.hpc-bridge` |
-| **Globus Labs cluster** (`globus1`) | facility-run endpoint, zero SSH | Slurm | compute-only: there is no login node, every command runs on a billed block on partition `main` that stays warm between commands; no allocation account needed; unmetered lab hardware (3 ARM DGX Spark nodes) |
+| **Globus Labs cluster** (`globus1`) | facility-run endpoint, zero SSH | Slurm | Globus Labs members only (the facility maps their identities). Compute-only: there is no login node, every command runs on a billed block on partition `main` that stays warm between commands; no allocation account needed; unmetered lab hardware (3 ARM DGX Spark nodes, aarch64: bring ARM builds) |
 
 More facilities operate Globus Compute multi-user endpoints (ALCF Polaris and Crux, NCSA Delta,
 NeSI). They are not in the registry yet because their endpoint templates need per-facility settings
@@ -26,9 +26,11 @@ hpc-bridge does not model yet; see the vault's
 ## Which Globus identity to use
 
 A facility-run endpoint maps a specific identity, usually your institutional one, to your local
-account. Globus tries every identity linked to your account, so a login through any linked identity
-works, but an unlinked personal identity, a Google login for instance, will be refused with
-"NO ACCOUNT at this facility". Log in with the identity the facility knows, or link it.
+account. The facility does the mapping when it creates your account or when you ask; if you have never
+used Globus there, ask the facility to map your identity, and the first block start is the test. Globus
+tries every identity linked to your account, so a login through any linked identity works, but an
+unlinked personal identity, a Google login for instance, will be refused with "NO ACCOUNT at this
+facility". Log in with the identity the facility knows, or link it.
 
 ## Compute-only facilities
 
@@ -46,7 +48,24 @@ the network interface the endpoint should bind, scratch space, an environment se
 you to confirm or correct them. On a multi-factor facility the probe cannot log in by itself: the
 agent gives you an `ssh` command to run in your own terminal, which opens a session hpc-bridge then
 shares, so you authenticate once. The confirmed configuration is cached locally, and later sessions
-reconnect with no probe and no SSH.
+reconnect with no probe and no SSH. For a facility that is in the registry, the registry's entry always
+wins over that local cache, so editing a discovered configuration for Anvil has no effect.
 
 To make a cluster available to everyone, add it to the registry: see
 [Adding a facility](../adding-a-facility.md).
+
+## What hpc-bridge does on your cluster
+
+Read-only first: the probe runs a short shell script on the login node that prints the hostname, which
+scheduler is present (`sbatch` or `qsub`), the partitions or queues, the network interfaces, the scratch
+variables, and whether `uv` and Globus Compute are already installed. Nothing is written.
+
+Then, only after you confirm the proposed settings, the bootstrap installs `uv` if needed and creates a
+Python environment at `~/hpc-bridge/gce-venv` in your home directory there with `globus-compute-endpoint`
+in it, writes the endpoint's configuration under `~/.globus_compute/hpc-bridge-<host>/`, copies a trimmed
+Globus token store there (mode 600) so the endpoint can register, and starts the endpoint. The process you
+will see in `ps` is `globus-compute-endpoint`; it stays running on the login node between sessions so the
+next connect needs no SSH. If your facility's policy forbids persistent user processes on login nodes, ask
+the agent for a *teardown* at the end of each session; it stops and removes the endpoint. To remove
+everything, tear down, then delete `~/hpc-bridge/` and `~/.globus_compute/` there.
+

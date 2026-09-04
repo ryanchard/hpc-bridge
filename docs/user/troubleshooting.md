@@ -1,7 +1,8 @@
 # Troubleshooting
 
 Most problems announce themselves in the agent's own words. This page says what each one means and
-what to do. The phrases in bold are the ones hpc-bridge itself uses, so you can match them.
+what to do. The phrases in bold are the ones hpc-bridge itself uses, so you can match them. Anything
+not covered here: [open an issue](https://github.com/ryanchard/hpc-bridge/issues).
 
 ## First contact
 
@@ -54,9 +55,11 @@ facility's idle timeout reclaims the block. See [Costs and stopping](costs-and-s
 
 ## The agent has no hpc-bridge tools
 
-The plugin's server did not start. Check that `uv` is on the `PATH` of the shell that started
-Claude Code, and look at the server's error output in Claude Code's MCP status (`/mcp`). A common
-cause on a fresh clone is a missing `uv sync --extra integration`.
+The plugin's server did not start. Look at the server's error output in `/plugin` (its **Errors** tab)
+or `/mcp`. The usual cause is `uv` not being found by the process that starts the server: the message there reads
+**"'uv' was not found on PATH or in the usual install locations"**, and the fix is to install `uv` or
+symlink yours into `~/.local/bin`, then `/reload-plugins`. `uv run` resolves the server's Python
+dependencies itself, so a dependency error shows in the same place.
 
 ## SSH multiplexing errors
 
@@ -72,5 +75,6 @@ hour. Fix the key before retrying rather than retrying in a loop.
 
 ## The agent asked me for a password
 
-It should never. Do not provide one; end the session and report it. Every credential hpc-bridge
+It should never. Do not provide one; end the session and
+[report it](https://github.com/ryanchard/hpc-bridge/issues). Every credential hpc-bridge
 uses is entered by you in a browser or in your own terminal.

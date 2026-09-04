@@ -1,7 +1,13 @@
 # Quickstart: your first session
 
-This is the whole flow on the lab cluster, `globus1`, from a machine with nothing configured. Times
+This is the whole flow on Globus Labs' cluster, `globus1`, from a machine with nothing configured. Times
 are what a real first run took; the block allocation dominates.
+
+> **Not a Globus Labs member?** `globus1` refuses identities it has not mapped. Follow the same four steps
+> with a facility from step 1 that you have an account on (*Connect me to Anvil*), or with your own cluster
+> (*Connect me to the cluster at `login.example.edu`*). On an SSH facility the first connect takes a minute
+> or two longer than below: hpc-bridge installs Globus Compute into your home directory there, once; the
+> agent asks you to confirm the discovered settings before it starts anything. Later connects skip both.
 
 ## 1. Ask what you can use
 
@@ -45,13 +51,17 @@ environment variables persist between commands, like a shell session.
 
 ## 4. Stop
 
-> Tear it down
+> Release the compute block
 
 On an SSH-bootstrap facility the agent cancels the block and confirms it is gone. On a facility-run
 endpoint hpc-bridge has no cancel channel into the facility's block, so the honest answer is
 "draining": the block stops accepting work and the facility reclaims it after its idle timeout,
 about ten minutes on `globus1`. The agent says this plainly. See
 [Costs and stopping](costs-and-stopping.md).
+
+Say *tear it down* only when you want your personal endpoint removed from the login node as well; on an
+SSH facility that is what makes the next session's connect need no SSH, so keep it unless you are done
+with the machine.
 
 ## What a second session looks like
 

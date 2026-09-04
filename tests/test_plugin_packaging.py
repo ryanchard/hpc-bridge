@@ -53,3 +53,30 @@ def test_skill_has_frontmatter():
     assert text.startswith("---")
     assert "name: driving-hpc" in text  # skill analyzers expect an explicit name
     assert "description:" in text
+
+
+def test_mcp_launcher_finds_uv_off_path(tmp_path):
+    # The desktop app / IDE extensions start the server with a minimal PATH that lacks uv's install dir
+    # (readiness pass 2026-09-04): .mcp.json calls bin/run-with-uv, which locates uv and execs it.
+    import os
+    import subprocess
+
+    c = json.loads((ROOT / ".mcp.json").read_text())
+    assert c["mcpServers"]["endpoint"]["command"] == "${CLAUDE_PLUGIN_ROOT}/bin/run-with-uv"
+    launcher = ROOT / "bin" / "run-with-uv"
+    assert launcher.stat().st_mode & stat.S_IXUSR
+    # a fake HOME with ~/.local/bin/uv, and a PATH with no uv at all
+    home = tmp_path / "home"
+    (home / ".local" / "bin").mkdir(parents=True)
+    stub = home / ".local" / "bin" / "uv"
+    stub.write_text("#!/bin/sh\necho \"stub-uv $*\"\n")
+    stub.chmod(0o755)
+    env = {"HOME": str(home), "PATH": "/usr/bin:/bin"}
+    r = subprocess.run([str(launcher), "run", "hpc-bridge"], capture_output=True, text=True, env=env, check=False)
+    assert r.returncode == 0 and r.stdout.strip() == "stub-uv run hpc-bridge", (r.stdout, r.stderr)
+    # nothing anywhere: a clear message, exit 127
+    r = subprocess.run([str(launcher), "run"], capture_output=True, text=True,
+                       env={"HOME": str(tmp_path / "empty"), "PATH": "/usr/bin:/bin"}, check=False)
+    assert r.returncode == 127 and "'uv' was not found" in r.stderr
+    assert os.environ  # (keeps the import used on platforms where the assertions above short-circuit)
+
