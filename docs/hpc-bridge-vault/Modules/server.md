@@ -53,3 +53,4 @@
 > [!note] Split in progress (2026-09-03)
 > Step 1 moved the runtime data types (`AppCtx`, `ShapeRuntime`, `TaskHandle`, `DEFAULT_SHAPE`) to [[context]]; `server` re-exports them. The plan and the remaining steps are in [[Review 2026-09-03 — code quality]] §1.
 > Step 2 moved the env reads (as typed accessors), the runtime tunables and the ControlMaster settings to [[config]].
+> Steps 3–4 moved every pure notice/outcome builder to [[notices]] and the spend clock to [[cost]]; the shape-capability reads (`_supported_shapes`, `_has_login_shape`, `_idle_release_s`) went to [[context]] and the task-ceiling maths (`_parse_hhmmss`, `_task_ceiling_s`) to [[config]]. `server.py` is now ~1810 lines (from 2276).
