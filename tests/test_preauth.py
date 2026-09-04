@@ -81,9 +81,13 @@ def test_needs_preauth_result_offers_the_code_path_only_when_keyboard_interactiv
     assert not res2.preauth_code_ok and "complete_preauth" not in res2.notice and "THEIR OWN terminal" in res2.notice
 
 
-def test_offers_one_time_code_reads_the_denial():
+def test_offers_one_time_code_means_the_key_passed_and_only_the_second_factor_remains():
+    # Expanse: publickey is NO LONGER listed -> the key was accepted; keyboard-interactive is the code prompt
     assert offers_one_time_code("Permission denied (gssapi-with-mic,keyboard-interactive,hostbased).")
+    # Anvil stranger: publickey STILL listed -> the key was refused; 2FA being offered does not make it a handoff
+    assert not offers_one_time_code("Permission denied (publickey,gssapi-keyex,gssapi-with-mic,keyboard-interactive,hostbased).")
     assert not offers_one_time_code("Permission denied (publickey,password).")
+    assert not offers_one_time_code("Permission denied (publickey).")
     assert NeedsPreauth(SshTarget(host="h"), otp_ok=True).otp_ok is True
 
 
@@ -106,4 +110,74 @@ async def test_complete_preauth_tool_flow(tmp_path, fake_ssh, monkeypatch):
     res = await server._complete_preauth(app, "123456")
     assert res.phase == "opened" and app.pending_preauth is None and "connect_facility('expanse')" in res.notice
     assert "123456" not in (res.notice or "")
+
+
+# ---- the registry / cached-entry bootstrap path raises the handoff too (Expanse live, 2026-09-04) ------------
+
+async def _registry_connect(monkeypatch, denial: str, *, auth_method="ssh-key", master_alive=False):
+    from hpc_bridge import binding, connect, warmth
+    from hpc_bridge.context import AppCtx
+    from hpc_bridge.profile import Profile
+    from tests.fakes import FakeFacility, fake_entry
+
+    class _CLI:
+        target = SshTarget(host="login.expanse.sdsc.edu", user="u", control_dir="/tmp/cm")
+
+    fac = FakeFacility()
+    fac.cli = _CLI()
+    entry = fake_entry(id="expanse", facility_key="sdsc")
+    entry.ssh_host = "login.expanse.sdsc.edu"
+    entry.auth_method = auth_method
+
+    class _Cat:
+        async def get(self, fid):
+            return entry if fid == "expanse" else None
+
+    monkeypatch.setattr(binding, "make_catalog", lambda: _Cat())
+    monkeypatch.setattr(binding, "_facility_from_entry", lambda e, *, account: fac)
+    monkeypatch.setattr(connect, "_master_alive", lambda target: master_alive)
+    calls = []
+
+    async def provision(app, shape, **kw):
+        calls.append(shape)
+        raise RuntimeError(f"remote whoami failed: amcsweeneyellerm@login.expanse.sdsc.edu: {denial}")
+
+    monkeypatch.setattr(warmth, "_provision", provision)
+    app = AppCtx(facility=FakeFacility(), profile=Profile())
+    app.login_flow = None
+
+    async def _no_login(*a, **k):
+        raise AssertionError("unused")
+
+    res = await connect._connect_facility(app, "expanse", run_login=_no_login)
+    return res, app, calls
+
+
+async def test_registry_entry_denied_with_keyboard_interactive_is_the_code_handoff(monkeypatch):
+    res, app, _ = await _registry_connect(monkeypatch, "Permission denied (gssapi-with-mic,keyboard-interactive,hostbased).")
+    assert res.phase == "needs_preauth" and res.preauth_code_ok and "complete_preauth" in res.notice
+    assert app.pending_preauth is not None and app.pending_preauth[0] == "expanse"
+
+
+async def test_registry_entry_denied_publickey_only_is_still_no_ssh_access(monkeypatch):
+    res, app, _ = await _registry_connect(monkeypatch, "Permission denied (publickey).")
+    assert res.phase == "failed" and res.notice.startswith("NO SSH ACCESS") and app.pending_preauth is None
+
+
+async def test_mfa_otp_entry_hands_off_before_any_ssh_when_no_master_is_open(monkeypatch):
+    res, app, calls = await _registry_connect(monkeypatch, "irrelevant", auth_method="mfa-otp", master_alive=False)
+    assert res.phase == "needs_preauth" and res.preauth_code_ok and calls == []  # no failing bootstrap attempt
+
+
+async def test_mfa_otp_entry_proceeds_when_the_master_is_already_open(monkeypatch):
+    # with a live master the bootstrap runs (here it raises a non-auth error, proving provision was attempted)
+    res, app, calls = await _registry_connect(monkeypatch, "Connection timed out", auth_method="mfa-otp", master_alive=True)
+    assert calls == ["login"] and res.phase == "failed" and res.notice.startswith("CANNOT REACH")
+
+
+async def test_registry_stranger_on_a_2fa_site_is_no_ssh_access_not_a_handoff(monkeypatch):
+    # Anvil offers keyboard-interactive to everyone; a stranger's key is refused (publickey still listed)
+    res, app, _ = await _registry_connect(
+        monkeypatch, "Permission denied (publickey,gssapi-keyex,gssapi-with-mic,keyboard-interactive,hostbased).")
+    assert res.phase == "failed" and res.notice.startswith("NO SSH ACCESS") and app.pending_preauth is None
 

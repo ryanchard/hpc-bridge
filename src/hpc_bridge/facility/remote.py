@@ -201,11 +201,28 @@ def is_interactive_auth_failure(rc: int, stderr: str) -> bool:
     return rc != 0 and denied and offers_interactive
 
 
+def _denied_methods(stderr: str) -> set[str]:
+    """The method list in sshd's `Permission denied (a,b,c)` — the methods STILL required. OpenSSH drops a method
+    from this list once it has succeeded, so a key that was accepted no longer appears."""
+    import re as _re
+
+    m = _re.search(r"permission denied \(([^)]*)\)", (stderr or "").lower())
+    return {x.strip() for x in m.group(1).split(",")} if m else set()
+
+
+def key_accepted_second_factor_pending(stderr: str) -> bool:
+    """The first factor PASSED and only an interactive second factor remains: the denial still lists
+    `keyboard-interactive` but no longer lists `publickey` (Expanse: `(gssapi-with-mic,keyboard-interactive,
+    hostbased)`). A stranger whose key was refused sees `publickey` still listed (Anvil: `(publickey,…,
+    keyboard-interactive,…)`) — that is NO SSH ACCESS, not a handoff, even though the site offers 2FA."""
+    methods = _denied_methods(stderr)
+    return bool(methods) and "keyboard-interactive" in methods and "publickey" not in methods
+
+
 def offers_one_time_code(stderr: str) -> bool:
-    """The denial lists `keyboard-interactive` — the method TOTP / Duo-passcode prompts arrive on. With a key
-    in place the only prompt left is the code, which the user may hand to `complete_preauth(code)`; a
-    plain-password site is not this (passwords never enter the session)."""
-    return "keyboard-interactive" in (stderr or "").lower()
+    """A one-time code (TOTP / Duo passcode) would complete this login — the key was accepted and the remaining
+    method is keyboard-interactive, the channel such prompts arrive on. Passwords never enter the session."""
+    return key_accepted_second_factor_pending(stderr)
 
 
 class NeedsPreauth(Exception):
