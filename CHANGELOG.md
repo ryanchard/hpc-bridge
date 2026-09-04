@@ -3,6 +3,17 @@
 All notable changes to hpc-bridge. The plugin version lives in `.claude-plugin/plugin.json` (Claude Code updates an
 installed plugin only when that version changes); git tags mark releases.
 
+## 0.1.3 — 2026-09-04 — no code needed to reconnect
+
+### Fixed
+- **Reconnecting to a running endpoint on a one-time-code facility asked for a code it never used.** Reuse needs
+  no SSH (the web service says the endpoint is online; the login shape runs over the network), but the code was
+  requested before that check. It is now requested only when a bootstrap actually needs the connection, so a
+  session against a running endpoint asks for nothing and a cold session asks once.
+- **Teardown on a one-time-code facility** now asks for the code before touching SSH, after the compute block has
+  been released, instead of failing its login-node commands and reporting a failed delete about an endpoint that
+  was still running. `complete_preauth` then names the call to repeat.
+
 ## 0.1.2 — 2026-09-04 — one-time codes in the chat; three more facilities (`v0.1.2-beta.1`)
 
 The second beta. It exists so installed plugins pick up this week's fixes (Claude Code refreshes a plugin only when the

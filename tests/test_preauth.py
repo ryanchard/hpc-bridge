@@ -110,11 +110,25 @@ async def test_complete_preauth_tool_flow(tmp_path, fake_ssh, monkeypatch):
     res = await server._complete_preauth(app, "123456")
     assert res.phase == "opened" and app.pending_preauth is None and "connect_facility('expanse')" in res.notice
     assert "123456" not in (res.notice or "")
+    # the call to repeat is whichever asked for the code — teardown's gate names itself
+    app.pending_preauth = ("expanse", _target(tmp_path))
+    app.preauth_resume = "teardown_endpoint()"
+    res = await server._complete_preauth(app, "123456")  # the fake ssh accepts exactly $FAKE_CODE
+    assert res.phase == "opened" and "Call teardown_endpoint() again" in res.notice and app.preauth_resume is None
 
 
 # ---- the registry / cached-entry bootstrap path raises the handoff too (Expanse live, 2026-09-04) ------------
 
-async def _registry_connect(monkeypatch, denial: str, *, auth_method="ssh-key", master_alive=False):
+_NO_FINDER = "no-finder"
+
+
+async def _registry_connect(monkeypatch, denial: str, *, auth_method="ssh-key", master_alive=False,
+                            online=_NO_FINDER, provision_ok=False):
+    """`online`: what the facility's web-only `find_online_endpoint` answers (None = nothing online); the
+    default leaves the facility without a finder at all. `provision_ok`: the bootstrap succeeds ('warm')
+    instead of raising `denial`. `calls` records ("online", name) for the finder and the shape for provision."""
+    from types import SimpleNamespace
+
     from hpc_bridge import binding, connect, warmth
     from hpc_bridge.context import AppCtx
     from hpc_bridge.profile import Profile
@@ -125,9 +139,19 @@ async def _registry_connect(monkeypatch, denial: str, *, auth_method="ssh-key", 
 
     fac = FakeFacility()
     fac.cli = _CLI()
+    calls = []
+    if online != _NO_FINDER:
+        fac.profile = SimpleNamespace(endpoint_name="hpc-bridge-login.expanse.sdsc.edu")
+
+        async def find_online_endpoint(name):
+            calls.append(("online", name))
+            return online
+
+        fac.find_online_endpoint = find_online_endpoint
     entry = fake_entry(id="expanse", facility_key="sdsc")
     entry.ssh_host = "login.expanse.sdsc.edu"
     entry.auth_method = auth_method
+    entry.allocation = None  # like Expanse: no allocation listing, so a warm login shape ends in needs_account
 
     class _Cat:
         async def get(self, fid):
@@ -136,10 +160,11 @@ async def _registry_connect(monkeypatch, denial: str, *, auth_method="ssh-key", 
     monkeypatch.setattr(binding, "make_catalog", lambda: _Cat())
     monkeypatch.setattr(binding, "_facility_from_entry", lambda e, *, account: fac)
     monkeypatch.setattr(connect, "_master_alive", lambda target: master_alive)
-    calls = []
 
     async def provision(app, shape, **kw):
         calls.append(shape)
+        if provision_ok:
+            return "warm"
         raise RuntimeError(f"remote whoami failed: amcsweeneyellerm@login.expanse.sdsc.edu: {denial}")
 
     monkeypatch.setattr(warmth, "_provision", provision)
@@ -167,6 +192,25 @@ async def test_registry_entry_denied_publickey_only_is_still_no_ssh_access(monke
 async def test_mfa_otp_entry_hands_off_before_any_ssh_when_no_master_is_open(monkeypatch):
     res, _app, calls = await _registry_connect(monkeypatch, "irrelevant", auth_method="mfa-otp", master_alive=False)
     assert res.phase == "needs_preauth" and res.preauth_code_ok and calls == []  # no failing bootstrap attempt
+
+
+# ---- reuse needs no SSH, so it is checked BEFORE a code is requested (live 2026-09-04: a code was typed, then
+# ---- the very next step reused the online endpoint over the web — the code was never used) --------------------
+
+async def test_mfa_otp_entry_reuses_an_online_endpoint_without_asking_for_a_code(monkeypatch):
+    res, app, calls = await _registry_connect(monkeypatch, "irrelevant", auth_method="mfa-otp", master_alive=False,
+                                              online="eid-online", provision_ok=True)
+    assert calls == [("online", "hpc-bridge-login.expanse.sdsc.edu"), "login"]  # web check, then provision — no handoff
+    assert res.phase == "needs_account" and res.reused and app.pending_preauth is None
+    assert app.state.endpoint_id == "eid-online" and app.state.reused
+
+
+async def test_mfa_otp_entry_hands_off_only_when_nothing_is_online(monkeypatch):
+    res, app, calls = await _registry_connect(monkeypatch, "irrelevant", auth_method="mfa-otp", master_alive=False,
+                                              online=None)
+    assert calls == [("online", "hpc-bridge-login.expanse.sdsc.edu")]  # the web was asked; SSH was not attempted
+    assert res.phase == "needs_preauth" and res.preauth_code_ok and app.pending_preauth is not None
+    assert app.preauth_resume == "connect_facility('expanse')"
 
 
 async def test_mfa_otp_entry_proceeds_when_the_master_is_already_open(monkeypatch):
