@@ -415,7 +415,8 @@ async def test_strict_schema_drops_keys_the_facility_would_reject():
     uec = shape_config("compute", **fac.config_template(None)[1])
     assert "compute" in uec and "interface" in uec  # what the server would have sent…
     out = fac.sanitize_uec(uec)
-    assert "compute" not in out and "interface" not in out and "max_workers_per_node" not in out  # …now fits Anvil
+    assert "interface" not in out and "max_workers_per_node" not in out  # …the facility's rejects are gone
+    assert out.get("compute") is True and "compute" not in fac.dispatch_uec(out)  # internal marker kept, stripped on the wire
     assert out["partition"] and any("dropped" in n for n in fac.template_notes)
 
 
@@ -477,4 +478,73 @@ def test_new_seeds_validate_and_are_mep_entries():
             if e.compute_mep_uuid:
                 assert e.ssh_host is None and e.account_required is True
                 assert "{gce_version}" in e.compute.env_setup and "{python_version}" in e.compute.env_setup
+
+
+async def test_worker_version_client_pins_this_sdk_not_the_manager():
+    from importlib.metadata import version
+
+    entry = fake_mep_entry()
+    entry.compute.env_setup = "uv pip install 'globus-compute-endpoint=={gce_version}'"
+    entry.compute.worker_version = "client"
+    fac = MEPFacility.from_entry(entry, client_factory=lambda: _Meta(ANVIL_SCHEMA, version="4.12.0"))
+    await fac.load_template()
+    wi = fac.sanitize_uec({"worker_init": entry.compute.env_setup})["worker_init"]
+    assert f"globus-compute-endpoint=={version('globus-compute-sdk')}" in wi and "4.12.0" not in wi
+
+
+async def test_worker_version_explicit_and_manager():
+    entry = fake_mep_entry()
+    entry.compute.env_setup = "pin={gce_version}"
+    fac = MEPFacility.from_entry(entry, client_factory=lambda: _Meta(DELTA_SCHEMA, version="4.15.0"))
+    await fac.load_template()
+    assert fac.sanitize_uec({"worker_init": "pin={gce_version}"})["worker_init"] == "pin=4.15.0"  # manager (default)
+    fac.worker_version = "4.9.9"
+    assert fac.sanitize_uec({"worker_init": "pin={gce_version}"})["worker_init"] == "pin=4.9.9"  # explicit
+
+
+def test_anvil_seed_pins_the_client_version():
+    import yaml
+
+    from hpc_bridge.catalog.entry import CatalogEntry
+
+    with open("src/hpc_bridge/catalog/seed/anvil.yaml") as fh:
+        docs = yaml.safe_load(fh)
+    e = next(CatalogEntry.model_validate(d) for d in docs if d["id"] == "anvil-mep")
+    assert e.compute.worker_version == "client"
+
+
+async def test_strict_schema_keeps_the_internal_compute_marker_until_dispatch():
+    from hpc_bridge.shapes import shape_config
+
+    fac = MEPFacility.from_entry(fake_mep_entry(account_required=True), client_factory=lambda: _Meta(ANVIL_SCHEMA))
+    await fac.load_template()
+    runtime = fac.sanitize_uec(shape_config("compute", **fac.config_template(None)[1]))
+    assert runtime.get("compute") is True  # the server's _apply_account/_apply_partition key on it
+    runtime["account"] = "cis250223"       # what _apply_account does after the user confirms
+    wire = fac.dispatch_uec(runtime)
+    assert "compute" not in wire and wire["account"] == "cis250223" and wire["partition"]  # Anvil accepts this
+
+
+async def test_permissive_schema_dispatches_the_runtime_dict_unchanged():
+    fac = MEPFacility.from_entry(fake_mep_entry(), client_factory=lambda: _Meta(DELTA_SCHEMA))
+    await fac.load_template()
+    d = {"compute": True, "partition": "p", "account": "a"}
+    assert fac.dispatch_uec(d) == d
+
+
+async def test_account_is_applied_on_a_strict_schema_mep(monkeypatch):
+    """The live miss: with `compute` filtered out of the runtime dict, ensure_endpoint_up(account=…) never
+    applied the account and Anvil charged the default association."""
+    from hpc_bridge import warmth
+    from hpc_bridge.context import AppCtx, EndpointState
+    from hpc_bridge.profile import Profile
+
+    fac = MEPFacility.from_entry(fake_mep_entry(account_required=True), client_factory=lambda: _Meta(ANVIL_SCHEMA))
+    await fac.load_template()
+    app = AppCtx(facility=fac, profile=Profile(), state=EndpointState(endpoint_id=fac.endpoint_id))
+    rt = warmth._shape_runtime(app, "compute")
+    assert rt.user_endpoint_config.get("compute") is True
+    assert warmth._apply_account(app, "compute", rt, "cis250223-gpu") is None
+    assert rt.user_endpoint_config["account"] == "cis250223-gpu"
+    assert "compute" not in fac.dispatch_uec(rt.user_endpoint_config)
 

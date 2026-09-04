@@ -124,7 +124,8 @@ def test_parse_probe_flags_missing_toolchain_and_scheduler():
     draft, notes = parse_probe(out, ssh_host="h")
     j = " ".join(notes)
     assert "scheduler" in j and "sbatch" in j  # non-Slurm flagged
-    assert draft.env_setup == ""  # neither gce nor uv -> empty, and flagged for the user
+    # neither gce nor uv -> the self-provisioning line (install uv, then the endpoint), flagged for the user
+    assert "astral.sh/uv/install.sh" in draft.env_setup and "uv venv {venv}" in draft.env_setup
     assert any("module load" in n for n in notes)
 
 

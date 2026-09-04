@@ -48,6 +48,13 @@ class Compute(BaseModel):
             raise ValueError("endpoint_name must match [A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
         return v
     amqp_port: int = 443  # facilities firewall AMQPS 5671; 443 is the near-universal allowed port
+    # Facility-MEP entries: what `{gce_version}` in env_setup resolves to — the version the facility's USER endpoint
+    # process runs, which its template decides and which the metadata does not expose. "manager": the manager's
+    # `endpoint_version` from metadata (Delta: the UEP runs the manager's code). "client": this client's SDK
+    # version (Anvil: the template builds the UEP's environment at the client's SDK version — pinning the
+    # manager's 4.12 there launched a 4.12 worker pool under a 4.16 UEP: `unrecognized arguments: --logconf`).
+    # Or an explicit version string. Set from the live check that validates the entry.
+    worker_version: str = "manager"
     scheduler_options: str | None = None  # raw scheduler directives, verbatim (e.g. #SBATCH for Slurm, #PBS for PBS)
 
 

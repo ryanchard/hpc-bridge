@@ -135,6 +135,10 @@ class SshTarget:
 # connections; bound them tighter than the 120s default so stop_endpoint releases the allocation
 # promptly instead of dragging on a slow sshd.
 _TEARDOWN_SSH_S = 30.0
+# Bootstrap steps run `env_setup` first, and on a FIRST connect that is the toolchain install (uv + the
+# endpoint stack into the user's home — several minutes on a slow home filesystem: Expanse took >120 s and
+# the default ssh timeout killed the ssh while the install kept going on the login node, live 2026-09-04).
+_BOOTSTRAP_SSH_S = 900.0
 
 
 def _resolved_hostname(host: str) -> str:
@@ -331,9 +335,15 @@ class RemoteEndpointCLI:
         self.remote_dir = remote_dir
 
     async def _gce(self, *args: str, timeout: float = 120.0) -> tuple[int, str, str]:
-        inner = (f"export COLUMNS={_GCE_COLUMNS}; {self.env_setup} && globus-compute-endpoint "
+        inner = (f"export COLUMNS={_GCE_COLUMNS}; {self._env_prefix()}globus-compute-endpoint "
                  + " ".join(shlex.quote(a) for a in args))
         return await ssh_exec(self.target, f"bash -lc {shlex.quote(inner)}", timeout=timeout)
+
+    def _env_prefix(self) -> str:
+        """`<env_setup> && ` — or nothing when the entry has no env_setup (a bare `&& gce …` is a shell
+        syntax error; an Expanse probe with neither uv nor gce proposed "" — live 2026-09-04)."""
+        es = (self.env_setup or "").strip()
+        return f"{es} && " if es else ""
 
     async def login_exec(self, command: str) -> tuple[int, str, str]:
         """Run a read-only command on the login node over SSH for facility discovery
@@ -344,7 +354,8 @@ class RemoteEndpointCLI:
     async def configure(self, name: str, multi_user: bool = False) -> None:
         # Force --multi-user false (personal endpoint): the default auto-selects from
         # POSIX caps and can silently create an identity-mapping MEP — see endpoint.py.
-        rc, out, err = await self._gce("configure", "--multi-user", "true" if multi_user else "false", name)
+        rc, out, err = await self._gce("configure", "--multi-user", "true" if multi_user else "false", name,
+                                       timeout=_BOOTSTRAP_SSH_S)
         if rc != 0:
             msg = (err or out).strip()
             if "already" in msg.lower() or "configexists" in msg.lower():  # dir exists -> fine
@@ -443,10 +454,10 @@ class RemoteEndpointCLI:
         # a different node than the one now hosting the manager daemon. The sentinel
         # isolates the FQDN from gce's own stdout.
         inner = (
-            f"{self.env_setup} && globus-compute-endpoint start {shlex.quote(name)} "
+            f"{self._env_prefix()}globus-compute-endpoint start {shlex.quote(name)} "
             f"--detach && echo HPCB_HOST=$(hostname -f)"
         )
-        rc, out, err = await ssh_exec(self.target, f"bash -lc {shlex.quote(inner)}")
+        rc, out, err = await ssh_exec(self.target, f"bash -lc {shlex.quote(inner)}", timeout=_BOOTSTRAP_SSH_S)
         if rc != 0:
             # A refused start whose manager is ALREADY running (its pidfile blocks a second start; gce 4.13
             # exits 73 and prints nothing at all — the "Another instance is running" text is not reliable)
@@ -482,7 +493,22 @@ class RemoteEndpointCLI:
         """`globus-compute-endpoint delete --yes <name>`: remove the endpoint's directory and its web
         registration. True when the CLI reported success. (Teardown used to stop only: the endpoint dir
         and registration stayed behind and the next connect silently re-adopted it — live 2026-09-04.)"""
+        rc, out, err = await self._gce("delete", "--yes", name, timeout=_TEARDOWN_SSH_S)
+        if rc == 0:
+            return True
+        if "currently running" not in (out + err).lower():
+            return False
+        # `stop` returns before the daemon has exited on a slow filesystem (Expanse, live 2026-09-04) and
+        # `delete` refuses a running endpoint: wait for it to land, then force — the manager has been told to
+        # stop and its blocks are cancelled by marker regardless.
+        for _ in range(8):
+            await _sleep(2.5)
+            if await self.status(name) != "running":
+                break
         rc, _out, _err = await self._gce("delete", "--yes", name, timeout=_TEARDOWN_SSH_S)
+        if rc == 0:
+            return True
+        rc, _out, _err = await self._gce("delete", "--yes", "--force", name, timeout=_TEARDOWN_SSH_S)
         return rc == 0
 
     async def remove_uep_dirs(self, endpoint_id: str) -> None:
@@ -596,7 +622,7 @@ class RemoteEndpointCLI:
 
     async def whoami(self) -> bool:
         """True if the remote endpoint can authenticate (storage.db usable)."""
-        rc, _out, _err = await self._gce("whoami")
+        rc, _out, _err = await self._gce("whoami", timeout=_BOOTSTRAP_SSH_S)  # the first env_setup run lands here
         return rc == 0
 
     def rebind(self, host: str) -> None:
@@ -820,6 +846,17 @@ class SlurmFacility:
                 )
                 await self.cli.seed_storage_db(trimmed)
             seeded = True
+            if self.store is not None and self.alias is not None:
+                # Record the seed NOW: a bootstrap that dies before provision completes (a first-connect
+                # install past the ssh timeout — Expanse, live 2026-09-04) must not orphan a store we placed.
+                self.store.put(EndpointRecord(
+                    endpoint_id="", login_host=None, alias=self.alias, user=self.cli.target.user,
+                    key_path=self.cli.target.key_path, name=self.profile.endpoint_name,
+                    provisioned_at=datetime.now(UTC).isoformat(), seeded_credentials=True,
+                ))
+        elif self.store is not None and self.alias is not None:
+            prior = self.store.get(alias=self.alias, name=self.profile.endpoint_name)
+            seeded = bool(prior is not None and prior.seeded_credentials)  # an earlier run of ours seeded it
         self._seeded_credentials = seeded  # remembered for teardown in THIS process; the store keeps it across sessions
         handle = await self.provision(hpc)
         if self.store is not None and self.alias is not None:

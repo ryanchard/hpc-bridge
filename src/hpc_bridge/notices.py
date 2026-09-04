@@ -8,6 +8,7 @@ functions read the context and return text or a result model. `server` re-export
 """
 from __future__ import annotations
 
+import asyncio
 import re
 
 from . import config
@@ -99,6 +100,11 @@ def _explain_provision_error(exc: BaseException, fac=None, *, host: str | None =
                               "kex_exchange_identification", "ssh: connect to host")):
         return (f"CANNOT REACH {host}: {ssh_line[:200]}. Check the login host name and your network/VPN, "
                 "then call connect_facility again. Nothing was started or billed.")
+    if isinstance(exc, TimeoutError | asyncio.TimeoutError) or type(exc).__name__ == "TimeoutError":
+        return (f"TIMED OUT waiting for the login node {host}: a bootstrap step did not finish in time. On a first "
+                "connect that is usually the toolchain install (uv and globus-compute-endpoint into your home there), "
+                "which keeps running on the login node after the timeout and is idempotent — call connect_facility "
+                "again in a minute or two. Nothing was billed.")
     if "controlpath too long" in low:
         return (f"hpc-bridge error: the SSH ControlMaster socket path is too long ({ssh_line[:160]}); set "
                 "HPC_BRIDGE_STATE_DIR to a short path (e.g. ~/.hpc-bridge). Nothing was started.")
@@ -281,6 +287,19 @@ def _no_account_notice(app: AppCtx | None, error: str | None, identity: str | No
         "on this machine with their Globus identity added to the endpoint's identity mapping — tell them to "
         "ask the facility's support, quoting that identity. Do not call ensure_endpoint_up again until they have."
     )
+
+def _allocating_notice(partition: str | None, elapsed_s: float, *, facility_mep: bool) -> str:
+    """The provisioning notice. After five minutes on a facility-run endpoint, say what the client cannot
+    see: a scheduler REJECTION there looks exactly like an endless allocation (Anvil gpu-debug, live
+    2026-09-04: every sbatch failed the QOS policy — no GPU request — while the client saw 'allocating')."""
+    notice = f"allocating nodes on {partition!r}…" if partition else "allocating nodes…"
+    if facility_mep and elapsed_s >= 300:
+        notice += (f" Still allocating after {int(elapsed_s)}s. On a facility-run endpoint a scheduler rejection is "
+                   "invisible from here and looks exactly like this: check the account, the partition, and whether "
+                   "the partition needs a resource request (a GPU partition usually needs scheduler_options like "
+                   "'#SBATCH --gpus-per-node=1'); or try the facility's default partition.")
+    return notice
+
 
 def _cold_outcome(block: BlockState, canary: CanaryResult | None = None) -> ShellOutcome:
     if canary is not None and _no_account_failure(canary.error):

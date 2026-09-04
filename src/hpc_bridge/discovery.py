@@ -29,9 +29,26 @@ def _gce_pin() -> str:
         return "globus-compute-endpoint"
 
 
+def _client_python() -> str:
+    """This client's major.minor: the worker venv must deserialise task functions dill'd by this interpreter,
+    and a facility's system python may be too old for the endpoint at all (uv downloads the version if needed)."""
+    import sys
+
+    return f"{sys.version_info.major}.{sys.version_info.minor}"
+
+
 _UV_ENV_SETUP = (
-    "[ -d {venv} ] || uv venv {venv}; . {venv}/bin/activate; "
+    f"[ -d {{venv}} ] || uv venv {{venv}} --python {_client_python()}; . {{venv}}/bin/activate; "
     f"command -v globus-compute-endpoint >/dev/null 2>&1 || uv pip install -q {_gce_pin()}"
+)
+
+# A facility with NEITHER globus-compute-endpoint nor uv (SDSC Expanse, live 2026-09-04): install uv into the
+# user's home first (what the Delta and Anvil facility templates do in their own worker_init), then the same
+# idempotent venv+install. Outbound HTTPS from the login node (and, via worker_init, the compute node) is assumed.
+_BOOTSTRAP_UV_ENV_SETUP = (
+    'export PATH="$HOME/.local/bin:$PATH"; '
+    "command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh; "
+    + _UV_ENV_SETUP
 )
 
 # Dedicated HPC high-speed fabrics — a strong `interface` signal vs a management eth. Ordered by
@@ -227,8 +244,11 @@ def _env_setup(gce: str | None, uv: str | None, user: str) -> tuple[str, str]:
         return _UV_ENV_SETUP, ("env_setup: no globus-compute-endpoint found, but `uv` is present — "
                                "proposed an idempotent uv create-venv+install (first connect provisions "
                                "the toolchain).")
-    return ("", "env_setup: neither globus-compute-endpoint nor uv found — supply how to put it on "
-            "PATH (a `module load` and/or `source <venv>/bin/activate`).")
+    return (_BOOTSTRAP_UV_ENV_SETUP,
+            "env_setup: neither globus-compute-endpoint nor uv found — proposed installing uv into $HOME/.local/bin "
+            "(astral.sh installer, ~20 MB) and then the endpoint into a venv at this client's Python; needs outbound "
+            "HTTPS from the login and compute nodes. If the facility provides Python/uv via `module load`, say so "
+            "and use that instead.")
 
 
 def _allocation(f: dict) -> tuple[str | None, Literal["sbank", "iris", "mybalance"] | None, str | None]:
