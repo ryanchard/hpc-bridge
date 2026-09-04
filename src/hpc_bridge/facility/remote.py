@@ -783,6 +783,7 @@ class SlurmFacility:
         client_factory=None,
         store: LoginNodeStore | None = None,
         alias: str | None = None,
+        auth_method: str = "ssh-key",
     ) -> None:
         self.profile = profile
         self.cli = cli
@@ -790,6 +791,9 @@ class SlurmFacility:
         self._client_factory = client_factory or self._default_client
         self.store = store
         self.alias = alias
+        # The catalog entry's `auth_method` ("ssh-key" | "mfa-otp"): the ops that MUST SSH (bootstrap, teardown)
+        # consult it to raise the one-time-code handoff BEFORE a failing attempt, instead of after one.
+        self.auth_method = auth_method
 
     @property
     def scratch_root(self) -> str | None:

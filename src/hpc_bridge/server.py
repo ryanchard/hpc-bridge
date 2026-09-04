@@ -426,10 +426,11 @@ async def _complete_preauth(app: AppCtx, code: str) -> PreauthStatus:
     state.mkdir(parents=True, exist_ok=True)
     ok, why = await asyncio.to_thread(_pre.open_master_with_code, target, code, state_dir=state)
     if ok:
+        resume = app.preauth_resume or f"connect_facility({facility!r})"
         app.pending_preauth = None
+        app.preauth_resume = None
         return PreauthStatus(phase="opened",
-                             notice=f"{why}. Call connect_facility({facility!r}) again — the bootstrap rides this "
-                                    "connection with no further auth.")
+                             notice=f"{why}. Call {resume} again — it rides this connection with no further auth.")
     if "PASSWORD" in why:
         return PreauthStatus(phase="needs_terminal", preauth_command=target.preauth_command(),
                              notice=why + f"\n    {target.preauth_command()}")
@@ -629,6 +630,9 @@ async def _teardown_endpoint(app: AppCtx) -> EndpointStatus:
             ),
         )
     await scheduler_ops._release_blocks_over_login(app, eid, _login_runner(app))  # halt spend first (a confirmed stop is stop_endpoint's job)  # noqa: E501
+    gate = await _teardown_preauth_gate(app, eid)
+    if gate is not None:
+        return gate
     notice = "endpoint fully torn down (block released; manager gce-stopped + deleted)"
     teardown = getattr(app.facility, "teardown", None)
     if teardown is not None:
@@ -653,6 +657,35 @@ async def _teardown_endpoint(app: AppCtx) -> EndpointStatus:
         session_spend=spent,
         notice=notice + ". It will NOT be reused — a fresh connect_facility re-bootstraps over SSH. "
         "Do NOT call run_shell now (it would provision a new endpoint).",
+    )
+
+
+async def _teardown_preauth_gate(app: AppCtx, eid: str) -> EndpointStatus | None:
+    """Teardown is the one post-bootstrap op that MUST SSH the login node (`gce stop` + delete run there).
+    On a one-time-code facility with no shared connection open, ask for the code BEFORE any SSH — the same
+    handoff connect_facility uses — instead of letting `stop`/`delete` fail their BatchMode logins and then
+    reporting "DELETE FAILED" about an endpoint that is in fact still running. The block release above has
+    already gone over AMQP, so spend is halted before the user is asked for anything. None = proceed."""
+    from .connect import _master_alive
+
+    fac = app.facility
+    target = getattr(getattr(fac, "cli", None), "target", None)
+    if getattr(fac, "auth_method", None) != "mfa-otp" or target is None:
+        return None
+    if await asyncio.to_thread(_master_alive, target):
+        return None
+    facility = app.machine or "the facility"
+    app.pending_preauth = (facility, target)
+    app.preauth_resume = "teardown_endpoint()"
+    handoff = _needs_preauth_result(facility, target, otp_ok=True)
+    return EndpointStatus(
+        status="up",  # the login-node manager is still running — nothing has been torn down yet
+        block_state="cold",
+        endpoint_id=eid,
+        session_spend=_total_session_spend(app),
+        notice=("block release dispatched; the login-node manager is STILL RUNNING — tearing it down needs an SSH "
+                f"connection to the login node, which is not open. {handoff.notice} Then call teardown_endpoint "
+                "again to finish."),
     )
 
 

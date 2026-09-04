@@ -86,3 +86,14 @@ the code is never in argv, logs or notices; the temp dir is removed after the at
 remembers the target. Exercised on Expanse: the probe's denial `(gssapi-with-mic,keyboard-interactive,hostbased)`.
 Follow-on: Duo *push* (no code; wait for approval) can ride the same askpass hook by answering the menu prompt.
 
+**Ordering (2026-09-04, later).** Only a *bootstrap* needs the SSH connection: reuse asks the Globus web service
+whether our endpoint is online and the login shape runs over AMQP. The first cut asked for the code before that
+check, so a session against a running endpoint requested (and then never used) a code. `connect_facility` now runs
+the web-only reuse check first (`_online_endpoint`) and hands off only when nothing is online; on reuse it seeds
+`app.state` so `_provision` skips the bootstrap. The one later op that must SSH is **teardown** (`gce stop` +
+delete on the login node): `_teardown_preauth_gate` raises the same handoff — after the block release, which is
+AMQP, so spend halts before the user is asked — instead of letting `stop`/`delete` fail their BatchMode logins and
+reporting "DELETE FAILED" about a manager that is in fact still running. `AppCtx.preauth_resume` names the call to
+repeat, so `complete_preauth` says "call teardown_endpoint() again" when teardown asked. Facilities carry their
+`auth_method` (`SlurmFacility.auth_method`, from the catalog entry) so the gate needs no probe. Login-node pinning
+is unaffected: it exists for teardown, and costs nothing on reuse now that reuse asks for no code.

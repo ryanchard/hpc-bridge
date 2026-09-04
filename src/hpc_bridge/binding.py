@@ -43,7 +43,7 @@ def _ssh_config_user(host: str) -> str:
         pass
     return getpass.getuser()
 
-def _slurm_facility(profile, *, alias: str, user: str) -> Facility:
+def _slurm_facility(profile, *, alias: str, user: str, auth_method: str = "ssh-key") -> Facility:
     """Wire a Slurm `MachineProfile` into a `SlurmFacility` over SSH — shared by the catalog
     and the hardcoded-Anvil paths."""
     from .facility.remote import RemoteEndpointCLI, SlurmFacility, SshTarget, _routable_pin
@@ -67,7 +67,7 @@ def _slurm_facility(profile, *, alias: str, user: str) -> Facility:
         # A routable-but-dead pin fails fast (BatchMode) -> CANNOT REACH, and connect_facility then DROPS
         # the pin (_drop_dead_pin) so the next attempt resolves the canonical host again.
         cli.rebind(pin)
-    return SlurmFacility(profile, cli, store=store, alias=alias)
+    return SlurmFacility(profile, cli, store=store, alias=alias, auth_method=auth_method)
 
 def _unsupported_entry_reason(entry) -> str | None:
     """Why this catalog entry can't drive a stand-up, or None.
@@ -117,7 +117,7 @@ def _facility_from_entry(entry, *, account: str, pinned_host: str | None = None)
         partition=config.partition(),
         venv=config.remote_venv(),
     )
-    return _slurm_facility(profile, alias=alias, user=user)
+    return _slurm_facility(profile, alias=alias, user=user, auth_method=getattr(entry, "auth_method", "ssh-key"))
 
 async def _catalog_facility(machine: str) -> Facility:
     """Build a facility from a catalog entry (HPC_BRIDGE_MACHINE), sourcing the machine config

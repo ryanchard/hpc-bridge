@@ -669,6 +669,76 @@ async def test_teardown_endpoint_stops_manager_and_clears_state(monkeypatch):
     assert slurm_runner.closed
 
 
+async def test_teardown_on_a_one_time_code_facility_asks_for_the_code_before_any_ssh(monkeypatch):
+    # Teardown is the one post-bootstrap op that must SSH the login node. On an mfa-otp facility with no shared
+    # connection open it must ask for the code FIRST (the connect handoff), not let stop/delete fail their
+    # BatchMode logins and then report "DELETE FAILED" about an endpoint that is still running.
+    from hpc_bridge import connect, server
+    from hpc_bridge.facility.remote import SshTarget
+    from hpc_bridge.models import ShellOutcome
+    from hpc_bridge.server import ShapeRuntime, _teardown_endpoint
+
+    torn = []
+    target = SshTarget(host="login02.expanse.sdsc.edu", user="u", control_dir="/tmp/cm",
+                       host_key_alias="login.expanse.sdsc.edu")
+
+    class _F(FakeFacility):
+        auth_method = "mfa-otp"
+
+        class cli:  # mirrors RemoteEndpointCLI's attribute shape (lower-case on purpose)
+            pass
+
+        async def teardown(self, eid, *, wipe_credentials=False):
+            torn.append(eid)
+
+    _F.cli.target = target
+    app = AppCtx(facility=_F(), profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
+    app.machine = "expanse"
+    slurm_runner = _FakeRunner("eid-1", _Res(0, "", ""))
+    app.shapes["compute"] = ShapeRuntime(user_endpoint_config={"compute": True}, runner=slurm_runner)
+    app.shapes["login"] = ShapeRuntime(user_endpoint_config={"provider_type": "LocalProvider"})
+
+    async def fake_run_shell(a, command, session_id="default", shape="compute"):
+        return ShellOutcome(phase="complete", exit_code=0, stdout="released 1\n", block_state="warm")
+
+    monkeypatch.setattr(server, "_run_shell", fake_run_shell)
+    monkeypatch.setattr(connect, "_master_alive", lambda t: False)
+    res = await _teardown_endpoint(app)
+    assert torn == []  # no SSH op was attempted
+    assert res.status == "up" and res.endpoint_id == "eid-1" and "STILL RUNNING" in res.notice
+    assert "complete_preauth" in res.notice and "teardown_endpoint again" in res.notice
+    assert app.pending_preauth == ("expanse", target) and app.preauth_resume == "teardown_endpoint()"
+    assert app.state.endpoint_id == "eid-1" and "login" in app.shapes  # nothing cleared: the endpoint is still up
+    # with the connection open (the code went through) the same call finishes the job
+    monkeypatch.setattr(connect, "_master_alive", lambda t: True)
+    res = await _teardown_endpoint(app)
+    assert torn == ["eid-1"] and res.status == "down" and app.state.endpoint_id is None
+
+
+async def test_teardown_on_a_key_facility_never_gates(monkeypatch):
+    # ssh-key facilities (the default) tear down straight away — no master check, no handoff
+    from hpc_bridge import connect, server
+    from hpc_bridge.models import ShellOutcome
+    from hpc_bridge.server import ShapeRuntime, _teardown_endpoint
+
+    torn = []
+
+    class _F(FakeFacility):
+        async def teardown(self, eid, *, wipe_credentials=False):
+            torn.append(eid)
+
+    app = AppCtx(facility=_F(), profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
+    app.shapes["login"] = ShapeRuntime(user_endpoint_config={"provider_type": "LocalProvider"})
+
+    async def fake_run_shell(a, command, session_id="default", shape="compute"):
+        return ShellOutcome(phase="complete", exit_code=0, stdout="released 0\n", block_state="warm")
+
+    monkeypatch.setattr(server, "_run_shell", fake_run_shell)
+    monkeypatch.setattr(connect, "_master_alive", lambda t: (_ for _ in ()).throw(AssertionError("must not probe")))
+    res = await _teardown_endpoint(app)
+    assert torn == ["eid-1"] and res.status == "down"
+
+
 # --- partition loop: the discovery gate's selection -> provisioning -------------------------
 
 

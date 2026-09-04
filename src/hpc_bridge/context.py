@@ -104,6 +104,9 @@ class AppCtx:
     # The SSH target a connect_facility just refused with needs_preauth (facility id, target): what
     # complete_preauth(code) opens the shared connection for. Cleared once opened.
     pending_preauth: tuple[str, Any] | None = None
+    # The call that asked for the code, for complete_preauth's "now call X again" — connect_facility by default;
+    # teardown_endpoint when the teardown gate asked (it is the one post-bootstrap op that must SSH).
+    preauth_resume: str | None = None
     # serializes provision / runner-swap / teardown so concurrent tool calls can't race AppCtx state
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 

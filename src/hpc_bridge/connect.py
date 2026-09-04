@@ -24,7 +24,7 @@ from .catalog.parsers import PARSERS
 from .context import AppCtx, _has_login_shape
 from .discovery import discover_facility_details
 from .facility.remote import NeedsPreauth, SshTarget, key_accepted_second_factor_pending
-from .lifecycle import ensure_warm
+from .lifecycle import EndpointState, ensure_warm
 from .models import ConnectFacilityResult, FacilityDetails, validate_host
 from .notices import _explain_provision_error, _first_contact_note, _needs_login_result, _needs_preauth_result
 from .scheduler_ops import LoginRunner
@@ -78,6 +78,20 @@ def _tcp_answers(host: str, port: int = 22, timeout_s: float = 3.0) -> bool:
 
 
 _ALIAS_PROBE = _tcp_answers  # injectable: tests replace it; production probes the alias's sshd port
+
+
+async def _online_endpoint(fac) -> str | None:
+    """UUID of an online endpoint of ours at `fac`, asked of the Globus web service only — NO SSH. None when
+    there is none, or the facility cannot say (no finder, no profile, a web error: `find_online_endpoint`
+    already swallows those to None so the caller falls through to the path that surfaces them)."""
+    finder = getattr(fac, "find_online_endpoint", None)
+    name = getattr(getattr(fac, "profile", None), "endpoint_name", None)
+    if finder is None or not name:
+        return None
+    try:
+        return await finder(name)
+    except Exception:  # noqa: BLE001 - "can't tell" reads as "none online"; the bootstrap path reports the cause
+        return None
 
 
 def _drop_dead_pin(fac) -> bool:
@@ -213,12 +227,19 @@ async def _connect_facility(
             res.notice = login_note + (res.notice or "")
             return res
         # An MFA facility (curated `auth_method: mfa-otp`) with no shared connection yet: don't burn a failing
-        # SSH attempt (and a fail2ban strike) to learn what the entry already says — hand off first.
+        # SSH attempt (and a fail2ban strike) to learn what the entry already says — hand off first. But ONLY
+        # a bootstrap needs SSH: reuse asks the web service whether our endpoint is online and the login shape
+        # runs over AMQP. So the reuse check comes first — live 2026-09-04 the code was requested, typed, and
+        # then never used, because the very next step found the endpoint online (zero-SSH reconnect).
         target = getattr(getattr(fac, "cli", None), "target", None)
         if getattr(entry, "auth_method", None) == "mfa-otp" and target is not None \
                 and not await asyncio.to_thread(_master_alive, target):
-            app.pending_preauth = (facility, target)
-            return _needs_preauth_result(facility, target, otp_ok=True)
+            online = await _online_endpoint(fac)
+            if online is None:
+                app.pending_preauth = (facility, target)
+                app.preauth_resume = f"connect_facility({facility!r})"
+                return _needs_preauth_result(facility, target, otp_ok=True)
+            app.state = EndpointState(endpoint_id=online, reused=True)  # _provision then skips the bootstrap
         try:
             block = await warmth._provision(app, "login", force_canary=True)
             if not app.state.reused:  # a FRESH bootstrap: later calls re-find it online and read as reused
@@ -229,6 +250,7 @@ async def _connect_facility(
             # a curated MFA entry came back NO SSH ACCESS and the agent went hunting in ~/.ssh/config).
             if target is not None and key_accepted_second_factor_pending(str(exc)):
                 app.pending_preauth = (facility, target)
+                app.preauth_resume = f"connect_facility({facility!r})"
                 return _needs_preauth_result(facility, target, otp_ok=True)
             notice = _explain_provision_error(exc, fac)
             if notice.startswith(("CANNOT REACH", "UNKNOWN HOST KEY")) and await asyncio.to_thread(_drop_dead_pin, fac):
