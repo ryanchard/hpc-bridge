@@ -377,7 +377,7 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
     all_results: list[Result] = []
     gating: set[str] = set()
     failed: list[str] = []
-    result_label = "CRASHED"  # replaced below; a bundle written from an exception path says so
+    result_label = "CRASHED"  # replaced below; a bundle written from an exception path says so (INTERRUPTED on a signal)
     try:
         _seed_facility_cache(scen)
         _trust_host_key(scen)
@@ -476,6 +476,10 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
             result_label = "OK"
             print("RESULT: OK")
             rc = 0
+    except asyncio.CancelledError:
+        result_label = "INTERRUPTED"
+        print("RESULT: INTERRUPTED — the run was stopped (signal); tearing down and writing the bundle", flush=True)
+        raise
     finally:
         endpoint_logs = _teardown(scen, res)
         _cleanup(scen)
@@ -518,12 +522,32 @@ def main() -> None:
     ap.add_argument("--no-skill", action="store_true",
                     help="ablation: withhold SKILL.md from the system prompt (measure the guidance's value)")
     args = ap.parse_args()
+    sys.exit(asyncio.run(_main(args)))
 
-    def _term(signum, _frame):  # `docker stop` / entrypoint.sh: end the run so `finally` tears down + writes the bundle
-        raise KeyboardInterrupt(f"signal {signum}")
 
-    signal.signal(signal.SIGTERM, _term)
-    sys.exit(asyncio.run(_run(args.scenario, args.model, args.effort, args.persona, args.no_skill)))
+async def _main(args) -> int:
+    """SIGTERM (`docker stop` -> entrypoint.sh) CANCELS the run task through asyncio's own signal handling, so
+    `_run`'s `finally` (teardown + bundle) executes on the loop. A plain `signal.signal` handler that raised
+    KeyboardInterrupt from inside the loop's select() tore the process down instead — no teardown, no bundle (live
+    2026-09-05, twice). Returns rc 130 when interrupted, after the cleanup."""
+    task = asyncio.current_task()
+    loop = asyncio.get_running_loop()
+    state = {"signalled": False}
+
+    def _cancel(signum: int) -> None:
+        state["signalled"] = True
+        print(f"\n⛔ signal {signum}: stopping the run — teardown + bundle follow", file=sys.stderr, flush=True)
+        if task is not None:
+            task.cancel()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, _cancel, sig)
+    try:
+        return await _run(args.scenario, args.model, args.effort, args.persona, args.no_skill)
+    except asyncio.CancelledError:
+        if state["signalled"]:
+            return 130
+        raise
 
 
 if __name__ == "__main__":
