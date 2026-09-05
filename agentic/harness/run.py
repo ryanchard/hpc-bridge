@@ -404,6 +404,8 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
                          for h in (getattr(scen, "MIDRUN_HOOKS", None) or [])],
         "targets": list(getattr(scen, "TARGETS", []) or []),
         "requires": dict(getattr(scen, "REQUIRES", {}) or {}),
+        "admin_setup": list(getattr(scen, "ADMIN_SETUP", []) or []),      # applied by run_smoke.sh via the admin channel
+        "admin_cleanup": list(getattr(scen, "ADMIN_CLEANUP", []) or []),
         "profile": os.environ.get("HPCB_FAKE_PROFILE") or None,
         "capabilities": _capabilities(),
         # Code provenance (review 2026-09-05, 2.3): `build` pins what this image was built from; `git_sha` is the

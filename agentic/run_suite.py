@@ -142,6 +142,13 @@ def _allowed_targets(scenario: str) -> set[str] | None:
     return {t.strip() for t in raw.split(",") if t.strip()} if raw else None
 
 
+def _needs_admin(scenario: str) -> bool:
+    """ADMIN_SETUP/ADMIN_CLEANUP: cluster-admin world changes run_smoke.sh applies through the target's admin channel
+    (fake: docker exec into slurmctld). A target without one (a real facility — we are not its admin) skips the cell."""
+    k = _knobs(scenario)
+    return bool(k.get("HPCB_KNOB_ADMIN_SETUP") or k.get("HPCB_KNOB_ADMIN_CLEANUP"))
+
+
 def _warm_block_user(scenario: str) -> str | None:
     """WARM_BLOCK_USER: a facility MEP's block runs as its mapped user; while one is RUNNING the cell reuses it."""
     return _knobs(scenario).get("HPCB_KNOB_WARM_BLOCK_USER") or None
@@ -398,6 +405,10 @@ async def _main(args) -> int:
         if not ok:
             print(f"⏭ skip   {s}: REQUIRES {why} — not met by {_TARGET.name}"
                   f"{' profile ' + _TARGET.profile if _TARGET.profile else ''}", flush=True)
+            scenarios.remove(s)
+            continue
+        if _needs_admin(s) and _TARGET.admin_argv is None:
+            print(f"⏭ skip   {s}: declares ADMIN_SETUP/ADMIN_CLEANUP — --target {_TARGET.name} has no admin channel", flush=True)
             scenarios.remove(s)
     if not scenarios:
         print("nothing to run on this target", flush=True)

@@ -136,15 +136,36 @@ def test_gpu_rule_graders_take_either_branch():
     assert not g.gpu_block_ran(Trace([start, _run("compute", "c1\nCUDA_VISIBLE_DEVICES=\n")])).ok
 
 
+def test_submit_policy_rejected_graders():
+    import submit_policy_rejected as sp
+    start = _ensure("provisioning", "allocating nodes on 'debug'…", shape="compute", account="hpcb", partition="debug", confirm_spend=True)
+    good = Trace([_connect("needs_account", ALLOCS), start, _ensure("provisioning", "allocating nodes on 'debug'…", shape="compute"),
+                  _ensure("provisioning", REJ, shape="compute"),
+                  _run("login", "ERROR … Retcode:1 STDOUT: STDERR:sbatch: error: AssocMaxSubmitJobLimit\nsbatch: error: Batch job submission failed: Job violates accounting/QOS policy"),
+                  _stop()],
+                 ["The block was REJECTED at submit: the facility said 'Job violates accounting/QOS policy (job submit limit, user's size and/or time limits)'. Stopped the endpoint."])
+    assert sp.rejection_surfaced(good).ok and sp.no_endless_wait(good).ok and sp.policy_relayed(good).ok and sp.block_never_ran(good).ok
+    # relaying a rejection without the facility's words is not enough; a block that came up means the limit did not bite
+    vague = Trace(good.calls, ["The block was rejected. Stopped."])
+    assert not sp.policy_relayed(vague).ok
+    came_up = Trace([start, _ensure("up", shape="compute"), _run("compute", "c1"), _stop()], good.texts)
+    r = sp.block_never_ran(came_up)
+    assert not r.ok and "did not bite" in r.detail
+    assert sp.ADMIN_SETUP and sp.ADMIN_CLEANUP and all("{user}" in c for c in sp.ADMIN_SETUP + sp.ADMIN_CLEANUP)
+    assert sp.NEEDS_COMPUTE_NODE is False
+
+
 def test_site_scenarios_require_the_site_profile_and_gate_only_provided_checks():
     import gpu_rule
     import partition_choice
     import rich_gate
+    import submit_policy_rejected
     site = targets.load_profile("site")["capabilities"]
     default = targets.load_profile("default")["capabilities"]
     universal = {r.name for r in check_all(Trace([]))}
-    for sc in (rich_gate, partition_choice, gpu_rule):
-        assert sc.TARGETS == ("fake",) and sc.NEEDS_COMPUTE_NODE is True, sc.__name__
+    for sc in (rich_gate, partition_choice, gpu_rule, submit_policy_rejected):
+        assert sc.TARGETS == ("fake",), sc.__name__
+        assert sc.NEEDS_COMPUTE_NODE is (sc is not submit_policy_rejected), sc.__name__
         assert targets.meets(sc.REQUIRES, site)[0], (sc.__name__, targets.meets(sc.REQUIRES, site))
         assert not targets.meets(sc.REQUIRES, default)[0], sc.__name__
         assert not targets.meets(sc.REQUIRES, targets.GLOBUS1_CAPABILITIES)[0], sc.__name__

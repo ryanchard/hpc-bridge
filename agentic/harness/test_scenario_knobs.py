@@ -252,3 +252,20 @@ def test_suite_reads_shell_quoted_knob_values_as_data():
     assert mod._requires("login_pin_teardown") == {"login_nodes": 2}
     assert mod._allowed_targets("login_pin_teardown") == {"fake"}
     assert mod._requires("happy_path") == {}
+
+
+def test_admin_knobs_are_printed_and_gate_the_target():
+    import json
+    import shlex
+    rc, k = _knobs("submit_policy_rejected")
+    assert rc == 0 and "HPCB_KNOB_NEEDS_NODE" not in k and k["HPCB_KNOB_TARGETS"] == "fake"
+    setup = json.loads(shlex.split(k["HPCB_KNOB_ADMIN_SETUP"])[0])
+    cleanup = json.loads(shlex.split(k["HPCB_KNOB_ADMIN_CLEANUP"])[0])
+    assert setup == ["sacctmgr -i modify user where name={user} set MaxSubmitJobs=0"]
+    assert cleanup == ["sacctmgr -i modify user where name={user} set MaxSubmitJobs=-1"]
+    rc, k2 = _knobs("happy_path")
+    assert "HPCB_KNOB_ADMIN_SETUP" not in k2
+    spec = importlib.util.spec_from_file_location("run_suite", HERE.parent / "run_suite.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod._needs_admin("submit_policy_rejected") and not mod._needs_admin("happy_path")

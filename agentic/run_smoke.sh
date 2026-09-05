@@ -126,4 +126,46 @@ RUN_ARGS=("$SCENARIO")
 [ -n "${HPCB_PERSONA:-}" ] && RUN_ARGS+=(--persona "$HPCB_PERSONA")  # interactive: simulated-human persona
 [ -n "${HPCB_NO_SKILL:-}" ] && RUN_ARGS+=(--no-skill)                # ablation: withhold SKILL.md
 echo "running '$SCENARIO'${HPCB_MODEL:+ model=$HPCB_MODEL}${HPCB_EFFORT:+ effort=$HPCB_EFFORT}${HPCB_PERSONA:+ persona=$HPCB_PERSONA}${HPCB_NO_SKILL:+ ABLATED:skill}  (target $TARGET, user $SSH_USER, facility $TARGET-$RUNID)…"
-docker run "${ARGS[@]}" hpc-bridge-agentic "${RUN_ARGS[@]}"
+# ---- cluster-ADMIN world changes (scenario ADMIN_SETUP / ADMIN_CLEANUP; `{user}` = this cell's pool user) ----
+# Run through the target's admin channel (targets.py: fake = `docker exec` into slurmctld, as root; a real
+# facility has none — we are not its admin — so such a cell refuses to run here; run_suite skips it earlier).
+# SETUP runs just before the agent starts; CLEANUP runs ALWAYS afterwards (EXIT trap: normal end, a failed
+# launch, Ctrl-C, SIGTERM) so a limit set for one cell never leaks into the next cell on that pool user.
+ADMIN_ARGV=()
+if [ -n "${HPCB_KNOB_ADMIN_SETUP:-}${HPCB_KNOB_ADMIN_CLEANUP:-}" ]; then
+  [ -n "${HPCB_T_ADMIN_ARGV:-}" ] || { echo "ERROR: scenario '$SCENARIO' declares ADMIN_SETUP/ADMIN_CLEANUP but target '$TARGET' has no admin channel (fake only)"; exit 2; }
+  eval "ADMIN_ARGV=($HPCB_T_ADMIN_ARGV)"
+  admin_run() {   # $1 = label, $2 = JSON list of commands
+    local rc=0 c
+    while IFS= read -r c; do
+      [ -n "$c" ] || continue
+      echo "admin $1: $c"
+      "${ADMIN_ARGV[@]}" "$c" || { echo "admin $1 FAILED (rc=$?): $c"; rc=1; }
+    done < <(python3 -c 'import json,sys; [print(c.replace("{user}", sys.argv[2])) for c in json.loads(sys.argv[1])]' "$2" "$SSH_USER")
+    return $rc
+  }
+  ADMIN_CLEANED=0
+  admin_cleanup() {
+    [ "$ADMIN_CLEANED" = 1 ] && return 0
+    ADMIN_CLEANED=1
+    [ -z "${HPCB_KNOB_ADMIN_CLEANUP:-}" ] || admin_run cleanup "$HPCB_KNOB_ADMIN_CLEANUP" || echo "WARN: admin cleanup incomplete — check the cluster's accounting for $SSH_USER"
+  }
+  trap admin_cleanup EXIT
+  if [ -n "${HPCB_KNOB_ADMIN_SETUP:-}" ]; then
+    admin_run setup "$HPCB_KNOB_ADMIN_SETUP" || { echo "ERROR: admin setup failed — not launching the cell"; exit 1; }
+  fi
+fi
+
+# The cell runs as a CHILD so a SIGTERM/SIGINT to this script reaches it (docker run proxies the signal into the
+# jail → run.py's handler → teardown + bundle) and this script then still runs its EXIT trap (admin cleanup).
+# `wait` returns early on a trapped signal; loop until the child has really exited — its rc is the cell's rc.
+docker run "${ARGS[@]}" hpc-bridge-agentic "${RUN_ARGS[@]}" &
+child=$!
+trap 'kill -TERM "$child" 2>/dev/null' TERM INT
+rc=0
+wait "$child" || rc=$?
+while kill -0 "$child" 2>/dev/null; do
+  rc=0
+  wait "$child" || rc=$?
+done
+exit "$rc"

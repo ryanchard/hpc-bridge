@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import sys
 import tomllib
 from dataclasses import dataclass, field
@@ -46,6 +47,12 @@ class Target:
     cleanup_ssh_opts: tuple[str, ...]
     profile: str | None = None                        # fake: the active cluster profile (profiles/<name>/)
     capabilities: dict = field(default_factory=dict)  # what this cluster offers (a scenario's REQUIRES is matched against it)
+    # Host-side ADMIN channel: argv prefix that runs one shell command AS THE CLUSTER ADMIN (root on the controller).
+    # A scenario's ADMIN_SETUP/ADMIN_CLEANUP run through it (run_smoke.sh, `{user}` = the cell's pool user) — the
+    # cluster-side world changes a pool user cannot make (an association submit limit, a drained node). Only the
+    # fake cluster has one (docker exec into slurmctld); on a real facility we are not the admin → None, and
+    # run_suite skips the cell.
+    admin_argv: tuple[str, ...] | None = None
 
     def cleanup_argv(self, user: str, key: str) -> list[str]:
         """Host-side ssh as the pool `user` with `key` (the run-scoped cleanup channel)."""
@@ -109,6 +116,7 @@ def get(name: str | None = None) -> Target:
                         "-o", "ConnectTimeout=10", *nohostkey, "hpcbridge-test-00@localhost"),
             cleanup_host="localhost", cleanup_ssh_opts=("-p", port, *nohostkey),
             profile=profile, capabilities=caps,
+            admin_argv=("docker", "exec", os.environ.get("HPCB_FAKE_CTLD", "hpcb-fake-slurmctld-1"), "bash", "-lc"),
         )
     raise SystemExit(f"targets: unknown target {name!r} (globus1 | fake)")
 
@@ -124,6 +132,7 @@ def main(argv: list[str]) -> int:
                  ("KEY_DEFAULT", t.default_key), ("NETWORK", t.docker_network or ""), ("PROFILE", t.profile or "")):
         print(f"HPCB_T_{k}={v}")
     print(f"HPCB_T_CAPS_JSON={json.dumps(t.capabilities, separators=(',', ':'))!r}")
+    print(f"HPCB_T_ADMIN_ARGV={shlex.quote(shlex.join(t.admin_argv)) if t.admin_argv else ''}")  # '' = no admin channel
     return 0
 
 
