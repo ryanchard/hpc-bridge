@@ -90,7 +90,8 @@ async def _run_chain(phase_prompts, scen, *, model, effort, persona, user_goal, 
         r = await run_scenario(pp, repo_root=REPO_ROOT, model=model, effort=effort,
                                persona=persona, user_goal=user_goal, ablate_skill=no_skill,
                                max_turns=getattr(scen, "MAX_TURNS", 40),
-                                     extra_env=getattr(scen, "EXTRA_ENV", None) or None)
+                               extra_env=getattr(scen, "EXTRA_ENV", None) or None,
+                               midrun_hooks=(getattr(scen, "MIDRUN_HOOKS", None) if i == 0 else None), hook_runner=_run_hook)
         results.append(r)
         print(f"  phase {i + 1}: {len(r.trace.calls)} calls · is_error={getattr(r.final, 'is_error', None)}")
         if i + 1 < len(phase_prompts):
@@ -235,6 +236,17 @@ def _run_endpoint_ids(res) -> list[str]:
     return out
 
 
+async def _run_hook(hook: dict) -> dict:
+    """Execute one chaos hook on the cluster as the test user (the harness' world channel), mid-run. `{endpoint_name}`
+    is this run's endpoint; `{eid}` the latest endpoint uuid the agent's tool results have shown."""
+    cmd = str(hook["cmd"]).replace("{endpoint_name}", os.environ.get("HPC_BRIDGE_ENDPOINT_NAME", ""))
+    eids = hook.get("endpoint_ids") or []
+    cmd = cmd.replace("{eid}", eids[-1] if eids else "")
+    rc, out = await asyncio.to_thread(_ssh_run, cmd, timeout=int(hook.get("timeout", 120)))
+    print(f"  💥 hook {hook.get('name', hook['after_tool'])}: rc={rc} — {out.strip()[:160]}", file=sys.stderr, flush=True)
+    return {"rc": rc, "out": out.strip()[:400], "cmd": cmd[:300]}
+
+
 def _cleanup(scen) -> None:
     """Scenario-declared CLEANUP commands (the mirror of SETUP), run as the test user AFTER postchecks and
     the run-scoped teardown, whatever the outcome — for the world state a scenario itself created (saturation's
@@ -366,6 +378,9 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
         "globus_db_secret": getattr(scen, "GLOBUS_DB_SECRET", None),
         "postcheck_delay_s": getattr(scen, "POSTCHECK_DELAY_S", 10),
         "cleanup": list(getattr(scen, "CLEANUP", [])),
+        "midrun_hooks": [{k: v for k, v in h.items() if k != "cmd"} | {"cmd": str(h.get("cmd", ""))[:200]}
+                         for h in (getattr(scen, "MIDRUN_HOOKS", None) or [])],
+        "targets": list(getattr(scen, "TARGETS", []) or []),
         # Code provenance (review 2026-09-05, 2.3): `build` pins what this image was built from; `git_sha` is the
         # host's HEAD when the cell was LAUNCHED (kept as `host_head` too, so drift between the two is visible).
         "build": _build_info(),
@@ -399,7 +414,8 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
             res = await run_scenario(prompt, repo_root=REPO_ROOT, model=model, effort=effort,
                                      persona=persona, user_goal=user_goal, ablate_skill=no_skill,
                                      max_turns=getattr(scen, "MAX_TURNS", 40),
-                                     extra_env=getattr(scen, "EXTRA_ENV", None) or None)
+                                     extra_env=getattr(scen, "EXTRA_ENV", None) or None,
+                                     midrun_hooks=getattr(scen, "MIDRUN_HOOKS", None), hook_runner=_run_hook)
 
         print(f"\n=== TRACE: {len(res.trace.calls)} tool calls ===")
         for i, c in enumerate(res.trace.calls):
@@ -434,10 +450,22 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
             results.append(Result("harness:prose_followups", not capped,
                                   f"{n} prose question(s) answered by the human-sim"
                                   + ("; the run ENDED at the cap — the agent kept asking in prose" if capped else "")))
+        hooks = list(getattr(res, "hooks_fired", None) or [])
+        if getattr(scen, "MIDRUN_HOOKS", None):
+            # a chaos scenario's premise is that its fault was injected: a hook that never fired means the agent
+            # never reached the trigger, and every grader below would pass vacuously
+            unfired = [h["name"] for h in hooks if h.get("call_index") is None]
+            failed_hooks = [h["name"] for h in hooks if h.get("rc") not in (None, 0)]
+            results.append(Result("harness:midrun_hooks", not unfired and not failed_hooks,
+                                  ", ".join(f"{h['name']}@call{h['call_index']} rc={h.get('rc')}" for h in hooks if h.get("call_index") is not None)
+                                  + (f"; NEVER FIRED: {unfired}" if unfired else "")
+                                  + (f"; FAILED: {failed_hooks}" if failed_hooks else "")))
         # agent_engaged + run_completed always gate: a do-nothing or truncated run must never grade OK.
         critical = set(getattr(scen, "EXPECT_OK", [r.name for r in results])) | {"agent_engaged", "run_completed"}
         if persona:
             critical.add("harness:prose_followups")
+        if getattr(scen, "MIDRUN_HOOKS", None):
+            critical.add("harness:midrun_hooks")
         gating = critical
         for r in results:
             tag = "PASS" if r.ok else "FAIL"
@@ -503,6 +531,7 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
             gating=sorted(gating),
             failed=failed,
             result=result_label,
+            events=list(getattr(res, "hooks_fired", None) or []) if res else [],
         )
         if rec is not None and endpoint_logs:
             # The evidence a post-mortem needs (manager + UEP logs, block stdout/stderr) — deleted on

@@ -132,6 +132,7 @@ def write_run_record(
     gating: list[str] | None = None,
     failed: list[str] | None = None,
     result: str | None = None,
+    events: list[dict] | None = None,
 ) -> Path | None:
     """Write the bundle; never raises (best-effort provenance must not fail the run).
 
@@ -152,6 +153,7 @@ def write_run_record(
             "env": _safe_env(),
             "result": result,
             "failed": list(failed or []),
+            "events": _jsonable(events or []),   # chaos hooks that fired (tool, nth, call index, rc, output)
             "gating": sorted(gates),
             "grading": [{"name": r.name, "ok": r.ok, "detail": r.detail,
                          "gating": r.name in gates or r.name.startswith("world:")} for r in grading],
@@ -168,9 +170,12 @@ def write_run_record(
             "n_messages": len(messages),
         }
         (d / "record.json").write_text(json.dumps(record, indent=2, default=str))
-        (d / "transcript.md").write_text(
-            _transcript_md(config, messages, dialogue, grading, rc, gating=sorted(gates), result=result, failed=failed)
-        )
+        md = _transcript_md(config, messages, dialogue, grading, rc, gating=sorted(gates), result=result, failed=failed)
+        if events:
+            md += "\n## Harness events (chaos hooks)\n\n" + "\n".join(
+                f"- **{e.get('name')}** after `{e.get('after_tool')}` #{e.get('nth')} at call {e.get('call_index')}: "
+                f"rc={e.get('rc')} — {str(e.get('out', ''))[:200]}" for e in events) + "\n"
+        (d / "transcript.md").write_text(md)
         return d
     except Exception as exc:  # noqa: BLE001 - provenance must never break the run
         print(f"provenance: write failed (ignored) — {type(exc).__name__}: {exc}",
