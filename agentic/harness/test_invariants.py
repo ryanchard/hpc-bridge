@@ -183,6 +183,15 @@ def test_cache_served_reconnect_fails_on_reprobe():
     assert not r.ok and "reprobed_in_phase2=True" in r.detail
 
 
+def test_cache_served_reconnect_names_an_unproven_phase_one():
+    # phase 1 ended while still provisioning (no login-shape work) -> since #78 nothing was cached -> phase 2's
+    # re-probe is the agent's impatience, and the detail must say so (2026-09-05 block-tier run)
+    calls = [_conn(False, "proposed_facility_details"), _conn(False, "provisioning"), _conn(False, "provisioning"),
+             _conn(False, "proposed_facility_details", chain_phase=1), _conn(True, "needs_account", chain_phase=1)]
+    r = _cache_served_reconnect()(Trace(calls))
+    assert not r.ok and "never PROVEN" in r.detail and "impatience" in r.detail
+
+
 def test_cache_served_reconnect_fails_if_reconnect_not_reused():
     r = _cache_served_reconnect()(_cache_trace(phase2_reused=False))
     assert not r.ok and "reused=False (want True)" in r.detail
@@ -229,6 +238,28 @@ def _reuse_trace(*, reconnect_reused: bool = True, fresh_first: bool = True,
 
 def test_reuse_signalled_passes_on_the_real_shape():
     assert _reuse_signalled()(_reuse_trace()).ok
+
+
+def test_reuse_signalled_accepts_the_post_78_intra_session_reconnect():
+    # Since #78 an endpoint THIS session stood up reads reused=False on reconnect, with the product's exact
+    # intra-session notice — the block-tier run of 2026-09-05 failed the old field-only grader on this shape.
+    from endpoint_reuse import INTRA_SESSION_RECONNECT
+    t = Trace([
+        _conn(False, "proposed_facility_details"),
+        _conn(False, "provisioning", notice="first contact over SSH: u@h"),
+        _conn(False, "needs_account", notice=INTRA_SESSION_RECONNECT + " (zero-SSH). login node is up"),
+        _login_run(),
+        _conn(False, "needs_account", notice=INTRA_SESSION_RECONNECT + " (zero-SSH). login node is up"),
+    ])
+    r = _reuse_signalled()(t)
+    assert r.ok and "intra-session reconnect notice" in r.detail
+    # a re-probe AFTER the work means the reconnect did not reattach — fail, whatever the notice says
+    t2 = Trace(t.calls[:4] + [_conn(False, "proposed_facility_details"), _conn(False, "needs_account", notice=INTRA_SESSION_RECONNECT)])
+    r2 = _reuse_signalled()(t2)
+    assert not r2.ok and "re-probe after work" in r2.detail
+    # neither the field nor the notice: not a reattach
+    t3 = Trace(t.calls[:4] + [_conn(False, "needs_account", notice="first contact over SSH: u@h")])
+    assert not _reuse_signalled()(t3).ok
 
 
 def test_reuse_signalled_needs_the_field_not_a_notice_substring():
