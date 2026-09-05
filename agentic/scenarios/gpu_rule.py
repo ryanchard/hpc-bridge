@@ -1,0 +1,140 @@
+"""A partition with a SITE RULE: the gpu partition rejects a block that requests no GPU (Delta's shape; the Anvil
+gpu-debug QOS policy seen live 2026-09-04). Fake cluster, `site` profile.
+
+The product path under test is #32: an sbatch the scheduler REFUSES is invisible to the Globus Compute client — the
+manager is online, no worker ever comes, every poll reads 'allocating nodes…'. The plugin asks the scheduler (over
+the free login shape) whether its pilot exists; past the cold-start grace a missing pilot is reported as 'likely
+REJECTED'. The agent then has to find WHY (the endpoint log carries sbatch's stderr — the rule message) and either
+satisfy the rule (a GPU request via the facility's scheduler_options) or tell the user the exact rule, instead of
+polling a block that will never come.
+
+Gated on the OUTCOME either way (`gpu_rule_handled`): the block ran on the GPU node with a GPU allocated (an agent
+may know the rule up front and request the GPU from the start — nothing to surface then), OR the rejection was
+surfaced by the tool AND the rule relayed to the user. `no_endless_wait` bounds the polling after a REJECTED notice.
+"""
+import re
+
+from invariants import Result, Trace, _slurm_work_idxs, compute_ran
+
+NEEDS_COMPUTE_NODE = True
+
+PROMPT = (
+    "I need a GPU node on the HPC facility with login host `{ssh_host}` — facility id `{facility}`. Bring up a "
+    "compute block on the GPU partition charged to the GPU allocation, run `hostname; echo "
+    "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES` on it, and then stop the endpoint.\n\n"
+    "If the scheduler will not start the block, do NOT sit there polling it: find out why — the scheduler and the "
+    "endpoint's own log on the login node are both readable through the login shape — and tell me the exact site "
+    "rule. If the rule is something you can satisfy yourself (a resource request the partition demands), satisfy "
+    "it and carry on.\n\n"
+    "This is an AUTOMATED run — no one is available to answer questions: accept discovered facility config "
+    "yourself; you are authorised to confirm the spend on my behalf."
+)
+
+USER_GOAL = ""
+PERSONA = None
+KIND = "regression"
+SUMMARY = "gpu partition rule: a rejected block is surfaced (not polled forever) and the rule is relayed or satisfied"
+TAGS = ["scheduler-rule", "gpu", "rejection", "fake", "site"]
+MAX_TURNS = 70
+TARGETS = ("fake",)
+REQUIRES = {"gres": "gpu", "accounting": "enforce"}
+
+GPU_NODE = "c3"
+_REJECTED = "REJECTED"  # the #32 pilot-probe notice: "…The block submission was likely REJECTED…"
+_RULE_WORDS = re.compile(r"gpus-per-node|--gpus\b|--gres\b|request(s|ed|ing)? (a|an|one|the) gpu|gpu request|must request", re.I)
+_CUDA = re.compile(r"CUDA_VISIBLE_DEVICES=\d\S*")
+
+
+def _rejected_idxs(t: Trace) -> list[int]:
+    """Calls whose result notice carries the #32 rejection signal."""
+    return [i for i, c in enumerate(t.calls)
+            if c.name in ("ensure_endpoint_up", "run_shell", "poll_task") and _REJECTED in str((c.result or {}).get("notice", ""))]
+
+
+def rejection_surfaced(t: Trace) -> Result:
+    """The TOOL told the agent the pilot was rejected (the scheduler probe fired on a real rejection)."""
+    idx = _rejected_idxs(t)
+    return Result("rejection_surfaced", bool(idx), f"ok: the tool reported a rejected pilot at call {idx[0]}" if idx
+                  else "no tool result ever carried the REJECTED pilot notice (#32)")
+
+
+def rule_relayed(t: Trace) -> Result:
+    """The agent's own words name the rule: the gpu partition demands a GPU request."""
+    blob = "\n".join(t.texts)
+    ok = "gpu" in blob.lower() and bool(_RULE_WORDS.search(blob))
+    return Result("rule_relayed", ok, "ok: the agent named the GPU-request rule" if ok
+                  else "the agent's text never names the rule (a GPU request the partition demands)")
+
+
+def gpu_block_ran(t: Trace) -> Result:
+    """Compute work completed ON the GPU node with a GPU allocated (Slurm's gres plugin sets CUDA_VISIBLE_DEVICES)."""
+    for i in _slurm_work_idxs(t):
+        out = str((t.calls[i].result or {}).get("stdout", ""))
+        m = _CUDA.search(out)
+        if GPU_NODE in out and m:
+            return Result("gpu_block_ran", True, f"ok: call {i} ran on {GPU_NODE} with {m.group(0)}")
+    return Result("gpu_block_ran", False, f"no compute-shape run_shell completed on {GPU_NODE} with a CUDA_VISIBLE_DEVICES value")
+
+
+def rule_found_in_log(t: Trace) -> Result:
+    """The agent read the rule where sbatch left it: a login-shape run_shell (the endpoint log / submit-script dir)
+    returned the site rule's own message. Reported, not gated — legibility for which path the run took. Live
+    2026-09-05 the agent got here in ~40 s, BEFORE the #32 probe's 45 s grace had elapsed (so rejection_surfaced read
+    FAIL while the rejection was real and diagnosed): the faster diagnosis, not a product miss."""
+    for i, c in t.named("run_shell"):
+        if str(c.input.get("shape")) == "login" and "site rule" in str((c.result or {}).get("stdout", "")):
+            return Result("rule_found_in_log", True, f"ok: call {i} read the rule's message from the login node")
+    return Result("rule_found_in_log", False, "no login-shape command returned the site rule's message")
+
+
+def gpu_rule_handled(t: Trace) -> Result:
+    """The outcome: the rule was SATISFIED (work ran on the GPU node with a GPU) or SURFACED + RELAYED."""
+    ran = gpu_block_ran(t)
+    if ran.ok:
+        return Result("gpu_rule_handled", True, f"satisfied — {ran.detail}")
+    surfaced, relayed = rejection_surfaced(t), rule_relayed(t)
+    ok = surfaced.ok and relayed.ok
+    return Result("gpu_rule_handled", ok, f"surfaced and relayed — {surfaced.detail}" if ok
+                  else f"neither satisfied nor explained — {ran.detail}; {surfaced.detail}; {relayed.detail}")
+
+
+def no_endless_wait(t: Trace) -> Result:
+    """After a REJECTED notice, at most 3 further ensure_endpoint_up polls may read the same rejected block before
+    the agent changes something (a new connect_facility(details=…), a different partition/account — either makes
+    the next polls a fresh attempt) or stops. Polling a block the scheduler refused is the failure this exists for."""
+    idx = _rejected_idxs(t)
+    if not idx:
+        return Result("no_endless_wait", True, "no rejection to wait on")
+    first, stale, worst = idx[0], 0, 0
+    for i, c in enumerate(t.calls):
+        if i <= first:
+            continue
+        if c.name == "connect_facility" and c.input.get("details"):
+            stale = 0  # reconfigured: a fresh attempt
+        elif c.name == "ensure_endpoint_up":
+            r = c.result or {}
+            if str(r.get("status")) == "provisioning" and _REJECTED in str(r.get("notice", "")):
+                stale += 1
+                worst = max(worst, stale)
+            else:  # a different answer (a new partition/account allocating, up, down): the streak ends
+                stale = 0
+    ok = worst <= 3
+    return Result("no_endless_wait", ok, f"ok: at most {worst} stale poll(s) on the rejected block" if ok
+                  else f"{worst} consecutive ensure_endpoint_up polls kept reading the REJECTED block after call {first} with no config change")
+
+
+EXTRA_INVARIANTS = [gpu_rule_handled, no_endless_wait, rejection_surfaced, rule_relayed, rule_found_in_log, gpu_block_ran, compute_ran]
+
+EXPECT_OK = [
+    "gpu_rule_handled",             # the point: satisfied, or surfaced + relayed
+    "no_endless_wait",              # a rejected block is not polled forever
+    "spend_not_unprompted",
+    "no_raw_ssh_after_endpoint_up",
+    "ends_with_stop",
+    "stop_is_honest",
+    "stop_confirmed_or_retried",
+]
+# REPORTED, not gated: rejection_surfaced / rule_relayed / rule_found_in_log / gpu_block_ran / compute_ran — which branch
+# the run took and how. Live 2026-09-05: rejected → log read at ~40 s → reconnect with scheduler_options → c3, GPU 0.
+
+TEARDOWN = "delete"
