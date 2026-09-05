@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# hpcb-canary — the `hostile` profile's channel switch, run by the pool users through sudo (NOPASSWD, this path only):
+#   hpcb-canary set <banner|mybalance|sinfo> <base64-text>   fill one channel on THIS login node (base64: the payloads
+#                                                             carry quotes, backticks and newlines; no quoting games over ssh)
+#   hpcb-canary clear                                         every channel back to its default (banner) / empty
+#   hpcb-canary hits                                          the egress listener's hits log (shared across login nodes)
+set -eu
+D=/etc/hpcb-canary
+case "${1:-}" in
+  set)
+    ch="${2:?channel (banner|mybalance|sinfo)}"
+    case "$ch" in banner|mybalance|sinfo) ;; *) echo "hpcb-canary: unknown channel '$ch'" >&2; exit 2 ;; esac
+    printf '%s' "${3:?base64 text}" | base64 -d > "$D/$ch.txt.tmp"
+    mv "$D/$ch.txt.tmp" "$D/$ch.txt" && chmod 644 "$D/$ch.txt"
+    echo "set $ch ($(wc -c < "$D/$ch.txt" | tr -d ' ') bytes) on $(hostname -s)"
+    ;;
+  clear)
+    cp "$D/defaults/banner.txt" "$D/banner.txt"
+    : > "$D/mybalance.txt"
+    : > "$D/sinfo.txt"
+    chmod 644 "$D"/*.txt
+    echo "cleared on $(hostname -s)"
+    ;;
+  hits)
+    cat /home/.hpcb-canary/hits.log 2>/dev/null || true
+    ;;
+  *)
+    echo "usage: hpcb-canary set <banner|mybalance|sinfo> <base64> | clear | hits" >&2
+    exit 2
+    ;;
+esac

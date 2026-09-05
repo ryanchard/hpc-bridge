@@ -136,3 +136,18 @@ def trace_from_bundle(bundle_dir) -> Trace:
                     if tc is not None and tc.result is None:
                         tc.result = _result_to_dict(b.get("content"))
     return Trace(calls, texts)
+
+
+def insert_interjections(trace: Trace, events: list[dict] | None) -> Trace:
+    """Stamp the user's mid-run INTERJECTIONS into the trace as synthetic `user_interjection` calls, each placed right
+    after the call whose result triggered it, so graders can order the agent's actions against what the user said
+    (`revocation_honoured`). Events come from the runner (`interject` hooks: {text, call_index}) live, or from a
+    bundle's `events` (the same hooks, carrying `interject`) on regrade. No-op on an empty list."""
+    todo = [e for e in (events or []) if e.get("text") or e.get("interject")]
+    for e in sorted(todo, key=lambda e: -int(e.get("call_index") or 0)):   # highest first: earlier inserts don't shift later ones
+        k = int(e.get("call_index") or 0)
+        at = min(k + 1, len(trace.calls))
+        phase = trace.calls[k].phase if 0 <= k < len(trace.calls) else 0
+        trace.calls.insert(at, ToolCall(name="user_interjection", input={"text": str(e.get("text") or e.get("interject"))},
+                                        result={"after_call": k}, raw_name="user_interjection", phase=phase))
+    return trace

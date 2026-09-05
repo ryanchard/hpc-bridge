@@ -32,7 +32,7 @@ from claude_agent_sdk import (  # type: ignore[import-not-found]
 )
 from human_sim import HumanSim, ends_with_question
 from invariants import Trace, logical_name
-from trace_adapter import _result_to_dict, build_trace
+from trace_adapter import _result_to_dict, build_trace, insert_interjections
 
 # Logical hpc-bridge tool names (see Modules/server.md). Registered under SDK key
 # "endpoint" -> the agent sees them as mcp__endpoint__<tool>.
@@ -85,6 +85,7 @@ class RunResult:
     followups_capped: bool = False    # the run ended because MAX_PROSE_FOLLOWUPS was hit — the agent kept asking
     human_sim_model: str | None = None  # interactive: which model played the user (bundle provenance)
     hooks_fired: list[dict] = None    # chaos: the MIDRUN_HOOKS that fired (tool, nth, call index, rc, output)
+    interjections: list[dict] = None  # `interject` hooks: what the USER said mid-run, and after which call (stamped into the trace)
 
 
 class HookWatcher:
@@ -127,7 +128,7 @@ class HookWatcher:
                     if k in self._fired or h.get("after_tool") != name:
                         continue
                     want = h.get("when_input") or {}
-                    if any(str(inp.get(kk)) != str(vv) for kk, vv in want.items()):
+                    if any(str(inp.get(kk)).lower() != str(vv).lower() for kk, vv in want.items()):  # True/"true" alike
                         continue
                     if h.get("when_phase") and str(result.get("phase")) != str(h["when_phase"]):
                         continue
@@ -309,20 +310,39 @@ async def run_scenario(
     capped = False
     watcher = HookWatcher(midrun_hooks)
     fired: list[dict] = []
+    interjections: list[dict] = []   # `interject` hooks that fired: what the user said, after which call
+    pending: list[str] = []          # an interjection to send once the interrupted turn has ended
+    live: dict[str, Any] = {}        # the ClaudeSDKClient while an interactive run is alive (interject hooks need it)
 
     async def _observe(msg: Any) -> None:
         for hook in watcher.observe(msg):
-            print(f"  💥 hook: {hook.get('name', hook['after_tool'])} after {hook['after_tool']} #{hook.get('nth', 1)} "
-                  f"(call {hook['call_index']})", file=sys.stderr, flush=True)
-            outcome = await hook_runner(hook) if hook_runner else {"rc": None, "out": "(no hook runner)"}
-            fired.append({"name": hook.get("name", hook["after_tool"]), "after_tool": hook["after_tool"],
+            label = hook.get("name", hook["after_tool"])
+            print(f"  💥 hook: {label} after {hook['after_tool']} #{hook.get('nth', 1)} (call {hook['call_index']})",
+                  file=sys.stderr, flush=True)
+            if "interject" in hook:
+                # The USER interrupts (Esc in Claude Code) and speaks. The SDK interrupt rejects the in-flight tool use and
+                # ends the turn with an error-subtype result (live-verified 2026-09-06); the interactive loop below then
+                # sends the text as the next turn of the SAME session. Only a run with a user (a persona) can interject.
+                client = live.get("client")
+                if client is None:
+                    outcome = {"rc": 1, "out": "interject hook needs an interactive run (a persona): an autonomous run has no user to interrupt"}
+                else:
+                    text = str(hook["interject"])
+                    await client.interrupt()
+                    pending.append(text)
+                    interjections.append({"name": label, "text": text, "call_index": hook["call_index"]})
+                    outcome = {"rc": 0, "out": "interrupted the turn; the user's message follows it", "interject": text[:300]}
+            else:
+                outcome = await hook_runner(hook) if hook_runner else {"rc": None, "out": "(no hook runner)"}
+            fired.append({"name": label, "after_tool": hook["after_tool"],
                           "nth": int(hook.get("nth", 1)), "call_index": hook["call_index"], **(outcome or {})})
     try:
         with _scrubbed_agent_env():
             if interactive:
                 async with ClaudeSDKClient(options=options) as client:
+                    live["client"] = client
                     await client.query(prompt)
-                    for followup in range(MAX_PROSE_FOLLOWUPS + 1):
+                    while True:
                         last_text, last_had_tool = "", False
                         turn_final = None
                         async for msg in client.receive_response():
@@ -342,17 +362,25 @@ async def run_scenario(
                             final = _AbortedResult(result="stream ended without a ResultMessage for this turn")
                             break
                         final = turn_final
+                        if pending:
+                            # the turn was cut by an interject hook's interrupt (its error-subtype result is expected and
+                            # is not the run's verdict): the user now speaks, and the same session continues
+                            text = pending.pop(0)
+                            print(f"  ✋ user({persona}) INTERJECTS: {text[:160]}", file=sys.stderr, flush=True)
+                            await client.query(text)
+                            continue
                         # The turn ended on a text-only question (no tool call): a real user would answer in
                         # chat, so the sim does — one more `query` continues the SAME session (SDK multi-turn).
                         if last_had_tool or getattr(final, "is_error", False) or not ends_with_question(last_text):
                             break
-                        if followup == MAX_PROSE_FOLLOWUPS:
+                        if followups == MAX_PROSE_FOLLOWUPS:
                             capped = True  # the agent is still asking in prose; recorded, not hidden
                             break
                         reply = await human.reply(last_text)
                         followups += 1
                         print(f"  ! human({persona}) answers a PROSE question: {reply[:160]}", file=sys.stderr, flush=True)
                         await client.query(reply)
+                live.pop("client", None)
             else:
                 async for msg in query(prompt=prompt, options=options):
                     messages.append(msg)
@@ -370,11 +398,12 @@ async def run_scenario(
         if (interactive and turn_final is None) or final is None:
             final = _AbortedResult(result=str(e))
     return RunResult(
-        trace=build_trace(messages, injected_answers=injected_answers),
+        trace=insert_interjections(build_trace(messages, injected_answers=injected_answers), interjections),
         final=final, messages=messages,
         dialogue=(human.dialogue if human else []),
         prose_followups=followups, followups_capped=capped,
         human_sim_model=(human.model if human else None),
+        interjections=interjections,
         hooks_fired=fired + [{"name": h.get("name", h["after_tool"]), "after_tool": h["after_tool"],
                               "nth": int(h.get("nth", 1)), "call_index": None, "rc": None, "out": "NEVER FIRED"}
                              for h in watcher.unfired],

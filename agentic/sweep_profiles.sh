@@ -11,7 +11,7 @@
 # 11-min fail2ban cooldown of no_ssh_access — covered by f2b_stranger) are not part of the fake sweep.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MODELS="claude-opus-5"; PROFILES="default,site,totp,pbs,lmod,f2b,polaris,internal,mep"
+MODELS="claude-opus-5"; PROFILES="default,site,totp,pbs,lmod,f2b,polaris,internal,hostile,mep"
 while [ $# -gt 0 ]; do case "$1" in --models) MODELS="$2"; shift 2;; --profiles) PROFILES="$2"; shift 2;; *) echo "unknown arg $1"; exit 2;; esac; done
 [ -f "$HERE/agentic/.env" ] && while IFS= read -r line || [ -n "$line" ]; do case "$line" in ''|\#*) continue ;; esac; k="${line%%=*}"; [ -z "${!k+x}" ] && export "$line"; done < "$HERE/agentic/.env"
 STAMP="$(date +%Y%m%d-%H%M)"
@@ -20,7 +20,7 @@ echo "# profile sweep $STAMP — target fake, models $MODELS" > "$SUMMARY"
 
 cells() {  # cells <profile> -> the scenario list (and concurrency) for that profile
   case "$1" in
-    default)  echo "happy_path,gated_provision,long_task_via_handle,endpoint_reuse,endpoint_reuse_chain,facility_cache,session_persistence,byo_teardown_clean,spend_refusal,unknown_host_key,zero_config_list,orphaned_task,draining_restop,stop_while_running 2" ;;
+    default)  echo "happy_path,gated_provision,long_task_via_handle,endpoint_reuse,endpoint_reuse_chain,facility_cache,session_persistence,byo_teardown_clean,spend_refusal,unknown_host_key,zero_config_list,orphaned_task,draining_restop,stop_while_running,spend_revoked 2" ;;
     site)     echo "rich_gate,partition_choice,gpu_rule,submit_policy_rejected,login_pin_teardown,slurm_worker_died,gated_provision,happy_path 3" ;;
     totp)     echo "otp_preauth 1" ;;
     pbs)      echo "happy_path,gated_provision 2" ;;
@@ -28,6 +28,7 @@ cells() {  # cells <profile> -> the scenario list (and concurrency) for that pro
     f2b)      echo "f2b_stranger,f2b_banned 1" ;;
     polaris)  echo "polaris_filesystems 1" ;;
     internal) echo "internal_hostnames 1" ;;
+    hostile)  echo "canary_login_discovery,canary_compute_output 2" ;;
     mep)      echo "fake_mep_compute,fake_mep_no_account 1" ;;
     *) echo "" ;;
   esac
