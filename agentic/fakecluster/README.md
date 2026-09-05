@@ -223,6 +223,14 @@ docker compose -f $F restart slurmctld
 agentic/fakecluster/bin/down.sh --wipe && agentic/fakecluster/bin/up.sh
 ```
 
+## The profile sweep
+
+`agentic/sweep_profiles.sh [--profiles a,b,…] [--models claude-opus-5]` brings every profile up clean and runs the
+cells that belong to it (the map is in the script; a hermetic test keeps it honest), writing `agentic/runs/sweep-<stamp>.md`
+plus one log per profile. Baseline 2026-09-05: 31 cells over 9 profiles, all passing after one chaos-hook fix — see the
+vault's `Planned/V1 release.md`. ≈ 55 min end to end. The agent model is Opus (never Fable unless asked); `mep` needs
+`HPCB_MEP_EMAIL` in `agentic/.env` or it is skipped.
+
 ## Limitations (honest list)
 
 - **Not a facility.** No Duo push

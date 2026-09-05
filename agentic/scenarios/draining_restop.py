@@ -27,12 +27,20 @@ POSTCHECK_DELAY_S = 30
 
 MIDRUN_HOOKS = [
     # the login shape's worker pool runs on the login node under the pool user; the compute block's workers run on a
-    # compute container and are untouched. The manager relaunches the login block after its strategy period.
-    {"name": "kill_login_worker", "after_tool": "run_shell", "when_input": {"shape": "compute"}, "nth": 2,
-     # the bracket trick: a plain `pkill -f process_worker_pool` matched the ssh shell's own command line and killed
-     # it (rc 255) — the worker died too, so the chaos "worked" while the hook reported failure (first run, 2026-09-05)
-     "cmd": "pkill -u $(whoami) -f 'process_worker_[p]ool'; echo login-worker-killed"},
+    # compute container and are untouched. FREEZE it (SIGSTOP), don't kill it: a killed worker is relaunched by the
+    # manager within its strategy period, and on the 2026-09-06 sweep the stop landed after the relaunch — a warm
+    # channel, an honest `down`, and a scenario that graded the wrong world. A frozen worker stays frozen until the
+    # second hook resumes it after the FIRST stop (draining), so the re-stop finds the channel warm again (down).
+    # The bracket trick: a plain `-f process_worker_pool` matched the ssh shell's own command line (first run, 09-05).
+    # "on": "each_login": the endpoint's manager (and its login worker pool) sits on ONE node of a round-robin pool;
+    # a hook sent to the alias may land on the other one (the sweep rerun, 2026-09-06). pkill's own rc is echoed so the
+    # bundle shows whether anything was actually frozen.
+    {"name": "freeze_login_worker", "after_tool": "run_shell", "when_input": {"shape": "compute"}, "nth": 2, "on": "each_login",
+     "cmd": "pkill -STOP -u $(whoami) -f 'process_worker_[p]ool'; echo \"frozen pkill-rc=$?\""},
+    {"name": "thaw_login_worker", "after_tool": "stop_endpoint", "nth": 1, "on": "each_login",
+     "cmd": "pkill -CONT -u $(whoami) -f 'process_worker_[p]ool'; echo \"thawed pkill-rc=$?\""},
 ]
+CLEANUP = [{"on": "each_login", "cmd": "pkill -CONT -u $(whoami) -f 'process_worker_[p]ool' 2>/dev/null; echo thawed"}]   # never leave a frozen worker
 
 
 def draining_seen(t: Trace) -> Result:

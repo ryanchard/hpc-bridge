@@ -3,11 +3,8 @@ from __future__ import annotations
 
 import json
 import sys
-import types
 from pathlib import Path
 from typing import ClassVar
-
-import pytest
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -15,21 +12,6 @@ sys.path.insert(0, str(HERE.parent / "scenarios"))
 
 import targets  # noqa: E402
 from invariants import ToolCall, Trace, check_all  # noqa: E402
-
-
-@pytest.fixture
-def harness_run(monkeypatch):
-    """run.py imports runner, which imports the agent SDK (jail-only): stub the SDK the way test_runner.py does."""
-    stub = types.ModuleType("claude_agent_sdk")
-    for name in ("ClaudeAgentOptions", "PermissionResultAllow", "PermissionResultDeny", "AssistantMessage", "UserMessage",
-                 "ResultMessage", "SystemMessage", "ToolUseBlock", "ToolResultBlock", "TextBlock", "HookMatcher", "ClaudeSDKClient"):
-        setattr(stub, name, type(name, (), {}))
-    stub.query = lambda *a, **k: None
-    monkeypatch.setitem(sys.modules, "claude_agent_sdk", stub)
-    sys.modules.pop("runner", None)
-    sys.modules.pop("run", None)
-    import run as mod
-    return mod
 
 
 def test_f2b_profile_layers_on_site_with_the_jail_and_the_harness_port():

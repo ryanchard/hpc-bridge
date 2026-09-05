@@ -38,6 +38,9 @@ def test_draining_restop_and_stop_while_running_graders():
     assert dr.draining_seen(Trace([_stop("draining"), _stop("down")])).ok
     assert not dr.draining_seen(Trace([_stop("down")])).ok
     assert dr.MIDRUN_HOOKS[0]["when_input"] == {"shape": "compute"} and dr.MIDRUN_HOOKS[0]["nth"] == 2
+    # freeze (not kill — a killed worker is relaunched before the stop) on EVERY login node, thaw after the first stop
+    assert "-STOP" in dr.MIDRUN_HOOKS[0]["cmd"] and dr.MIDRUN_HOOKS[0]["on"] == "each_login"
+    assert dr.MIDRUN_HOOKS[1]["after_tool"] == "stop_endpoint" and "-CONT" in dr.MIDRUN_HOOKS[1]["cmd"] and dr.MIDRUN_HOOKS[1]["on"] == "each_login"
     run = ToolCall.of("mcp__endpoint__run_shell", {"shape": "compute", "command": "python3 -c ..."}, {"phase": "running", "task_id": "t"})
     refused = ToolCall.of("mcp__endpoint__stop_endpoint", {}, {"status": "up", "notice": "can't stop yet: task(s) compute-1 are still running on the compute block"})
     silent = ToolCall.of("mcp__endpoint__stop_endpoint", {}, {"status": "down", "notice": "compute block released over AMQP (released 6)"})
@@ -56,3 +59,28 @@ def test_chaos_scenarios_declare_fake_only_and_the_suite_honours_it():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     assert mod._allowed_targets("orphaned_task") == {"fake"} and mod._allowed_targets("happy_path") is None
+
+
+def test_midrun_hook_fans_out_to_every_login_node(monkeypatch, harness_run):
+    import asyncio
+    import json
+    monkeypatch.setenv("HPCB_TARGET_CAPS", json.dumps({"login_hosts": ["l1", "l2"]}))
+    seen = []
+    monkeypatch.setattr(harness_run, "_ssh_run", lambda cmd, timeout=60, host=None: (seen.append(host), (0, f"ok@{host}"))[1])
+    res = asyncio.run(harness_run._run_hook({"name": "h", "after_tool": "run_shell", "on": "each_login", "cmd": "pkill -STOP x"}))
+    assert seen == ["l1", "l2"] and res["hosts"] == ["l1", "l2"] and res["out"] == "[l1] ok@l1 | [l2] ok@l2"
+    seen.clear()
+    res = asyncio.run(harness_run._run_hook({"name": "h", "after_tool": "run_shell", "cmd": "x"}))
+    assert seen == [None] and res["hosts"] == []
+
+
+def test_midrun_hook_fan_out_survives_the_agent_env_scrub(monkeypatch, harness_run):
+    """Hooks fire while HPCB_* is scrubbed from the environment: the login hosts must come from the value captured at
+    import, not a live read (which saw nothing and ran the freeze on one node only — sweep rerun, 2026-09-06)."""
+    import asyncio
+    monkeypatch.setattr(harness_run, "_LOGIN_HOSTS", ["l1", "l2"])
+    monkeypatch.delenv("HPCB_TARGET_CAPS", raising=False)
+    seen = []
+    monkeypatch.setattr(harness_run, "_ssh_run", lambda cmd, timeout=60, host=None: (seen.append(host), (0, "ok"))[1])
+    res = asyncio.run(harness_run._run_hook({"name": "h", "after_tool": "run_shell", "on": "each_login", "cmd": "x"}))
+    assert seen == ["l1", "l2"] and res["hosts"] == ["l1", "l2"]
