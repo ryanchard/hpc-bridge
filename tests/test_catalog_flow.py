@@ -124,8 +124,7 @@ async def test_list_facilities_returns_summaries(monkeypatch):
 async def test_list_facilities_summaries_are_agent_safe(monkeypatch):
     from hpc_bridge import server
 
-    monkeypatch.setattr(
-        server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
+    monkeypatch.setattr(binding, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
     )
     fields = set(type((await _list_facilities(""))[0]).model_fields)
     # identity/provenance only — never executable config or raw UUIDs.
@@ -156,8 +155,7 @@ async def test_connect_facility_brings_up_login_and_lists_allocations(monkeypatc
     f.workers = 1  # manager online; the runner's canary (below) confirms the login worker
     app = AppCtx(facility=FakeFacility(), profile=Profile())
     app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, MYBALANCE, ""))
-    monkeypatch.setattr(
-        server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
+    monkeypatch.setattr(binding, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
     )
     monkeypatch.setattr(binding, "_facility_from_entry", lambda entry, *, account: f)
 
@@ -180,8 +178,7 @@ async def test_connect_facility_signals_reuse_when_endpoint_already_online(monke
     f.reused = True  # provision reports it attached to an existing endpoint, didn't start one
     app = AppCtx(facility=FakeFacility(), profile=Profile())
     app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, MYBALANCE, ""))
-    monkeypatch.setattr(
-        server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
+    monkeypatch.setattr(binding, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
     )
     monkeypatch.setattr(binding, "_facility_from_entry", lambda entry, *, account: f)
 
@@ -197,8 +194,7 @@ async def test_connect_facility_unknown_returns_needs_facility_details(monkeypat
     from hpc_bridge import server
 
     app = AppCtx(facility=FakeFacility(), profile=Profile())
-    monkeypatch.setattr(
-        server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
+    monkeypatch.setattr(binding, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
     )
     monkeypatch.delenv("HPC_BRIDGE_SSH_HOST", raising=False)  # no host -> the ask path, not discovery
     res = await server._connect_facility(app, "nope")
@@ -218,8 +214,7 @@ async def test_connect_facility_provisioning_when_login_worker_cold(monkeypatch)
     app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(
         eid, _Res(0, MYBALANCE, ""), canary_result=CanaryResult(ok=False, error="timeout")
     )
-    monkeypatch.setattr(
-        server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
+    monkeypatch.setattr(binding, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
     )
     monkeypatch.setattr(binding, "_facility_from_entry", lambda entry, *, account: f)
     res = await server._connect_facility(app, "anvil")
@@ -271,8 +266,7 @@ async def test_connect_facility_moves_scratch_root_to_the_facility(monkeypatch):
     app = AppCtx(facility=FakeFacility(), profile=Profile())  # starts with a different (local) facility
     app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, MYBALANCE, ""))
     monkeypatch.delenv("HPC_BRIDGE_SCRATCH", raising=False)
-    monkeypatch.setattr(
-        server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
+    monkeypatch.setattr(binding, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
     )
     monkeypatch.setattr(binding, "_facility_from_entry", lambda entry, *, account: f)
     await server._connect_facility(app, "anvil")
@@ -324,8 +318,7 @@ def _byo_app(monkeypatch, f):
     f.workers = 1
     app = AppCtx(facility=FakeFacility(), profile=Profile())
     app.runner_factory = lambda eid, user_endpoint_config=None, **_kw: _FakeRunner(eid, _Res(0, MYBALANCE, ""))
-    monkeypatch.setattr(
-        server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
+    monkeypatch.setattr(binding, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
     )
     monkeypatch.setattr(binding, "_facility_from_entry", lambda entry, *, account: f)
     return app
@@ -395,8 +388,7 @@ async def test_connect_unknown_with_ssh_host_proposes_discovered_details(monkeyp
     from hpc_bridge.models import FacilityDetails
 
     app = AppCtx(facility=FakeFacility(), profile=Profile())
-    monkeypatch.setattr(
-        server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
+    monkeypatch.setattr(binding, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
     )
     draft = FacilityDetails(
         ssh_host="login.newfac.edu", interface="ib0", env_setup="source {venv}/bin/activate",
@@ -426,8 +418,7 @@ async def test_connect_unknown_needs_preauth_when_host_wants_a_password(monkeypa
     from hpc_bridge.facility.remote import NeedsPreauth
 
     app = AppCtx(facility=FakeFacility(), profile=Profile())
-    monkeypatch.setattr(
-        server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
+    monkeypatch.setattr(binding, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
     )
     monkeypatch.setattr(config, "_control_settings", lambda: ("/tmp/cm", 3600))  # multiplexing on
 
@@ -449,8 +440,7 @@ async def test_connect_needs_preauth_flags_multiplexing_off(monkeypatch):
     from hpc_bridge.facility.remote import NeedsPreauth
 
     app = AppCtx(facility=FakeFacility(), profile=Profile())
-    monkeypatch.setattr(
-        server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
+    monkeypatch.setattr(binding, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
     )
     monkeypatch.setattr(config, "_control_settings", lambda: (None, 0))  # multiplexing OFF
 
@@ -541,8 +531,7 @@ async def test_connect_unknown_uses_ssh_host_from_env(monkeypatch):
     from hpc_bridge.models import FacilityDetails
 
     app = AppCtx(facility=FakeFacility(), profile=Profile())
-    monkeypatch.setattr(
-        server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
+    monkeypatch.setattr(binding, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
     )
     seen = {}
 
@@ -567,8 +556,7 @@ async def test_connect_unknown_without_host_asks_for_access(monkeypatch):
     from hpc_bridge import server
 
     app = AppCtx(facility=FakeFacility(), profile=Profile())
-    monkeypatch.setattr(
-        server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
+    monkeypatch.setattr(binding, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
     )
     monkeypatch.delenv("HPC_BRIDGE_SSH_HOST", raising=False)
     res = await server._connect_facility(app, "newfac")  # no host, no details -> ask for access
@@ -583,8 +571,7 @@ async def test_connect_unknown_discovery_defers_creds_to_ssh_config(monkeypatch)
     from hpc_bridge.models import FacilityDetails
 
     app = AppCtx(facility=FakeFacility(), profile=Profile())
-    monkeypatch.setattr(
-        server, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
+    monkeypatch.setattr(binding, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
     )
     seen = {}
 
