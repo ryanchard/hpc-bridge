@@ -113,7 +113,16 @@ role_login() {
   [ -s /run/hpcb/authorized_keys ] || log "WARNING: no /run/hpcb/authorized_keys mounted — nobody can ssh in"
   run_setup login
   wait_tcp slurmctld 6817 "slurmctld"
-  log "starting sshd ($(hostname), $(ip -o -4 addr show scope global | awk '{print $2"="$4}' | tr '\n' ' '))"
+  log "starting sshd ($(hostname), $(ip -o -4 addr show scope global | awk '{print $2"="$4}' | tr '\n' ' '))${SSHD_LOGFILE:+; auth log → $SSHD_LOGFILE}"
+  # A profile's setup may set SSHD_LOGFILE: fail2ban's sshd filter needs SYSLOG-STYLE lines ("<date> <host> sshd[pid]:
+  # Invalid user …") and there is no syslog daemon here — `sshd -E file` writes bare lines that never match — so sshd's
+  # stderr is prefixed line by line into the file (bash stays PID 1 in front of the pipeline).
+  if [ -n "${SSHD_LOGFILE:-}" ]; then
+    /usr/sbin/sshd -D -e 2>&1 | while IFS= read -r line; do
+      printf '%s %s sshd[1]: %s\n' "$(date '+%b %e %H:%M:%S')" "$(hostname -s)" "$line"
+    done >> "$SSHD_LOGFILE"
+    exit $?
+  fi
   exec /usr/sbin/sshd -D -e
 }
 

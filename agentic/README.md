@@ -223,6 +223,9 @@ MIDRUN_HOOKS = [{"after_tool": "poll_task", "nth": 1, "cmd": "…"}]   # optiona
 ADMIN_SETUP = ["sacctmgr -i modify user where name={user} set MaxSubmitJobs=0"]   # optional: cluster-ADMIN world changes,
 ADMIN_CLEANUP = ["… MaxSubmitJobs=-1"]  #   run by run_smoke.sh through the target's admin channel (fake only: docker exec into
                                         #   slurmctld; `{user}` = the pool user) before the agent / always after; no channel ⇒ skipped
+LOCAL_SETUP = ["ssh … nobody@login true"]  # optional: commands run INSIDE THE JAIL before the agent (the client side of the
+                                        #   world — e.g. burn fail2ban's budget from this address); a failure aborts the run
+SETUP = [{"cmd": "…", "on": "each_login"}]  # SETUP/CLEANUP entries may be dicts fanning out to every login node
 ```
 Every bundle's `record.json` (schema 2) carries `result` (OK | FAILED | RATE_LIMITED | SETUP FAILED | CRASHED),
 `failed` (the gating checks that broke), `gating` (which checks decided), a `gating` flag per grading row, and

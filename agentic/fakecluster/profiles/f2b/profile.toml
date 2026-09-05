@@ -1,0 +1,16 @@
+# `f2b` = the `site` cluster whose login nodes run FAIL2BAN on sshd — globus1's shape (maxretry 5 / findtime 10 min /
+# bantime 1 h), tightened here to maxretry 3 / 10 min / 10 min so a cell can trip it deliberately. Three failed SSH
+# auths from one address and port 22 drops that address for ten minutes. What it tests: the plugin's normal flows must
+# stay far under the threshold (a refused key is explained ONCE, never retried into a ban — the first model sweep
+# banned the harness' egress for everyone, 2026-09-03), and a BANNED client must be told "cannot reach", not looped.
+# The harness' world channel is a second, key-only sshd on :2200 (as in `totp`), outside the banned port, and the
+# pool users may run `sudo fail2ban-client` (a test-cluster convenience: CLEANUP unbans between cells).
+name = "f2b"
+description = "site + fail2ban on the login sshd (maxretry 3, ban 10 min, port 22 only); key-only harness sshd on :2200"
+base = "site"
+
+[capabilities]
+fail2ban = "sshd"             # fail2ban jail on port 22; bans the client address after `fail2ban_maxretry` failures
+fail2ban_maxretry = 3
+fail2ban_bantime_s = 600
+harness_ssh_port = 2200

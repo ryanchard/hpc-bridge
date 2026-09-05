@@ -1,0 +1,6 @@
+# `f2b` overlay (on top of site's): fail2ban bans with iptables, which needs NET_ADMIN inside the login containers.
+services:
+  login:
+    cap_add: [NET_ADMIN]
+  login02:
+    cap_add: [NET_ADMIN]
