@@ -143,13 +143,20 @@ node count (2 — `saturation` sizes its sleepers from it). Scenario prompts nam
 python3 agentic/run_suite.py --target fake --scenarios happy_path,endpoint_reuse --concurrency 3
 #   ^ runs bin/up.sh first (build if needed, wait until schedulable + sshd); --reset-cluster wipes it first;
 #     --no-cluster-up skips that. The node gate probes `sinfo` through the published sshd as a pool user.
-python3 agentic/run_suite.py --target fake --profile site --reset-cluster --scenarios rich_gate,partition_choice,gpu_rule,login_pin_teardown
-#   ^ a different cluster shape (see Profiles); switching profiles needs --reset-cluster. These four are the
+python3 agentic/run_suite.py --target fake --profile site --reset-cluster --scenarios rich_gate,partition_choice,gpu_rule,submit_policy_rejected,login_pin_teardown
+#   ^ a different cluster shape (see Profiles); switching profiles needs --reset-cluster. These five are the
 #     `site`-only scenarios (REQUIRES the profile's capabilities; skipped elsewhere): the RICH gate judged by a
 #     budget hawk (parsed balances + a real partition choice reach the spend question), a NON-default partition
 #     pick that must reach the scheduler (accounting reads it back), the gpu partition's GPU-request RULE (a
-#     rejected block is surfaced by #32's pilot probe and relayed or satisfied, never polled forever), and the
-#     round-robin login PIN. gated_provision/happy_path run here too (the gate has real choices).
+#     rejected block is surfaced by #32's pilot probe and relayed or satisfied, never polled forever), a submit the
+#     scheduler REFUSES for a reason the agent cannot see (an association submit limit the ADMIN sets — the #32
+#     signal made deterministic), and the round-robin login PIN. gated_provision/happy_path run here too.
+#
+#   ADMIN CHANNEL: a scenario's ADMIN_SETUP / ADMIN_CLEANUP are cluster-admin commands (sacctmgr limits, scontrol
+#   drain…) that run_smoke.sh runs as root on the controller (`docker exec hpcb-fake-slurmctld-1 bash -lc`;
+#   HPCB_FAKE_CTLD overrides the container) before the agent starts and — always, via an EXIT trap — after the
+#   cell. `{user}` is the cell's pool user. It exists only here: on a real facility we are not the admin, so
+#   run_suite skips such cells (the fake tier is where cluster-side world changes are exercised).
 HPCB_TARGET=fake ./agentic/run_smoke.sh spend_refusal          # one cell
 HPCB_TARGET=fake ./agentic/sweep_pool_user.sh hpcbridge-test-00 # hand sweep (rarely needed: --reset-cluster instead)
 ```

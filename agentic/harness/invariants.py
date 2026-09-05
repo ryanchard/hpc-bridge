@@ -956,3 +956,48 @@ def partition_provisioned(partition: str, *, name: str | None = None):
         return Result(nm, ok, f"ok: block on {got!r} (start at call {k}), work at {work_after[0]}" if ok
                       else f"last billed start (call {k}) asked for partition {got!r} (want {partition!r}); compute work after it: {work_after or 'none'}")
     return grader
+
+
+# --- a REJECTED block: the #32 pilot-probe signal and the agent's response to it -------------------------------
+# Shared by gpu_rule (a rule the agent may pre-empt) and submit_policy_rejected (a limit it cannot).
+
+_REJECTED = "REJECTED"  # the #32 pilot-probe notice: "…NO pilot job is in the scheduler… likely REJECTED…"
+
+
+def _rejected_idxs(t: Trace) -> list[int]:
+    """Calls whose result notice carries the #32 rejection signal (ensure_endpoint_up / run_shell / poll_task)."""
+    return [i for i, c in enumerate(t.calls)
+            if c.name in ("ensure_endpoint_up", "run_shell", "poll_task") and _REJECTED in str((c.result or {}).get("notice", ""))]
+
+
+def rejection_surfaced(t: Trace) -> Result:
+    """The TOOL told the agent the pilot was rejected (the scheduler probe fired on a real rejection)."""
+    idx = _rejected_idxs(t)
+    return Result("rejection_surfaced", bool(idx), f"ok: the tool reported a rejected pilot at call {idx[0]}" if idx
+                  else "no tool result ever carried the REJECTED pilot notice (#32)")
+
+
+
+def no_endless_wait(t: Trace) -> Result:
+    """After a REJECTED notice, at most 3 further ensure_endpoint_up polls may read the same rejected block before
+    the agent changes something (a new connect_facility(details=…), a different partition/account — either makes
+    the next polls a fresh attempt) or stops. Polling a block the scheduler refused is the failure this exists for."""
+    idx = _rejected_idxs(t)
+    if not idx:
+        return Result("no_endless_wait", True, "no rejection to wait on")
+    first, stale, worst = idx[0], 0, 0
+    for i, c in enumerate(t.calls):
+        if i <= first:
+            continue
+        if c.name == "connect_facility" and c.input.get("details"):
+            stale = 0  # reconfigured: a fresh attempt
+        elif c.name == "ensure_endpoint_up":
+            r = c.result or {}
+            if str(r.get("status")) == "provisioning" and _REJECTED in str(r.get("notice", "")):
+                stale += 1
+                worst = max(worst, stale)
+            else:  # a different answer (a new partition/account allocating, up, down): the streak ends
+                stale = 0
+    ok = worst <= 3
+    return Result("no_endless_wait", ok, f"ok: at most {worst} stale poll(s) on the rejected block" if ok
+                  else f"{worst} consecutive ensure_endpoint_up polls kept reading the REJECTED block after call {first} with no config change")

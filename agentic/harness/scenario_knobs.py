@@ -62,6 +62,13 @@ def main(argv: list[str]) -> int:
     if req:
         import json
         print(f"HPCB_KNOB_REQUIRES={shlex.quote(json.dumps(req, sort_keys=True))}")  # cluster capabilities the scenario needs
+    # Cluster-ADMIN world changes (run by run_smoke.sh through the target's admin channel, `{user}` = the pool user):
+    # ADMIN_SETUP before the agent starts, ADMIN_CLEANUP always afterwards. No admin channel on the target ⇒ skipped.
+    for attr, knob in (("ADMIN_SETUP", "HPCB_KNOB_ADMIN_SETUP"), ("ADMIN_CLEANUP", "HPCB_KNOB_ADMIN_CLEANUP")):
+        cmds = list(getattr(mod, attr, []) or [])
+        if cmds:
+            import json
+            print(f"{knob}={shlex.quote(json.dumps(cmds))}")
     return 0
 
 

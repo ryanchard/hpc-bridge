@@ -14,7 +14,7 @@ surfaced by the tool AND the rule relayed to the user. `no_endless_wait` bounds 
 """
 import re
 
-from invariants import Result, Trace, _slurm_work_idxs, compute_ran
+from invariants import Result, Trace, _slurm_work_idxs, compute_ran, no_endless_wait, rejection_surfaced
 
 NEEDS_COMPUTE_NODE = True
 
@@ -40,22 +40,8 @@ TARGETS = ("fake",)
 REQUIRES = {"gres": "gpu", "accounting": "enforce"}
 
 GPU_NODE = "c3"
-_REJECTED = "REJECTED"  # the #32 pilot-probe notice: "…The block submission was likely REJECTED…"
 _RULE_WORDS = re.compile(r"gpus-per-node|--gpus\b|--gres\b|request(s|ed|ing)? (a|an|one|the) gpu|gpu request|must request", re.I)
 _CUDA = re.compile(r"CUDA_VISIBLE_DEVICES=\d\S*")
-
-
-def _rejected_idxs(t: Trace) -> list[int]:
-    """Calls whose result notice carries the #32 rejection signal."""
-    return [i for i, c in enumerate(t.calls)
-            if c.name in ("ensure_endpoint_up", "run_shell", "poll_task") and _REJECTED in str((c.result or {}).get("notice", ""))]
-
-
-def rejection_surfaced(t: Trace) -> Result:
-    """The TOOL told the agent the pilot was rejected (the scheduler probe fired on a real rejection)."""
-    idx = _rejected_idxs(t)
-    return Result("rejection_surfaced", bool(idx), f"ok: the tool reported a rejected pilot at call {idx[0]}" if idx
-                  else "no tool result ever carried the REJECTED pilot notice (#32)")
 
 
 def rule_relayed(t: Trace) -> Result:
@@ -96,31 +82,6 @@ def gpu_rule_handled(t: Trace) -> Result:
     ok = surfaced.ok and relayed.ok
     return Result("gpu_rule_handled", ok, f"surfaced and relayed — {surfaced.detail}" if ok
                   else f"neither satisfied nor explained — {ran.detail}; {surfaced.detail}; {relayed.detail}")
-
-
-def no_endless_wait(t: Trace) -> Result:
-    """After a REJECTED notice, at most 3 further ensure_endpoint_up polls may read the same rejected block before
-    the agent changes something (a new connect_facility(details=…), a different partition/account — either makes
-    the next polls a fresh attempt) or stops. Polling a block the scheduler refused is the failure this exists for."""
-    idx = _rejected_idxs(t)
-    if not idx:
-        return Result("no_endless_wait", True, "no rejection to wait on")
-    first, stale, worst = idx[0], 0, 0
-    for i, c in enumerate(t.calls):
-        if i <= first:
-            continue
-        if c.name == "connect_facility" and c.input.get("details"):
-            stale = 0  # reconfigured: a fresh attempt
-        elif c.name == "ensure_endpoint_up":
-            r = c.result or {}
-            if str(r.get("status")) == "provisioning" and _REJECTED in str(r.get("notice", "")):
-                stale += 1
-                worst = max(worst, stale)
-            else:  # a different answer (a new partition/account allocating, up, down): the streak ends
-                stale = 0
-    ok = worst <= 3
-    return Result("no_endless_wait", ok, f"ok: at most {worst} stale poll(s) on the rejected block" if ok
-                  else f"{worst} consecutive ensure_endpoint_up polls kept reading the REJECTED block after call {first} with no config change")
 
 
 EXTRA_INVARIANTS = [gpu_rule_handled, no_endless_wait, rejection_surfaced, rule_relayed, rule_found_in_log, gpu_block_ran, compute_ran]

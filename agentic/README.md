@@ -218,6 +218,9 @@ SERIAL = True                    # one cell at a time (a shared facility identit
 TARGETS = ("fake",)              # optional: only these targets (chaos scenarios kill things)
 REQUIRES = {"login_nodes": 2}    # optional: cluster capabilities needed (matched against the target/profile manifest)
 MIDRUN_HOOKS = [{"after_tool": "poll_task", "nth": 1, "cmd": "…"}]   # optional: chaos — fire on the cluster mid-run
+ADMIN_SETUP = ["sacctmgr -i modify user where name={user} set MaxSubmitJobs=0"]   # optional: cluster-ADMIN world changes,
+ADMIN_CLEANUP = ["… MaxSubmitJobs=-1"]  #   run by run_smoke.sh through the target's admin channel (fake only: docker exec into
+                                        #   slurmctld; `{user}` = the pool user) before the agent / always after; no channel ⇒ skipped
 ```
 Every bundle's `record.json` (schema 2) carries `result` (OK | FAILED | RATE_LIMITED | SETUP FAILED | CRASHED),
 `failed` (the gating checks that broke), `gating` (which checks decided), a `gating` flag per grading row, and

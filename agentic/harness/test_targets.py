@@ -87,3 +87,18 @@ def test_login_pin_scenario_requires_two_login_nodes():
     r = subprocess.run([sys.executable, str(HERE / "scenario_knobs.py"), "login_pin_teardown"], capture_output=True, text=True, timeout=60)
     kv = dict(ln.split("=", 1) for ln in r.stdout.splitlines() if "=" in ln)
     assert kv.get("HPCB_KNOB_TARGETS") == "fake" and '"login_nodes": 2' in kv.get("HPCB_KNOB_REQUIRES", "")
+
+
+def test_only_the_fake_target_has_an_admin_channel(monkeypatch):
+    monkeypatch.delenv("HPCB_FAKE_CTLD", raising=False)
+    assert targets.get("globus1").admin_argv is None
+    f = targets.get("fake")
+    assert f.admin_argv == ("docker", "exec", "hpcb-fake-slurmctld-1", "bash", "-lc")
+    monkeypatch.setenv("HPCB_FAKE_CTLD", "other-ctld")
+    assert targets.get("fake").admin_argv[2] == "other-ctld"
+    # the CLI prints it shell-quoted for run_smoke.sh; empty = no channel
+    out = subprocess.run([sys.executable, str(HERE / "targets.py"), "fake"], capture_output=True, text=True, timeout=60,
+                         env={**__import__("os").environ, "HPCB_FAKE_CTLD": "hpcb-fake-slurmctld-1"}).stdout
+    assert "HPCB_T_ADMIN_ARGV='docker exec hpcb-fake-slurmctld-1 bash -lc'" in out
+    out = subprocess.run([sys.executable, str(HERE / "targets.py"), "globus1"], capture_output=True, text=True, timeout=60).stdout
+    assert "HPCB_T_ADMIN_ARGV=\n" in out
