@@ -56,6 +56,16 @@ def delete_endpoint_cmd(endpoint_name: str) -> str:
     return f"{GCE} stop {ep} >/dev/null 2>&1; {GCE} delete {ep} --yes >/dev/null 2>&1; true"
 
 
+def token_store_cleanup_cmd() -> str:
+    """Remove the pool user's login-node token store (`~/.globus_compute/storage.db`). The PLUGIN seeds it for the pool
+    user at bootstrap and removes it only in its own teardown, and only when its record says it seeded it — a cell that
+    ends with `stop` leaves it behind, and the NEXT cell on that pool user then finds a store it did not create and
+    (correctly) refuses to wipe it: "no token store of ours was removed" failed teardown_reported_clean on the fake
+    cluster's internal-hostnames cell (2026-09-06). The pool user has no other Globus login; concurrent cells never
+    share a pool user (pool.py), so removing it at the end of every cell is safe and keeps cells independent."""
+    return 'if [ -f "$HOME/.globus_compute/storage.db" ]; then rm -f "$HOME/.globus_compute/storage.db"; echo "token store removed"; else echo "no token store"; fi'
+
+
 def capture_logs_cmd(endpoint_name: str, eids: list[str], *, tail_lines: int = 2000) -> str:
     """Print (with `=== path` headers) the tail of the manager's endpoint.log, each UEP's
     endpoint.log, and the blocks' submit-script stdout/stderr — the evidence a post-mortem needs

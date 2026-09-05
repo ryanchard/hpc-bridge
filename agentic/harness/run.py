@@ -27,6 +27,7 @@ from cluster_ops import (
     delete_endpoint_cmd,
     endpoint_uuid_cmd,
     scoped_cancel_cmd,
+    token_store_cleanup_cmd,
     uep_dirs_cleanup_cmd,
 )
 from invariants import Result, Trace, check_all
@@ -411,7 +412,8 @@ def _teardown(scen, res=None) -> str:
     )
     print(f"teardown: endpoint {name or '<unknown>'}; cancelling blocks of uuid(s) {eids or 'none'} …",
           file=sys.stderr, flush=True)
-    rc, out = _ssh_run(f"{delete}; {scoped_cancel_cmd(scheduler, eids)}; {uep_dirs_cleanup_cmd(eids)}", timeout=90)
+    rc, out = _ssh_run(f"{delete}; {scoped_cancel_cmd(scheduler, eids)}; {uep_dirs_cleanup_cmd(eids)}; {token_store_cleanup_cmd()}",
+                       timeout=90)
     tag = "ok" if rc == 0 else f"rc={rc}"
     print(f"teardown: {tag} — {out.strip().replace(chr(10), ' ')[:200]}", file=sys.stderr, flush=True)
     print(f"teardown: registrations — {_deregister_endpoints(eids)}", file=sys.stderr, flush=True)

@@ -259,7 +259,7 @@ class _FakeRemoteCLI:
 
     async def start(self, name):
         self.calls.append(("start", name))
-        return ("fake-eid", "login03.anvil.rcac.purdue.edu")
+        return ("fake-eid", "login03.anvil.rcac.purdue.edu", None)
 
     async def stop(self, name):
         self.calls.append(("stop", name))
@@ -515,10 +515,18 @@ async def test_discover_raises_runtimeerror_on_unreachable_host(monkeypatch):
 
 def test_routable_pin_drops_internal_hostnames():
     from hpc_bridge.facility.remote import _routable_pin
-    assert _routable_pin("login03.anvil.rcac.purdue.edu") == "login03.anvil.rcac.purdue.edu"  # external FQDN kept
-    assert _routable_pin("beagle3-tbd1.rcc.local") is None  # internal .local dropped (Midway, seen live)
-    assert _routable_pin("login01") is None                 # single-label dropped
-    assert _routable_pin("node.internal") is None
+    yes, no = (lambda h: True), (lambda h: False)
+    assert _routable_pin("login03.anvil.rcac.purdue.edu", resolves=yes) == "login03.anvil.rcac.purdue.edu"  # external FQDN kept
+    assert _routable_pin("beagle3-tbd1.rcc.local", resolves=yes) is None  # internal .local dropped (Midway, seen live)
+    assert _routable_pin("login01", resolves=yes) is None                 # single-label dropped
+    assert _routable_pin("node.internal", resolves=yes) is None
+    # a plain-looking name the client's DNS does not know is just as useless (fake `internal` profile, 2026-09-06)
+    assert _routable_pin("login01.int.hpcb.test", resolves=no) is None
+    # …unless the bootstrap connection's own server address is known: pin THAT (still key-checked against the alias)
+    assert _routable_pin("login01.int.hpcb.test", "172.20.0.8", resolves=no) == "172.20.0.8"
+    assert _routable_pin("beagle3-tbd1.rcc.local", "10.50.1.7", resolves=yes) == "10.50.1.7"
+    assert _routable_pin("login03.anvil.rcac.purdue.edu", "1.2.3.4", resolves=yes) == "login03.anvil.rcac.purdue.edu"  # name first
+    assert _routable_pin(None, "127.0.0.1") is None and _routable_pin(None, "garbage") is None and _routable_pin(None, "") is None
     assert _routable_pin(None) is None and _routable_pin("") is None
 
 
@@ -1085,7 +1093,7 @@ def _gce_fake(list_for_call):
         calls.append(cmd)
         if "endpoint list" in cmd:
             return (0, list_for_call(sum("endpoint list" in c for c in calls) - 1, cmd), "")
-        return (0, "HPCB_HOST=login1.example\n", "")
+        return (0, "HPCB_HOST=login1.example\nHPCB_ADDR=10.0.0.5\n", "")
 
     return fake, calls
 
@@ -1116,7 +1124,7 @@ async def test_39_start_waits_for_the_uuid_to_register(monkeypatch):
 
     monkeypatch.setattr(remote, "_sleep", no_sleep)
     cli = RemoteEndpointCLI(SshTarget("h", "u", "k"), "true")
-    eid, host = await cli.start(LONG_NAME)
+    eid, host, _addr = await cli.start(LONG_NAME)
     assert eid == "ec844b37-fba8-4053-bbbf-e8f1848964d3" and host == "login1.example"
     assert sum("endpoint list" in c for c in calls) == 2 and slept == [remote._START_REGISTER_POLL_S]
 
@@ -1153,7 +1161,7 @@ async def test_39_start_adopts_an_already_running_manager(monkeypatch, refusal):
 
     monkeypatch.setattr(remote, "ssh_exec", fake)
     cli = RemoteEndpointCLI(SshTarget("h", "u", "k"), "true")
-    eid, host = await cli.start(LONG_NAME)  # no raise: the running manager is the endpoint we want
+    eid, host, _addr = await cli.start(LONG_NAME)  # no raise: the running manager is the endpoint we want
     assert eid == "ec844b37-fba8-4053-bbbf-e8f1848964d3" and host is None
 
 

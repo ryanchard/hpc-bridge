@@ -1,0 +1,14 @@
+# `internal` = the `site` cluster whose login nodes call themselves by INTERNAL names: `hostname -f` on login01 is
+# `login01.int.hpcb.test`, a name that resolves inside the cluster (an alias on the internal `data` network) but NOT
+# from the client (the jail sits on the public network only) — Midway's `*.rcc.local`, Aurora's `*.hostmgmt.cm.*`,
+# and every site whose login pool answers to public round-robin names but reports private ones. The public names
+# (`login`, `login01.hpcb.test`, `login02.hpcb.test`) still resolve for the client. What it tests: the plugin's
+# login-node PIN — later control-plane SSH (teardown above all) must reach the node the manager landed on even though
+# that node's own name is useless to the client and the public alias round-robins.
+name = "internal"
+description = "site + internal-only login hostnames (hostname -f = login0N.int.hpcb.test, resolvable only inside the cluster)"
+base = "site"
+
+[capabilities]
+hostnames = "internal"
+login_internal_hosts = ["login01.int.hpcb.test", "login02.int.hpcb.test"]

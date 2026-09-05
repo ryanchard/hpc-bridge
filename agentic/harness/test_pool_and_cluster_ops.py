@@ -115,3 +115,10 @@ def test_run_scoped_cancel_never_matches_the_saturation_sleepers():
     assert "hpcb-sat" not in cmd and "-n hpcb-sat" not in cmd  # (the `[ -n "$ids" ]` test is a shell -n, fine)
     assert any("hpcb-sat" in c and "scancel" in c for c in saturation.CLEANUP)
     assert saturation.SERIAL is True and saturation.NEEDS_COMPUTE_NODE == 3
+
+
+def test_token_store_cleanup_removes_only_the_pool_users_seeded_store():
+    from cluster_ops import token_store_cleanup_cmd
+    cmd = token_store_cleanup_cmd()
+    assert '"$HOME/.globus_compute/storage.db"' in cmd and "rm -f" in cmd and "token store removed" in cmd
+    assert "uep." not in cmd and "rm -rf" not in cmd   # the store only — never a directory sweep
