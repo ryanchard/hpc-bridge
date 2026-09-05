@@ -150,7 +150,7 @@ node count (2 — `saturation` sizes its sleepers from it). Scenario prompts nam
 python3 agentic/run_suite.py --target fake --scenarios happy_path,endpoint_reuse --concurrency 3
 #   ^ runs bin/up.sh first (build if needed, wait until schedulable + sshd); --reset-cluster wipes it first;
 #     --no-cluster-up skips that. The node gate probes `sinfo` through the published sshd as a pool user.
-python3 agentic/run_suite.py --target fake --profile site --reset-cluster --scenarios rich_gate,partition_choice,gpu_rule,submit_policy_rejected,login_pin_teardown
+python3 agentic/run_suite.py --target fake --profile site --reset-cluster --scenarios rich_gate,partition_choice,gpu_rule,submit_policy_rejected,login_pin_teardown,slurm_worker_died
 python3 agentic/run_suite.py --target fake --profile mep --reset-cluster --scenarios fake_mep_compute,fake_mep_no_account
 #   ^ the facility-MEP path against the fake managers (a local catalog names their UUIDs — see below)
 python3 agentic/run_suite.py --target fake --profile totp --reset-cluster --scenarios otp_preauth
@@ -171,7 +171,8 @@ python3 agentic/run_suite.py --target fake --profile internal --reset-cluster --
 #     pick that must reach the scheduler (accounting reads it back), the gpu partition's GPU-request RULE (a
 #     rejected block is surfaced by #32's pilot probe and relayed or satisfied, never polled forever), a submit the
 #     scheduler REFUSES for a reason the agent cannot see (an association submit limit the ADMIN sets — the #32
-#     signal made deterministic), and the round-robin login PIN. gated_provision/happy_path run here too.
+#     signal made deterministic), the round-robin login PIN, and a pilot whose WORKER DIES at start (the probe must
+#     report it FINISHED with its exit status from sacct, 0.1.13). gated_provision/happy_path run here too.
 #
 #   ADMIN CHANNEL: a scenario's ADMIN_SETUP / ADMIN_CLEANUP are cluster-admin commands (sacctmgr limits, scontrol
 #   drain…) that run_smoke.sh runs as root on the controller (`docker exec hpcb-fake-slurmctld-1 bash -lc`;
