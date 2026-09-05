@@ -18,7 +18,6 @@ import json
 import os
 import shlex
 import sys
-import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -53,6 +52,9 @@ class Target:
     # fake cluster has one (docker exec into slurmctld); on a real facility we are not the admin → None, and
     # run_suite skips the cell.
     admin_argv: tuple[str, ...] | None = None
+    # Host-side command printing this cluster's LOCAL CATALOG (seed-format YAML) — a profile with facility MEPs minted
+    # per cluster declares it ([catalog] cmd); run_smoke.sh mounts the output into the jail as HPC_BRIDGE_CATALOG_FILE.
+    catalog_cmd: str | None = None
 
     def cleanup_argv(self, user: str, key: str) -> list[str]:
         """Host-side ssh as the pool `user` with `key` (the run-scoped cleanup channel)."""
@@ -61,14 +63,18 @@ class Target:
 
 
 def load_profile(name: str) -> dict:
-    """A fake-cluster profile's manifest (profiles/<name>/profile.toml) — its [capabilities] are the vocabulary a
-    scenario's REQUIRES is matched against."""
-    p = PROFILES_DIR / name / "profile.toml"
-    if not p.is_file():
-        have = sorted(d.name for d in PROFILES_DIR.iterdir() if (d / "profile.toml").is_file()) if PROFILES_DIR.is_dir() else []
-        raise SystemExit(f"targets: unknown fake-cluster profile {name!r} (have: {have})")
-    with p.open("rb") as fh:
-        return tomllib.load(fh)
+    """A fake-cluster profile's MERGED manifest (profiles/<name>/profile.toml layered on its `base` chain — see
+    fakecluster/bin/profile.py) — its [capabilities] are the vocabulary a scenario's REQUIRES is matched against."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("hpcb_profile", PROFILES_DIR.parent / "bin" / "profile.py")
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+    try:
+        return mod.manifest(name)
+    except SystemExit as exc:
+        raise SystemExit(f"targets: {exc}") from None
 
 
 def meets(requires: dict | None, caps: dict) -> tuple[bool, str]:
@@ -104,7 +110,8 @@ def get(name: str | None = None) -> Target:
         )
     if name == "fake":
         profile = os.environ.get("HPCB_FAKE_PROFILE", "default")
-        caps = dict(load_profile(profile).get("capabilities", {}))
+        man = load_profile(profile)
+        caps = dict(man.get("capabilities", {}))
         port = os.environ.get("HPCB_FAKE_SSH_PORT", "2222")
         key = os.environ.get("HPCB_FAKE_KEY", f"{home}/.ssh/hpcb-fake")
         nohostkey = ("-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR")
@@ -117,6 +124,7 @@ def get(name: str | None = None) -> Target:
             cleanup_host="localhost", cleanup_ssh_opts=("-p", port, *nohostkey),
             profile=profile, capabilities=caps,
             admin_argv=("docker", "exec", os.environ.get("HPCB_FAKE_CTLD", "hpcb-fake-slurmctld-1"), "bash", "-lc"),
+            catalog_cmd=(man.get("catalog") or {}).get("cmd") or None,
         )
     raise SystemExit(f"targets: unknown target {name!r} (globus1 | fake)")
 
@@ -133,6 +141,7 @@ def main(argv: list[str]) -> int:
         print(f"HPCB_T_{k}={v}")
     print(f"HPCB_T_CAPS_JSON={json.dumps(t.capabilities, separators=(',', ':'))!r}")
     print(f"HPCB_T_ADMIN_ARGV={shlex.quote(shlex.join(t.admin_argv)) if t.admin_argv else ''}")  # '' = no admin channel
+    print(f"HPCB_T_CATALOG_CMD={shlex.quote(t.catalog_cmd or '')}")  # '' = the registry is the catalog
     return 0
 
 

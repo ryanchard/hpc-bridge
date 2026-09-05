@@ -212,10 +212,17 @@ def make_catalog():
     login and no configuration; HPC_BRIDGE_SEARCH_INDEX overrides it (a private/staging registry).
     There is **no bundled fallback**: a machine the registry can't resolve is a hard failure (the
     soft agent-discovery fallback is a later slice). The bundled seed is the curator's ingest source
-    (see `hpc-bridge-catalog`), never a runtime catalog.
+    (see `hpc-bridge-catalog`), never a runtime catalog. The one exception is the explicit dev/test
+    seam HPC_BRIDGE_CATALOG_FILE (a seed-format YAML the caller supplies): the agentic fake cluster's
+    facility MEPs are minted per cluster and cannot be registry entries; a curator can rehearse one.
     """
     from .catalog.search import SearchCatalog
 
+    local = config.catalog_file()
+    if local:  # dev/test seam (config.catalog_file): a seed-format YAML stands in for the registry
+        from .catalog.bundled import BundledCatalog
+
+        return BundledCatalog(local)
     index = config.search_index()
     client = _make_search_client()  # anonymous unless a Search-scoped login is already held
     cache_dir = (

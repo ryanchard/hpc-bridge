@@ -126,6 +126,22 @@ RUN_ARGS=("$SCENARIO")
 [ -n "${HPCB_PERSONA:-}" ] && RUN_ARGS+=(--persona "$HPCB_PERSONA")  # interactive: simulated-human persona
 [ -n "${HPCB_NO_SKILL:-}" ] && RUN_ARGS+=(--no-skill)                # ablation: withhold SKILL.md
 echo "running '$SCENARIO'${HPCB_MODEL:+ model=$HPCB_MODEL}${HPCB_EFFORT:+ effort=$HPCB_EFFORT}${HPCB_PERSONA:+ persona=$HPCB_PERSONA}${HPCB_NO_SKILL:+ ABLATED:skill}  (target $TARGET, user $SSH_USER, facility $TARGET-$RUNID)…"
+# ---- the cluster's LOCAL CATALOG (a profile with facility MEPs minted per cluster: targets' catalog_cmd) ----
+# Generated per cell from the live cluster and mounted read-only; the plugin's HPC_BRIDGE_CATALOG_FILE seam makes
+# it THE catalog for this cell (the registry is not consulted). Removed by the EXIT trap below.
+CATALOG_FILE=""
+if [ -n "${HPCB_T_CATALOG_CMD:-}" ]; then
+  CATALOG_FILE="$RUNS_HOST/.catalog-$RUNID.yaml"
+  ok=0
+  for _ in 1 2 3 4 5; do
+    if eval "$HPCB_T_CATALOG_CMD" > "$CATALOG_FILE" 2>/dev/null && [ -s "$CATALOG_FILE" ]; then ok=1; break; fi
+    sleep 3
+  done
+  [ "$ok" = 1 ] || { echo "ERROR: the cluster's catalog command failed ($HPCB_T_CATALOG_CMD) — is the MEP profile up and registered?"; rm -f "$CATALOG_FILE"; exit 1; }
+  echo "catalog: local ($(grep -c '^- id:' "$CATALOG_FILE") entr(y/ies) from the cluster) → HPC_BRIDGE_CATALOG_FILE"
+  ARGS+=( -v "$CATALOG_FILE":/run/hpcb/catalog.yaml:ro -e HPC_BRIDGE_CATALOG_FILE=/run/hpcb/catalog.yaml )
+fi
+
 # ---- cluster-ADMIN world changes (scenario ADMIN_SETUP / ADMIN_CLEANUP; `{user}` = this cell's pool user) ----
 # Run through the target's admin channel (targets.py: fake = `docker exec` into slurmctld, as root; a real
 # facility has none — we are not its admin — so such a cell refuses to run here; run_suite skips it earlier).
@@ -150,10 +166,14 @@ if [ -n "${HPCB_KNOB_ADMIN_SETUP:-}${HPCB_KNOB_ADMIN_CLEANUP:-}" ]; then
     ADMIN_CLEANED=1
     [ -z "${HPCB_KNOB_ADMIN_CLEANUP:-}" ] || admin_run cleanup "$HPCB_KNOB_ADMIN_CLEANUP" || echo "WARN: admin cleanup incomplete — check the cluster's accounting for $SSH_USER"
   }
-  trap admin_cleanup EXIT
   if [ -n "${HPCB_KNOB_ADMIN_SETUP:-}" ]; then
+    trap 'admin_cleanup; [ -z "$CATALOG_FILE" ] || rm -f "$CATALOG_FILE"' EXIT
     admin_run setup "$HPCB_KNOB_ADMIN_SETUP" || { echo "ERROR: admin setup failed — not launching the cell"; exit 1; }
+  else
+    trap 'admin_cleanup; [ -z "$CATALOG_FILE" ] || rm -f "$CATALOG_FILE"' EXIT
   fi
+else
+  trap '[ -z "$CATALOG_FILE" ] || rm -f "$CATALOG_FILE"' EXIT
 fi
 
 # The cell runs as a CHILD so a SIGTERM/SIGINT to this script reaches it (docker run proxies the signal into the

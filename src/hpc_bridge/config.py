@@ -35,6 +35,13 @@ def search_index() -> str:
     return env("HPC_BRIDGE_SEARCH_INDEX") or PUBLIC_REGISTRY_INDEX
 
 
+def catalog_file() -> str | None:
+    """A LOCAL catalog (seed-format YAML file or directory) that replaces the registry entirely — a dev/test seam:
+    the agentic fake cluster's facility MEPs get fresh UUIDs per cluster and cannot live in the public registry, and a
+    curator can rehearse a seed entry before ingesting it. Never set in normal use (the registry is the catalog)."""
+    return env("HPC_BRIDGE_CATALOG_FILE")
+
+
 def user_dir() -> Path:
     """The local globus_compute dir for the endpoint CLI subprocess (NOT the SDK's token store, which
     follows GLOBUS_COMPUTE_USER_DIR / ~/.globus_compute — see Reference/Configuration)."""

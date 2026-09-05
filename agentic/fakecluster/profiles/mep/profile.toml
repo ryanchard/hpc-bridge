@@ -1,0 +1,26 @@
+# `mep` = the `site` cluster plus a FACILITY MULTI-USER ENDPOINT (Globus Compute MEP) run as root in login01 — the
+# plugin's zero-SSH path (MEPFacility): the facility runs the manager, its identity mapping turns our Globus identity
+# into a local account (hpcbmep), and hpc-bridge only dispatches a user_endpoint_config to the MEP's UUID over AMQP.
+# TWO managers share the container so both template contracts are on hand:
+#   hpcb-mep-strict — user_config_schema with additionalProperties:false and NO compute/interface/worker_init keys
+#                     (Anvil's shape: the plugin must DROP what the schema forbids and rely on the template defaults)
+#   hpcb-mep-open   — additionalProperties:true, `compute: true` required (globus1's shape)
+# UUIDs are minted at the first start and persist in the `mep-state` volume (a warm restart keeps them; --wipe mints
+# new ones), so the catalog is generated per cell from the live cluster ([catalog] cmd) rather than checked in.
+# The MEP owner's Globus login is the harness test identity's storage.db (HPCB_MEP_GLOBUS_DB, defaulting to
+# HPCB_TEST_GLOBUS_DB from agentic/.env) staged into root's GLOBUS_COMPUTE_USER_DIR; the mapped identity is
+# HPCB_MEP_IDENTITY (default gusellerm@uchicago.edu — the identity in that db). A SECOND identity (the
+# mep_no_account db) is unmapped by construction → the terminal NO ACCOUNT path.
+name = "mep"
+description = "site + a facility multi-user endpoint (two MEPs in login01: strict + open schema) — the zero-SSH path"
+base = "site"
+
+[capabilities]
+mep = "consent-free"                 # a root-run Globus Compute MEP; the mapped user needs no fresh consent
+mep_schemas = ["strict", "open"]
+mep_mapped_user = "hpcbmep"          # every mapped run executes as this account (WARM_BLOCK_USER for the node gate)
+
+[catalog]
+# Prints the seed-format catalog naming this cluster's MEP UUIDs (both entries). run_smoke.sh runs it on the host
+# per cell and mounts the output into the jail as HPC_BRIDGE_CATALOG_FILE (the plugin's local-catalog seam).
+cmd = "docker exec hpcb-fake-login-1 /usr/local/bin/hpcb-mep-catalog"

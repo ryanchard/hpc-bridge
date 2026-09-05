@@ -127,6 +127,7 @@ applied at container start, so switching shape is `down.sh --wipe && up.sh --pro
 |---|---|---|
 | `default` | 2 nodes, one partition `main`, no enforcement, one login node, one NIC | the spike's cluster; every SSH scenario |
 | `site` | 3 nodes; `debug` (30 min, QOS cap) / `compute` (default) / `gpu` (c3, `hpcb-gpu` only, must request a GPU — `job_submit.lua`); accounting ENFORCED (wrong account rejected); fake `mybalance` on PATH; two NICs; **two login nodes behind the round-robin name `login`** (`login01.hpcb.test`:2222, `login02.hpcb.test`:2223, shared host keys like a real site) | discovery with real choices; the spend gate as a decision; balance parsers end to end; the login-node PIN class |
+| `mep` | `site` + a **facility multi-user endpoint** (Globus Compute MEP) run as root in login01 — TWO managers, `hpcb-mep-strict` (schema `additionalProperties:false`, no compute/interface/worker_init keys: Anvil's shape) and `hpcb-mep-open` (globus1's shape); the harness' test identity maps to the local account `hpcbmep`; a second identity is unmapped (NO ACCOUNT). Needs the MEP owner's Globus login (`HPCB_MEP_GLOBUS_DB`, defaults to `HPCB_TEST_GLOBUS_DB` from `agentic/.env`) and installs `globus-compute-endpoint==<the plugin's SDK version>` at first boot (~1–2 min; the managed python lives under `/opt/uv-python` so the mapped user can exec it — uv's default `/root/.local` store made the user endpoint die with EX_NOPERM); `HPCB_MEP_EMAIL` is the manager's contact address (4.16 refuses to start without one) | the zero-SSH path: attach, identity mapping, the strict template contract, draining-only stop, NO ACCOUNT |
 
 Scenarios declare what they need — `REQUIRES = {"login_nodes": 2}`, `{"accounting": "enforce"}`, `{"min_nodes": 3}`,
 `{"scheduler": "pbs"}` … — and `run_suite` skips a cell the target/profile cannot satisfy (`targets.meets`). Bundles
@@ -144,6 +145,8 @@ python3 agentic/run_suite.py --target fake --scenarios happy_path,endpoint_reuse
 #   ^ runs bin/up.sh first (build if needed, wait until schedulable + sshd); --reset-cluster wipes it first;
 #     --no-cluster-up skips that. The node gate probes `sinfo` through the published sshd as a pool user.
 python3 agentic/run_suite.py --target fake --profile site --reset-cluster --scenarios rich_gate,partition_choice,gpu_rule,submit_policy_rejected,login_pin_teardown
+python3 agentic/run_suite.py --target fake --profile mep --reset-cluster --scenarios fake_mep_compute,fake_mep_no_account
+#   ^ the facility-MEP path against the fake managers (a local catalog names their UUIDs — see below)
 #   ^ a different cluster shape (see Profiles); switching profiles needs --reset-cluster. These five are the
 #     `site`-only scenarios (REQUIRES the profile's capabilities; skipped elsewhere): the RICH gate judged by a
 #     budget hawk (parsed balances + a real partition choice reach the spend question), a NON-default partition
@@ -157,6 +160,16 @@ python3 agentic/run_suite.py --target fake --profile site --reset-cluster --scen
 #   HPCB_FAKE_CTLD overrides the container) before the agent starts and — always, via an EXIT trap — after the
 #   cell. `{user}` is the cell's pool user. It exists only here: on a real facility we are not the admin, so
 #   run_suite skips such cells (the fake tier is where cluster-side world changes are exercised).
+#
+#   PROFILE INHERITANCE: a profile may declare `base = "<other>"` in its profile.toml and LAYER on it — files merged
+#   (the derived profile's win), [capabilities] merged, every compose.override.yml in the chain passed to compose (base
+#   first), setup.d scripts from every layer run (setup.d/<role>.sh then setup.d/<role>-*.sh). bin/profile.py builds the
+#   merged dir under .merged/<name>/ (gitignored); that is what the containers mount. `mep` = `site` + the MEP overlay.
+#
+#   LOCAL CATALOG: a profile whose facilities cannot be registry entries (MEP UUIDs minted per cluster) declares
+#   `[catalog] cmd` — a host command printing this cluster's seed-format catalog (mep: `hpcb-mep-catalog` in login01,
+#   reading each manager's endpoint.json). run_smoke.sh runs it per cell and mounts the output into the jail as
+#   HPC_BRIDGE_CATALOG_FILE — the plugin's dev/test seam (0.1.8) that replaces the registry for that process.
 HPCB_TARGET=fake ./agentic/run_smoke.sh spend_refusal          # one cell
 HPCB_TARGET=fake ./agentic/sweep_pool_user.sh hpcbridge-test-00 # hand sweep (rarely needed: --reset-cluster instead)
 ```
@@ -192,10 +205,10 @@ agentic/fakecluster/bin/down.sh --wipe && agentic/fakecluster/bin/up.sh
   MFA/Duo (the `needs_preauth` path is untestable here). The `default` profile also has no `job_submit`
   rules, QOS/limits, accounting enforcement, balances or GPUs — the `site` profile adds all of those (a
   fake `mybalance`, dummy `/dev/nvidia*`), so a scenario that needs them declares `REQUIRES` and runs there.
-- **No multi-user endpoint (MEP)** — the M1/`MEPFacility` path isn't covered. Feasible later: run
-  `globus-compute-endpoint configure --multi-user` as root in the `login` container with an identity
-  mapping `<your Globus identity> → hpcbridge-test-00`; a root-run MEP inside a container is the
-  standard deployment shape, so this is a day of work, not a research problem. Out of scope for the spike.
+- **Multi-user endpoint (MEP): covered by the `mep` profile** — two root-run MEPs in login01 (strict + open schema)
+  with an identity mapping `<the harness' Globus identity> → hpcbmep`, so the M1/`MEPFacility` path (attach, identity
+  mapping, template contract, draining-only stop, NO ACCOUNT) runs here. Not a facility's exact MEP: the template and
+  schemas are ours (modelled on globus1's and Anvil's shapes), and consent is never required.
 - **Topology:** everything shares one kernel/VM; `hostname -f` is single-label; one NIC (`eth0`);
   `srun`/`slurmstepd` work but with no cgroup confinement (`CgroupPlugin=cgroup/v1` as a no-op —
   Ubuntu's 23.11 build has no `disabled` plugin and cgroup/v2 needs systemd/dbus).

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "hpcb-mep-open user_endpoint_config",
+  "description": "OPEN contract (globus1's shape): unknown keys pass through to the template; `compute` must be true -- there is no login shape on a MEP, every submission is a Slurm block.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["compute"],
+  "properties": {
+    "compute": {"type": "boolean", "enum": [true]},
+    "provider_type": {"type": "string", "enum": ["SlurmProvider"]},
+    "partition": {"type": "string"},
+    "account": {"type": "string"},
+    "walltime": {"type": "string", "pattern": "^[0-9]{1,3}:[0-5][0-9]:[0-5][0-9]$"},
+    "nodes_per_block": {"type": "integer", "minimum": 1, "maximum": 3},
+    "max_workers_per_node": {"type": "integer", "minimum": 1, "maximum": 4},
+    "interface": {"type": "string"},
+    "worker_init": {"type": "string"},
+    "init_blocks": {"type": "integer", "minimum": 0, "maximum": 2},
+    "max_blocks": {"type": "integer", "minimum": 0, "maximum": 2}
+  }
+}

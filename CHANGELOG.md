@@ -3,6 +3,15 @@
 All notable changes to hpc-bridge. The plugin version lives in `.claude-plugin/plugin.json` (Claude Code updates an
 installed plugin only when that version changes); git tags mark releases.
 
+## 0.1.8 — 2026-09-05 — a local catalog for development and testing
+
+### Added
+- **`HPC_BRIDGE_CATALOG_FILE`: a local catalog that stands in for the registry.** A seed-format YAML file (or a
+  directory of them) becomes *the* catalog for that process — the public registry is not consulted. This is a
+  development and test seam, not a user setting: the agentic harness' fake cluster runs facility multi-user endpoints
+  whose UUIDs are minted per cluster and can never be registry entries, and a curator can rehearse a seed entry before
+  ingesting it. Unset (the default) nothing changes.
+
 ## 0.1.7 — 2026-09-05 — stopping under a running task
 
 ### Fixed
