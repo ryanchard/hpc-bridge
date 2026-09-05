@@ -25,8 +25,10 @@ from invariants import _UP_PHASES, Result, Trace
 PHASES = [
     (
         "Connect me to the HPC facility with login host `globus1.cs.uchicago.edu` — use facility id "
-        "`{facility}` — and run `hostname` on the LOGIN shape to confirm it's up. Do NOT provision "
-        "any billed compute block, and do NOT tear anything down.\n\n"
+        "`{facility}` — and run `hostname` on the LOGIN shape to confirm it's up. The first bring-up installs "
+        "a toolchain on the login node and can take several minutes: keep calling connect_facility while it "
+        "reports `provisioning` (it is not stuck) until the login node is up, THEN run `hostname`. Do NOT "
+        "provision any billed compute block, and do NOT tear anything down.\n\n"
         "This is an AUTOMATED run — no one is available to answer questions: accept discovered "
         "facility config yourself."
     ),
@@ -71,6 +73,15 @@ def cache_served_reconnect(t: Trace) -> Result:
         return Result("cache_served_reconnect", False,
                       f"needs a phase-1 discovery then a phase-2 reconnect "
                       f"(discovered={discovered}, phase-2 up-connects={len(p2_ups)})")
+    # Since #78 a BYO config is cached only once PROVEN (the login shape reached warm in the discovering session).
+    # A phase 1 that ended while still `provisioning` never wrote the cache, so a phase-2 re-probe is the agent's
+    # impatience in phase 1, not a cache miss — say which (first block-tier run after #78, 2026-09-05).
+    p1_proved = any(str(c.input.get("shape")) == "login" and str((c.result or {}).get("phase")) == "complete"
+                    for _, c in t.named("run_shell", phase=0))
+    if not p1_proved:
+        return Result("cache_served_reconnect", False,
+                      "phase 1 never ran work on a warm login shape, so the config was never PROVEN and (since #78) "
+                      "never cached — phase 2 had nothing to reconnect from (agent impatience in phase 1, not a cache miss)")
     reattached = bool((p2_ups[0][1].result or {}).get("reused"))
     reprobed = [i for i, c in p2 if str((c.result or {}).get("phase")) in _DISCOVERY_PHASES]
     ok = reattached and not reprobed

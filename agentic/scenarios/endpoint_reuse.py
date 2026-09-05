@@ -40,23 +40,25 @@ SUMMARY = "intra-agent reuse: within ONE session, a second connect_facility reat
 TAGS = ["reuse", "zero-ssh", "intra-agent"]
 
 
+# The product's exact intra-session reconnect notice (connect._reuse_note, #78). Pinned here as a CONTRACT string:
+# a reword in the product flips this grader, which is the point — the harness must notice.
+INTRA_SESSION_RECONNECT = "reconnected to the endpoint this session started"
+
+
 def reuse_signalled(t: Trace) -> Result:
-    """The reconnect must carry the explicit `reused=True` FIELD (a "reuse" substring in the notice
-    is not evidence — dropped by the coverage audit), and the trace must show a genuine bring-up
-    first. Structure, per the prompt: connect → `hostname` on the login shape → connect again. So:
+    """A genuine bring-up first, work on the login shape, then a RECONNECT that reattached instead of
+    re-probing or re-bootstrapping. Structure, per the prompt: connect → `hostname` on the login shape →
+    connect again.
 
-    - a `reused=False` connect exists BEFORE the first connect that reaches the endpoint (the
-      fresh bring-up: the discovery probe / the first `connect(details=…)`);
-    - the RECONNECT = the last `_UP_PHASES` connect, which must come AFTER the first completed
-      login-shape `run_shell` (the first connection was used before reconnecting) and read
-      `reused=True`.
-
-    Why not "first up-connect reused=False, second reused=True" (the ideal spec): issue #39's
-    registration-lag race fails the first `connect(details=…)` in practically every run, and the
-    agent's retry — the first connect that reaches the endpoint — ALREADY reads `reused=True`
-    (find_online locates the just-registered endpoint). The `reused=False` evidence therefore lives
-    on the probe/failed connect, not on an up-phase one; `first_details_connect_succeeds` (reported
-    on every run) tracks the #39 rate. Tighten to the ideal spec once #39 is fixed."""
+    The reconnect's evidence, since #78 (2026-09-04) — "a session's own bootstrap is proven, not a reuse":
+    - `reused=True` is the FIELD for an endpoint from a PREVIOUS session (a different process found it online);
+    - an endpoint THIS session stood up reads `reused=False` with the notice INTRA_SESSION_RECONNECT — the
+      intra-session case this scenario tests. Either is a reattach. The first block-tier run after #78 failed
+      this grader on the field alone (2026-09-05): the product had changed by design, the grader had not.
+    - Structurally, no connect AFTER the first completed login-shape work may be a discovery phase
+      (`proposed_facility_details` / `needs_facility_details` / `needs_preauth`): that would be a re-probe or a
+      re-bootstrap, i.e. the reconnect did not reattach.
+    A `reused=False` connect must exist BEFORE the first up-phase connect (the fresh bring-up)."""
     connects = t.named("connect_facility")
     ups = [(i, c) for i, c in connects if str((c.result or {}).get("phase")) in _UP_PHASES]
     if not ups:
@@ -72,15 +74,20 @@ def reuse_signalled(t: Trace) -> Result:
                       "no completed login-shape run_shell — the first connection was never used")
     recon_i, recon = ups[-1]
     after_work = recon_i > min(work)
-    reused = bool((recon.result or {}).get("reused"))
-    ok = fresh and after_work and reused
+    res = recon.result or {}
+    reattached_field = bool(res.get("reused"))
+    reattached_notice = str(res.get("notice") or "").startswith(INTRA_SESSION_RECONNECT)
+    reprobed = [i for i, c in connects if i > min(work)
+                and str((c.result or {}).get("phase")) in ("proposed_facility_details", "needs_facility_details", "needs_preauth")]
+    ok = fresh and after_work and (reattached_field or reattached_notice) and not reprobed
+    how = ("reused=True (an earlier session's endpoint)" if reattached_field
+           else "the intra-session reconnect notice" if reattached_notice else "NEITHER the reused field NOR the notice")
     return Result(
         "reuse_signalled", ok,
-        "ok: fresh bring-up, work on the login shape, then a reconnect flagged reused=True" if ok else
-        f"fresh_bringup_first={fresh} (want True); reconnect (call {recon_i}) after first work="
-        f"{after_work} (want True), reused={reused} (want True — the FIELD, no notice substring)",
+        f"ok: fresh bring-up, work on the login shape, then a reconnect that reattached via {how}" if ok else
+        f"fresh_bringup_first={fresh} (want True); reconnect (call {recon_i}) after first work={after_work} (want True); "
+        f"reattached via {how} (want the field or the notice); re-probe after work at calls {reprobed} (want none)",
     )
-
 
 EXTRA_INVARIANTS = [reuse_signalled]
 
