@@ -3,6 +3,15 @@
 All notable changes to hpc-bridge. The plugin version lives in `.claude-plugin/plugin.json` (Claude Code updates an
 installed plugin only when that version changes); git tags mark releases.
 
+## 0.1.11 — 2026-09-06 — a held PBS pilot explains itself
+
+### Changed
+- **On PBS, a HELD pilot's notice carries the scheduler's own comment.** A site hook that holds jobs missing a
+  required directive (ALCF Polaris: `-l filesystems=home:eagle`) writes why into the job's comment; the pilot probe
+  now reads it, so the tool says "pilot N is HELD … The scheduler's comment: 'HELD by the site: every job must request
+  -l filesystems=…'" and points at `scheduler_options`, instead of a generic "bad scheduler directive" hint. Found on
+  the fake cluster's Polaris-style profile — the first place the held-pilot path ran.
+
 ## 0.1.10 — 2026-09-06 — discovery knows the site's module system
 
 ### Added
