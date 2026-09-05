@@ -30,3 +30,13 @@ def _no_live_registry(monkeypatch, tmp_path, request):
                              "mark the test @pytest.mark.real_catalog if it really needs it")
 
     monkeypatch.setattr(binding, "make_catalog", _unpatched)
+
+
+@pytest.fixture(autouse=True)
+def _no_dns_in_unit_tests(monkeypatch):
+    """The login-node pin asks the client's resolver whether a `hostname -f` is routable (0.1.12). Unit tests must not
+    depend on the test host's DNS: every name "resolves" here, so the suffix/label heuristics are what is under test;
+    `_routable_pin(..., resolves=...)` injects a resolver where a test wants the unresolvable case."""
+    from hpc_bridge.facility import remote
+
+    monkeypatch.setattr(remote, "_resolves_from_here", lambda host: True)

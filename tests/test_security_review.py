@@ -458,7 +458,7 @@ async def test_bootstrap_persists_the_seeded_flag_even_without_a_routable_pin(tm
     class _NoPinCLI(_BootstrapCLI):
         async def start(self, name):
             self.calls.append(("start", name))
-            return ("fake-eid", None)  # e.g. `hostname -f` is a single label: nothing routable to pin
+            return ("fake-eid", None, None)  # e.g. `hostname -f` is a single label: nothing routable to pin
 
     cli = _NoPinCLI(status=None, remote_db_present=False)
     made = tmp_path / "trimmed.db"

@@ -3,6 +3,18 @@
 All notable changes to hpc-bridge. The plugin version lives in `.claude-plugin/plugin.json` (Claude Code updates an
 installed plugin only when that version changes); git tags mark releases.
 
+## 0.1.12 — 2026-09-06 — the login-node pin survives an internal hostname
+
+### Changed
+- **The reconnect pin is the address the bootstrap actually reached when the node's own name is not routable.**
+  Many login pools answer to public round-robin names but report private ones from `hostname -f` (Midway's
+  `*.rcc.local`, Aurora's `*.hostmgmt.cm.*`, a site's internal domain). The pin used suffix heuristics only, so a
+  plain-looking internal name was pinned and later SSH — teardown above all — failed with "Could not resolve
+  hostname"; falling back to the round-robin alias could reach the other node and orphan the manager. Now a name
+  must also resolve from the client; when it does not, the pin is the server address of the very connection that
+  started the manager (`$SSH_CONNECTION`), key-checked against the alias the user trusted as before. Found on the
+  fake cluster's internal-hostnames profile.
+
 ## 0.1.11 — 2026-09-06 — a held PBS pilot explains itself
 
 ### Changed

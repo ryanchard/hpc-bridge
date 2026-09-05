@@ -133,6 +133,7 @@ applied at container start, so switching shape is `down.sh --wipe && up.sh --pro
 | `lmod` | `site` whose toolchain comes through **Lmod**: `uv` is moved off the default PATH and served as `module load uv/0.12.9`, a module-served CPython as `python/3.11` (plus a decoy `gcc/13.2`); Lmod is in the image but its `/etc/profile.d` hooks are parked until this profile restores them, so no other profile grows a `module` command | module-aware discovery (0.1.10): the proposal must be `module load …`, not a curl-installed uv, and must re-initialise `module` for the compute node's batch shell |
 | `f2b` | `site` whose login sshd is watched by **fail2ban** (globus1's shape, tightened: maxretry 3, findtime 10 min, ban 10 min, `iptables-multiport` on port 22 — the containers get `NET_ADMIN`); sshd logs auth to a file for it; a key-only harness sshd on **:2200** stays outside the jail; pool users may `sudo fail2ban-client` (CLEANUP unbans between cells) | a refused key is explained once and never retried into a ban; a BANNED client gets `CANNOT REACH`, relayed once; the world check reads fail2ban's log on every login node |
 | `polaris` | the `pbs` cluster with ALCF Polaris's rule: `filesystems` is a real PBS host-level resource (nodes offer home, eagle, grand; the scheduler knows it) and a **queuejob hook HOLDS** any job that does not request `-l filesystems=…`, writing the reason into the job's comment | the plugin's HELD-pilot path: the probe must surface the hold **with the site's comment** (0.1.11) and the agent must add the directive through `scheduler_options` or relay the rule — never poll a held pilot forever |
+| `internal` | `site` whose login nodes call themselves by **internal names** (`hostname -f` = `login0N.int.hpcb.test`, aliased only on the internal `data` network — cluster nodes resolve it, the jail cannot); the public names still resolve | the login-node PIN when the node's own name is useless to the client: later SSH must still reach the node the manager landed on (pin by the address actually reached, 0.1.12), and teardown must leave both nodes clean |
 
 Scenarios declare what they need — `REQUIRES = {"login_nodes": 2}`, `{"accounting": "enforce"}`, `{"min_nodes": 3}`,
 `{"scheduler": "pbs"}` … — and `run_suite` skips a cell the target/profile cannot satisfy (`targets.meets`). Bundles
@@ -162,6 +163,8 @@ python3 agentic/run_suite.py --target fake --profile f2b --reset-cluster --scena
 #   ^ fail2ban: no retry storm on a refused key (no ban recorded); a pre-banned client is told CANNOT REACH
 python3 agentic/run_suite.py --target fake --profile polaris --reset-cluster --scenarios polaris_filesystems
 #   ^ a PBS site rule: the pilot is HELD with a comment; the tool relays it; the agent adds -l filesystems=…
+python3 agentic/run_suite.py --target fake --profile internal --reset-cluster --scenarios internal_hostnames
+#   ^ internal login hostnames: the pin must not use a name the client cannot resolve; both nodes clean after teardown
 #   ^ a different cluster shape (see Profiles); switching profiles needs --reset-cluster. These five are the
 #     `site`-only scenarios (REQUIRES the profile's capabilities; skipped elsewhere): the RICH gate judged by a
 #     budget hawk (parsed balances + a real partition choice reach the spend question), a NON-default partition

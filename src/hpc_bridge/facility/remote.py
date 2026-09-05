@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import ipaddress
 import json
 import re
 import shlex
@@ -248,21 +249,45 @@ _INTERNAL_HOST_SUFFIXES = (".local", ".internal", ".localdomain")
 _INTERNAL_HOST_LABELS = frozenset({"hostmgmt", "cm", "mgmt", "ipmi", "bmc"})
 
 
-def _routable_pin(host: str | None) -> str | None:
-    """A login-node FQDN is only useful as a reconnect pin if it's reachable from the client via the
-    SAME external path as the alias. Some facilities' `hostname -f` reports an INTERNAL name that isn't
-    routable from the client — Midway's `beagle3-tbd1.rcc.local` (a `.local` suffix) or Aurora's
-    `aurora-uan-0009.hostmgmt.cm.aurora.alcf.anl.gov` (a management-plane infix) — and pinning it breaks
-    login_shell and teardown (both seen live). Drop internal-suffix (`.local`/`.internal`/
-    `.localdomain`), single-label, or management-plane (`hostmgmt`/`cm`/`mgmt`/…) names and keep the
-    alias; the alias, pinned to a specific node in the user's ssh config, is the routable path."""
-    if not host:
-        return None
-    h = host.strip().rstrip(".")
-    labels = {label.lower() for label in h.split(".")}
-    if "." not in h or h.lower().endswith(_INTERNAL_HOST_SUFFIXES) or (labels & _INTERNAL_HOST_LABELS):
-        return None
-    return h
+def _resolves_from_here(host: str) -> bool:
+    """Does the client's own resolver know `host`? (An internal login-node name that passes the suffix heuristics —
+    a `.int.` domain, a bare site FQDN not published outside — is still useless as a pin.)"""
+    import socket
+
+    try:
+        socket.getaddrinfo(host, 22, proto=socket.IPPROTO_TCP)
+        return True
+    except OSError:
+        return False
+
+
+def _routable_pin(host: str | None, addr: str | None = None, *, resolves=None) -> str | None:
+    """The reconnect pin for the login node the manager landed on — the node's FQDN when it is reachable from the
+    client via the SAME external path as the alias, else the ADDRESS the bootstrap connection actually reached
+    (`$SSH_CONNECTION`'s server field), else None (keep the alias).
+
+    Some facilities' `hostname -f` reports an INTERNAL name — Midway's `beagle3-tbd1.rcc.local`, Aurora's
+    `aurora-uan-0009.hostmgmt.cm.aurora.alcf.anl.gov` (both seen live), or a plain-looking name their DNS never
+    publishes — and pinning it breaks login_shell and teardown. Internal-suffix (`.local`/`.internal`/
+    `.localdomain`), single-label and management-plane (`hostmgmt`/`cm`/`mgmt`/…) names are dropped outright; any
+    other name must RESOLVE from here (`resolves`, injectable for tests). The address is used only when it is a
+    real unicast one — a NAT/VIP front makes it as round-robin as the alias, but no worse. The host KEY is still
+    checked against the alias the user trusted (HostKeyAlias), so neither pin can redirect the credential."""
+    check = resolves or _resolves_from_here
+    if host:
+        h = host.strip().rstrip(".")
+        labels = {label.lower() for label in h.split(".")}
+        if "." in h and not h.lower().endswith(_INTERNAL_HOST_SUFFIXES) and not (labels & _INTERNAL_HOST_LABELS) \
+                and check(h):
+            return h
+    if addr:
+        try:
+            ip = ipaddress.ip_address(addr.strip())
+        except ValueError:
+            return None
+        if not (ip.is_loopback or ip.is_link_local or ip.is_unspecified or ip.is_multicast or ip.is_reserved):
+            return str(ip)
+    return None
 
 
 # ------------------------------------------------------------- machine profiles
@@ -480,14 +505,17 @@ class RemoteEndpointCLI:
                 f"seed storage.db (chmod) failed: {(err or out).strip()}"
             )
 
-    async def start(self, name: str) -> tuple[str, str | None]:
+    async def start(self, name: str) -> tuple[str, str | None, str | None]:
         # Start the daemon AND capture the login node it landed on in the SAME ssh
         # connection: the alias round-robins, so a separate hostname probe could resolve
         # a different node than the one now hosting the manager daemon. The sentinel
         # isolates the FQDN from gce's own stdout.
+        # …and the ADDRESS this connection reached ($SSH_CONNECTION's server field): routable by construction, it is
+        # the pin when the node's own name is not (internal names — Midway's *.rcc.local, a `.int.` domain).
         inner = (
             f"{self._env_prefix()}globus-compute-endpoint start {shlex.quote(name)} "
-            f"--detach && echo HPCB_HOST=$(hostname -f)"
+            "--detach && echo HPCB_HOST=$(hostname -f) "
+            "&& echo \"HPCB_ADDR=$(echo \"$SSH_CONNECTION\" | awk '{print $3}')\""
         )
         rc, out, err = await ssh_exec(self.target, f"bash -lc {shlex.quote(inner)}", timeout=_BOOTSTRAP_SSH_S)
         if rc != 0:
@@ -498,11 +526,13 @@ class RemoteEndpointCLI:
                 out = ""
             else:
                 raise RuntimeError(f"remote start failed (rc={rc}): {(err or out).strip() or 'no output'}")
-        host = None
+        host = addr = None
         for line in out.splitlines():
             if line.startswith("HPCB_HOST="):
                 host = line[len("HPCB_HOST=") :].strip() or None
-        return await self._await_endpoint_id(name), host
+            elif line.startswith("HPCB_ADDR="):
+                addr = line[len("HPCB_ADDR=") :].strip() or None
+        return await self._await_endpoint_id(name), host, addr
 
     async def _await_endpoint_id(self, name: str) -> str:
         """`endpoint_id`, polled for up to `_START_REGISTER_WAIT_S` after a fresh start: the detached
@@ -969,8 +999,9 @@ class SlurmFacility:
         )
         uep, _defaults = self.config_template(hpc)
         await self.cli.write_config(name, manager, uep)
-        eid, host = await self.cli.start(name)
-        host = _routable_pin(host)  # drop an internal-only FQDN (e.g. beagle3-tbd1.rcc.local) -> keep alias
+        eid, host, addr = await self.cli.start(name)
+        # the node's FQDN when routable from here, else the address this connection reached, else the alias
+        host = await asyncio.to_thread(_routable_pin, host, addr)
         if host:
             # Pin the live session to the node the manager daemon actually landed on, so
             # later control-plane ops — above all teardown — reach THIS node instead of
