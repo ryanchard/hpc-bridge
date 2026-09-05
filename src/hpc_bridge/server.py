@@ -557,6 +557,22 @@ async def _stop_endpoint(app: AppCtx) -> EndpointStatus:
         return EndpointStatus(status="down", block_state="cold", notice="no endpoint was up")
     if not _has_login_shape(app):  # a facility MEP: no release channel exists — drain honestly
         return await _stop_mep(app, eid)
+    live = _live_task_handles(app, DEFAULT_SHAPE)
+    if live:
+        # A RUNNING task holds the block. Cancelling the block under it does not end the task: the endpoint's own
+        # scheduler still has it outstanding and relaunches a fresh block to run it — so "down, released" would be
+        # false and spend continues (fake-cluster chaos run 2026-09-05: `block-1` appeared 60 s after a `down`).
+        # Refuse, as _stop_mep does; the results stay retrievable and the agent has two honest ways out.
+        rt = app.shapes[DEFAULT_SHAPE]
+        ceiling = int(_task_ceiling_s(rt.user_endpoint_config))
+        ids = ", ".join(tid for tid, _ in live)
+        return EndpointStatus(
+            status="up", block_state="warm", endpoint_id=eid, session_spend=_total_session_spend(app),
+            notice=(f"can't stop yet: task(s) {ids} are still running on the compute block. Releasing the block now "
+                    "would not end them — the endpoint would relaunch a block to run them and spend would continue "
+                    f"after a false 'down'. poll_task them to completion (at most ~{ceiling}s more; their results stay "
+                    "retrievable), then call stop_endpoint. To abandon them and remove everything, teardown_endpoint."),
+        )
     # Cancel the scheduler block over the login shape (AMQP) — no SSH.
     confirmed, detail = await scheduler_ops._release_blocks_over_login(app, eid, _login_runner(app))
     dropped = await warmth._drop_compute_shape(app)

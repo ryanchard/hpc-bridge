@@ -3,6 +3,15 @@
 All notable changes to hpc-bridge. The plugin version lives in `.claude-plugin/plugin.json` (Claude Code updates an
 installed plugin only when that version changes); git tags mark releases.
 
+## 0.1.7 — 2026-09-05 — stopping under a running task
+
+### Fixed
+- **`stop_endpoint` refuses while a task is still running on the compute block.** It used to release the block,
+  report `down`, and the endpoint then relaunched a fresh block for the orphaned task, so spend continued after a
+  false "released" and the task's result was lost. Found by the new chaos scenario on the local fake cluster. The stop
+  now answers `up`, names the task, and offers the two honest ways out: poll it to completion, then stop; or tear down.
+  This matches what the facility-endpoint stop already did.
+
 ## 0.1.6 — 2026-09-05 — teardown tells the truth; licensed
 
 ### Fixed

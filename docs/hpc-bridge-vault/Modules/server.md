@@ -18,6 +18,7 @@
 | `poll_task` | `_poll_task` | retrieve a long task's result; ORPHANED when its endpoint is gone |
 | `reset_session` | `_reset_session` | clear a session's cwd/env |
 | `stop_endpoint` | `_stop_endpoint` / `_stop_mep` | release the block over AMQP and leave the manager online (SSH), or drain honestly (MEP) |
+| `stop_endpoint` (live task) | `_stop_endpoint` | REFUSES (status `up`, names the task) while a compute task is RUNNING — releasing the block does not end the task; the endpoint relaunches a block for it (fake-cluster chaos `stop_while_running`, 2026-09-05). Same rule as `_stop_mep`. |
 | `teardown_endpoint` | `_teardown_endpoint` | fully destroy the endpoint (`gce stop` + delete over SSH) — or, on a MEP, detach. The block release is AMQP and synchronous; the SSH half runs in `app.teardown_task` (`_finish_teardown`) and one call waits `_TEARDOWN_SYNC_WAIT_S` (60 s) for it, else answers `tearing_down` — Expanse's stop + delete take ~3 min (live 2026-09-04), past a client's tool window. On an `mfa-otp` facility `_teardown_preauth_gate` asks for the one-time code first. The report's `ssh_closed` is spoken in the notice |
 | `login_shell` | `_login_shell` | read-only login-node command over SSH (cold-start escape hatch); refused on a MEP |
 
