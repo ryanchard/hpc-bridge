@@ -59,6 +59,11 @@ python3 agentic/run_suite.py --scenarios happy_path,gated_provision \
 Every run writes a provenance bundle to `agentic/runs/<runid>-<scenario>/` — start with its
 `transcript.md`. Env knobs per run: `HPCB_MODEL`, `HPCB_EFFORT`, `HPCB_PERSONA`, `HPCB_NO_SKILL`.
 
+**Targets.** `--target globus1` (default) is the lab cluster; `--target fake` is `agentic/fakecluster/` — a local compose
+Slurm cluster the suite brings up itself (`--reset-cluster` wipes it first). Every SSH scenario runs on either; the
+facility-MEP pair and the one-time-code path need globus1 / a real facility. `harness/targets.py` is the one place a
+target's facts live; prompts say `{ssh_host}`, never a literal host. Fake-cluster endpoints are `hpc-bridge-fake-*`.
+
 Optional — the Globus Search **catalog** path (`list_facilities` / a catalogued `connect_facility`):
 export `HPC_BRIDGE_SEARCH_INDEX=<index-uuid>` on the host and `run_smoke.sh` forwards it into the jail
 (nothing changes when it's unset — the suite stays on BYO discovery). The mounted `storage.db` must

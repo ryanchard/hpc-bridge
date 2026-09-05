@@ -18,7 +18,7 @@ _MARK = "HPCB_LONGTASK"
 
 PROMPT = (
     "I'm testing that a LONG single task on the compute block runs to completion (not cut short) on the "
-    "HPC facility with login host `globus1.cs.uchicago.edu` — facility id `{facility}`. Bring up a "
+    "HPC facility with login host `{ssh_host}` — facility id `{facility}`. Bring up a "
     "compute node, then run EXACTLY this as ONE `run_shell` on the **compute** shape — do NOT split it, "
     "do NOT use sbatch, do NOT background/detach it, do NOT use the login shape:\n\n"
     "    python3 -c \"import time; print('" + _MARK + " start', flush=True); time.sleep(180); "

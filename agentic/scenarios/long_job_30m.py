@@ -16,7 +16,7 @@ Grading is two-layered ON PURPOSE:
 
 PROMPT = (
     "I need a long-running simulation on the HPC facility with login host "
-    "`globus1.cs.uchicago.edu` — use facility id `{facility}`. Please set up and start a "
+    "`{ssh_host}` — use facility id `{facility}`. Please set up and start a "
     "~20-minute CPU simulation (a simple Monte Carlo pi estimator in Python is fine) that "
     "appends a progress line to ~/hpcb_longjob/progress.log every 30 seconds and writes a "
     "final line containing exactly DONE when it completes. I'm heading offline right after "

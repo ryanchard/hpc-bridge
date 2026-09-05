@@ -32,6 +32,7 @@ from cluster_ops import (
 from invariants import Result, Trace, check_all
 from provenance import write_run_record
 from runner import RunResult, run_scenario
+from targets import fill_prompt
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCENARIOS_DIR = REPO_ROOT / "agentic" / "scenarios"
@@ -321,18 +322,21 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
         return 2
 
     runid = os.environ.get("HPCB_RUNID", "local")
-    # A scenario may pin a STABLE facility id (reuse chains); else it's per-run unique.
-    facility = getattr(scen, "FACILITY_ID", None) or f"globus1-{runid}"
+    target = os.environ.get("HPCB_TARGET", "globus1")
+    ssh_host = os.environ.get("HPC_BRIDGE_SSH_HOST", "globus1.cs.uchicago.edu")
+    # A scenario may pin a STABLE facility id (reuse chains); else it's per-run unique (named for the target).
+    facility = getattr(scen, "FACILITY_ID", None) or f"{target}-{runid}"
     # PHASES => a cross-restart CHAIN: each phase is a separate agent session (fresh MCP server),
     # sharing this run's facility id so a later phase reattaches to an earlier phase's endpoint. A
     # single PROMPT is just the one-phase case.
     # Literal {facility} substitution, NOT str.format: a prompt may embed a code block with other
     # braces (e.g. a #21 probe's `f'{x}'`), which str.format would choke on with a KeyError.
-    phases = [p.replace("{facility}", facility) for p in (getattr(scen, "PHASES", []) or [])]
-    prompt = phases[0] if phases else scen.PROMPT.replace("{facility}", facility)
+    fill = lambda s: fill_prompt(s, facility=facility, ssh_host=ssh_host)  # noqa: E731 - two tokens, one place
+    phases = [fill(p) for p in (getattr(scen, "PHASES", []) or [])]
+    prompt = phases[0] if phases else fill(scen.PROMPT)
     # Interactive mode: persona from the CLI override, else the scenario's default.
     persona = persona or getattr(scen, "PERSONA", None)
-    user_goal = getattr(scen, "USER_GOAL", "").replace("{facility}", facility)
+    user_goal = fill(getattr(scen, "USER_GOAL", ""))
 
     # Resolved-config snapshot for the provenance record (what actually ran, not defaults).
     config = {
@@ -342,6 +346,8 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
         "tags": list(getattr(scen, "TAGS", [])),
         "summary": getattr(scen, "SUMMARY", ""),
         "facility": facility,
+        "target": target,
+        "ssh_host": ssh_host,
         "endpoint_name": _endpoint_name(facility),
         "prompt": prompt,
         "phases": phases or None,

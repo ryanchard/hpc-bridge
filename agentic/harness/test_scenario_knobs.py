@@ -213,3 +213,17 @@ def test_cancelled_cell_is_terminated_and_leaves_the_list_only_once_it_exited(mo
     assert events == ["terminate"] and len(left) == 1  # did not finish: stays listed for _emergency_cleanup
     (user, name) = next(iter(left.values()))
     assert user == "hpcbridge-test-07" and name.startswith("hpc-bridge-globus1-")
+
+
+def test_saturation_node_need_follows_the_target(monkeypatch):
+    monkeypatch.setenv("HPCB_TARGET_NODES", "2")  # the fake cluster has two compute nodes
+    rc, k = _knobs("saturation")
+    assert rc == 0 and k.get("HPCB_KNOB_NEEDS_NODE") == "2"
+
+
+def test_cell_env_keeps_the_target_selection(monkeypatch):
+    mod = _run_suite()
+    monkeypatch.setenv("HPCB_TARGET", "fake")
+    monkeypatch.setenv("HPCB_FAKE_SSH_PORT", "2222")
+    env = mod._cell_env("hpcbridge-test-00", "1-2")
+    assert env["HPCB_TARGET"] == "fake" and env["HPCB_FAKE_SSH_PORT"] == "2222"

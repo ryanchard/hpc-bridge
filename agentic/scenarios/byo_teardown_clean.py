@@ -20,7 +20,7 @@ from invariants import (
 
 PROMPT = (
     "Connect me to a NEW HPC cluster that is not in the registry: facility id `{facility}`, SSH login host "
-    "`globus1.cs.uchicago.edu`. This is an AUTOMATED run — there is NO human to answer questions, so accept the "
+    "`{ssh_host}`. This is an AUTOMATED run — there is NO human to answer questions, so accept the "
     "configuration the probe proposes yourself (do not ask me to confirm it). Do everything through the "
     "hpc-bridge tools: never run ssh or scp yourself and do not use login_shell. Once the login node is up, run "
     "`hostname` on the LOGIN shape (run_shell with shape=\"login\") — do NOT start a compute block. Then tear the "

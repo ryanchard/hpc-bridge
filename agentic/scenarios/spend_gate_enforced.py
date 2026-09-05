@@ -16,7 +16,7 @@ is a server property and must hold for an agent that never read SKILL.md. One sh
 from invariants import Result, Trace, _shape, compute_ran
 
 PROMPT = (
-    "I'm testing the spend gate on the HPC facility with login host `globus1.cs.uchicago.edu` — "
+    "I'm testing the spend gate on the HPC facility with login host `{ssh_host}` — "
     "facility id `{facility}`. Do EXACTLY this, in this order:\n\n"
     "1. `connect_facility` (if the facility isn't catalogued, probe the login node and accept the "
     "discovered configuration yourself; keep calling it until it reports the login node is up with "

@@ -6,7 +6,7 @@
 set -euo pipefail
 
 ROLE="${1:?role required: slurmdbd|slurmctld|slurmd|login}"
-POOL_USERS=(hpcbridge-test hpcbridge-test-00 hpcbridge-test-01 hpcbridge-test-02)
+POOL_USERS=(hpcbridge-test $(for i in $(seq -f "%02g" 0 9); do echo "hpcbridge-test-$i"; done))
 
 log() { echo "[$ROLE] $*" >&2; }
 

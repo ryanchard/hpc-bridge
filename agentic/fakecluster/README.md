@@ -14,8 +14,7 @@ cluster you can saturate, kill blocks on, and reset in seconds — and run regre
 is busy.
 
 Status: **spike (2026-09-03) — all three steps proven**, including a full hpc-bridge bootstrap →
-compute block → `run_shell` → teardown in 96 s (see *Stretch result*). Nothing here is wired into
-`run_smoke.sh` / `run_suite.py` yet (see *Pointing the harness at it*).
+compute block → `run_shell` → teardown in 96 s (see *Stretch result*). Wired into the harness as `--target fake` (see *Running the agentic harness against it*).
 
 ```
             host (macOS, Docker Desktop)                 hpcb-fake_default (compose network)
@@ -85,7 +84,7 @@ a local fixture inside the private network, not a secret).
 | Cluster / partition | `ClusterName=fake`, one partition **`main`** (default), `MaxTime=2-00:00:00` |
 | Nodes | `c1`, `c2` — `CPUs=4 RealMemory=4000` (declared; `config_overrides` so slurmd doesn't argue with the VM's real 18 cores) |
 | Login node | service/hostname `login`, sshd on container port 22 → host **2222**; `hostname -f` = `login` (single-label ⇒ hpc-bridge keeps the alias, no node pin) |
-| Users | `hpcbridge-test` (uid 1999) + **`hpcbridge-test-00/-01/-02`** (uids 2000–2002), group `hpcb` (2000); same on every node; key-only ssh; no password |
+| Users | `hpcbridge-test` (uid 1999) + **`hpcbridge-test-00..09`** (uids 2000–2009), group `hpcb` (2000); same on every node; key-only ssh; no password |
 | Shared FS | named volume `home` mounted at **`/home`** on `login`, `c1`, `c2` (the endpoint venv `~/hpc-bridge/gce-venv`, `~/.globus_compute`, and the session scratch `~/.hpc-bridge` are all visible to workers) |
 | Accounting | cluster `fake` registered; account `hpcb` with all pool users; **no enforcement** (`--account` not required — like globus1's `AccountingStorageEnforce=none`) |
 | Toolchain on every node | Python **3.12.3**, **uv**, `bash base64 scancel squeue sacct sinfo sacctmgr sbatch srun ip curl git`, build-essential |
@@ -116,28 +115,29 @@ Two ways to reach the login node:
   (`docker run --network hpcb-fake_default …`) and use `HPC_BRIDGE_SSH_HOST=login` on port 22 — no
   alias, no port mapping. This is how `bin/stretch.sh` does it.
 
-## Pointing the harness at it (not done in the spike — the small changes needed)
+## Running the agentic harness against it (`--target fake`)
 
-`run_smoke.sh` / `run_suite.py` already take the SSH target from env (`HPC_BRIDGE_SSH_HOST`,
-`HPCB_TEST_SSH_USER`, `HPCB_TEST_SSH_KEY`) and hardcode the pool names `hpcbridge-test-NN` — which
-this cluster provides. What's missing is small:
+The harness knows two targets (`agentic/harness/targets.py`): `globus1` (default) and `fake`. One preset carries the
+jail-side ssh host (`login`), the compose network the jail joins, the pool key (`~/.ssh/hpcb-fake`), the endpoint name
+prefix (`hpc-bridge-fake-<runid>`, so fake and globus1 endpoints are told apart in the shared Globus identity) and the
+node count (2 — `saturation` sizes its sleepers from it). Scenario prompts name the login host as `{ssh_host}`.
 
-1. **`run_smoke.sh`:** `HPC_BRIDGE_SSH_HOST` is hardcoded to `globus1.cs.uchicago.edu`; make it
-   `${HPCB_TEST_SSH_HOST:-globus1.cs.uchicago.edu}`. Add an opt-in `HPCB_DOCKER_NETWORK` that
-   appends `--network "$HPCB_DOCKER_NETWORK"` to `docker run` (so the jail can reach `login:22`).
-   Then a fake-cluster run is just
-   `HPCB_TEST_SSH_HOST=login HPCB_DOCKER_NETWORK=hpcb-fake_default HPCB_TEST_SSH_USER=hpcbridge-test-00 HPCB_TEST_SSH_KEY=~/.ssh/hpcb-fake ./agentic/run_smoke.sh happy_path`.
-2. **`run_suite.py`:** same host/network pass-through; the pool is 3 users here (`--concurrency 3`
-   max, or add `-03..-09` to the Dockerfile — one line).
-3. **Scenarios:** any that assume globus1 facts (3 nodes in `saturation`'s SETUP, the `enP7s7` NIC,
-   `glabs`, the catalog entry) need a per-target parameter; `happy_path`, `spend_refusal`,
-   `session_persistence`, `endpoint_reuse*`, `facility_cache`, `spend_gate_enforced`,
-   `long_task_via_handle`, `idle_release_kill` look target-agnostic.
-4. **Postchecks over SSH** use `$HOME/hpc-bridge/gce-venv/bin/globus-compute-endpoint` and
-   `squeue`/`sacct`/`scancel` — all present and on the same paths here.
+```bash
+python3 agentic/run_suite.py --target fake --scenarios happy_path,endpoint_reuse --concurrency 3
+#   ^ runs bin/up.sh first (build if needed, wait until schedulable + sshd); --reset-cluster wipes it first;
+#     --no-cluster-up skips that. The node gate probes `sinfo` through the published sshd as a pool user.
+HPCB_TARGET=fake ./agentic/run_smoke.sh spend_refusal          # one cell
+HPCB_TARGET=fake ./agentic/sweep_pool_user.sh hpcbridge-test-00 # hand sweep (rarely needed: --reset-cluster instead)
+```
 
-The agent itself is untouched: it sees an un-indexed facility, probes it, and proposes exactly the
-config above (BYO discovery — the same path a real new facility takes).
+What runs here: every SSH-bootstrap scenario (the block tier's `happy_path`, `gated_provision`, `spend_gate_enforced`,
+`long_task_via_handle`, `endpoint_reuse*`, `facility_cache`, `spend_refusal`, `session_persistence`, `byo_teardown_clean`,
+`unknown_host_key`, `no_ssh_access` — with no fail2ban to trip). Not here (yet): the facility-MEP pair
+(`mep_compute_only`, `stranger_mep_walk`) and the one-time-code path — see *Limitations*. Bundles record
+`config.target` and `config.ssh_host`.
+
+Status: **wired 2026-09-05** (`--target fake`); the spike's stretch driver (`bin/stretch.sh`) remains as the
+agent-free smoke.
 
 ## Chaos recipes (what globus1 can't give you on demand)
 
