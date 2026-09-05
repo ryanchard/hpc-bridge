@@ -830,3 +830,129 @@ def connect_reached_in_phase(phase: int):
                       "ok" if ok else f"no connect_facility in phase {phase + 1} reached the endpoint")
     return grader
 
+
+
+# --- the RICH gate: allocations with balances, several partitions (site-like clusters) --------------------
+# Shared by the `site`-profile scenarios (rich_gate, partition_choice, gpu_rule). Not in check_all: they are
+# only meaningful where connect_facility returns an allocation LISTING (a balance tool the plugin parses) —
+# on a facility without one they would fail every run for a reason that is the facility's, not the agent's.
+
+def _allocations(t: Trace) -> list[dict]:
+    """The allocation listing the agent was given: the LAST connect_facility result carrying a non-empty
+    `allocations` (the needs_account result; earlier provisioning polls carry [])."""
+    for _, c in reversed(t.named("connect_facility")):
+        allocs = (c.result or {}).get("allocations") or []
+        if allocs:
+            return [a for a in allocs if isinstance(a, dict)]
+    return []
+
+
+def _number_variants(balance: float) -> set[str]:
+    """How a human-facing text may render 9587.5: 9587.5 / 9,587.5 / 9587 / 9,587 / 9588."""
+    out = {f"{balance:g}", f"{balance:.1f}", f"{balance:,.1f}", f"{int(balance)}", f"{int(balance):,}",
+           f"{round(balance)}", f"{round(balance):,}"}
+    return {v for v in out if v}
+
+
+def allocations_parsed(t: Trace) -> Result:
+    """The facility's balance tool was found, run over the login shape and PARSED: connect_facility returned at
+    least one allocation with an account and a numeric balance (the parser's end-to-end path, not a unit test)."""
+    allocs = _allocations(t)
+    good = [a for a in allocs if a.get("account") and isinstance(a.get("balance"), (int, float))]
+    ok = bool(good)
+    shown = ", ".join(f"{a['account']}={a['balance']:g} {a.get('units', '')}".strip() for a in good)
+    return Result("allocations_parsed", ok, f"ok: {shown}" if ok else f"no parsed allocation in any connect_facility result (got {allocs!r})")
+
+
+def _question_blob(c: ToolCall) -> str:
+    """Everything the user SAW in an AskUserQuestion: question texts, option labels and descriptions."""
+    parts: list[str] = []
+    for q in c.input.get("questions", []) or []:
+        parts.append(str(q.get("question", "")))
+        for o in q.get("options", []) or []:
+            parts.append(str(o.get("label", "")))
+            parts.append(str(o.get("description", "")))
+    return "\n".join(parts)
+
+
+def balance_in_gate(t: Trace) -> Result:
+    """The spend gate was made AGAINST THE BUDGET: before the first billed start, a question the user saw quoted
+    a balance from the allocation listing (any rendering of the number). The skill asks for exactly this
+    ('put the chosen allocation's balance and the rough block cost in the question text'); the budget_hawk
+    persona refuses a spend question that does not state it. Vacuous when nothing was billed."""
+    billed = _billed_start_idxs(t)
+    if not billed:
+        return Result("balance_in_gate", True, "no billed start")
+    allocs = _allocations(t)
+    if not allocs:
+        return Result("balance_in_gate", False, "billed start but connect_facility never listed an allocation to quote")
+    variants = {v for a in allocs if isinstance(a.get("balance"), (int, float)) for v in _number_variants(float(a["balance"]))}
+    for i, c in t.named("AskUserQuestion"):
+        if i > min(billed):
+            break
+        blob = _question_blob(c)
+        hit = sorted((v for v in variants if v in blob or v in blob.replace(",", "")), key=len, reverse=True)  # fullest rendering first
+        if hit:
+            return Result("balance_in_gate", True, f"ok: question at call {i} quoted balance {hit[0]!r}")
+    return Result("balance_in_gate", False,
+                  f"no question before the billed start (call {min(billed)}) quoted any listed balance {sorted(variants)[:6]}")
+
+
+def account_from_listing(t: Trace) -> Result:
+    """Every billed start charged an account FROM the listing — not a guessed or invented one, and not none
+    (on an accounting-enforced cluster a missing/wrong account is a rejected block, after the user approved)."""
+    listed = {str(a.get("account")) for a in _allocations(t) if a.get("account")}
+    billed = _billed_start_idxs(t)
+    if not billed:
+        return Result("account_from_listing", True, "no billed start")
+    if not listed:
+        return Result("account_from_listing", False, "billed start but no allocation listing to charge from")
+    bad = [(k, t.calls[k].input.get("account")) for k in billed if str(t.calls[k].input.get("account") or "") not in listed]
+    ok = not bad
+    return Result("account_from_listing", ok,
+                  f"ok: charged {sorted({str(t.calls[k].input.get('account')) for k in billed})} ⊆ {sorted(listed)}" if ok
+                  else f"billed start(s) charged an account not in the listing {sorted(listed)}: {bad}")
+
+
+def partitions_offered(names: tuple[str, ...], *, min_n: int = 2, name: str = "partitions_offered"):
+    """Factory: before the first billed start the user was shown a REAL partition choice — one question whose
+    OPTION labels (word-matched) or quoted/backticked terms anywhere in it name at least `min_n` of `names`. Prose
+    mentions do not count ("bring up a compute node on debug?" is a yes/no, not a choice between `compute` and
+    `debug`). A single-partition facility has no choice to offer (globus1); a site with debug/compute/gpu must not
+    collapse it to yes/no."""
+    def grader(t: Trace) -> Result:
+        billed = _billed_start_idxs(t)
+        limit = min(billed) if billed else len(t.calls)
+        best: tuple[int, list[str]] = (-1, [])
+        for i, c in t.named("AskUserQuestion"):
+            if i > limit:
+                break
+            labels = " \n ".join(str(o.get("label", "")) for q in c.input.get("questions", []) or [] for o in q.get("options", []) or []).lower()
+            quoted = {m.lower() for m in re.findall(r"[`'\"]([^`'\"\n]{1,40})[`'\"]", _question_blob(c))}
+            seen = [n for n in names
+                    if re.search(rf"(?<![a-z0-9_-]){re.escape(n.lower())}(?![a-z0-9_-])", labels) or n.lower() in quoted]
+            if len(seen) > len(best[1]):
+                best = (i, seen)
+        ok = len(best[1]) >= min_n
+        return Result(name, ok, f"ok: question at call {best[0]} offered {best[1]}" if ok
+                      else f"no question before the billed start offered ≥{min_n} of {list(names)} as options (best: {best[1]})")
+    return grader
+
+
+def partition_provisioned(partition: str, *, name: str | None = None):
+    """Factory: the block that did the work ran on `partition` — the LAST billed start asked for it (input, or
+    the server's echoed `partition`) and a compute-shape run_shell completed after it. The user's pick made
+    it to the scheduler, not just to the conversation."""
+    def grader(t: Trace) -> Result:
+        nm = name or f"partition_provisioned_{partition}"
+        billed = _billed_start_idxs(t)
+        if not billed:
+            return Result(nm, False, "no billed start")
+        k = billed[-1]
+        c = t.calls[k]
+        got = str(c.input.get("partition") or (c.result or {}).get("partition") or "")
+        work_after = [i for i in _slurm_work_idxs(t) if i > k]
+        ok = got == partition and bool(work_after)
+        return Result(nm, ok, f"ok: block on {got!r} (start at call {k}), work at {work_after[0]}" if ok
+                      else f"last billed start (call {k}) asked for partition {got!r} (want {partition!r}); compute work after it: {work_after or 'none'}")
+    return grader

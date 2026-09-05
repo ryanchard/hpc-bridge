@@ -143,8 +143,13 @@ node count (2 — `saturation` sizes its sleepers from it). Scenario prompts nam
 python3 agentic/run_suite.py --target fake --scenarios happy_path,endpoint_reuse --concurrency 3
 #   ^ runs bin/up.sh first (build if needed, wait until schedulable + sshd); --reset-cluster wipes it first;
 #     --no-cluster-up skips that. The node gate probes `sinfo` through the published sshd as a pool user.
-python3 agentic/run_suite.py --target fake --profile site --reset-cluster --scenarios gated_provision,login_pin_teardown
-#   ^ a different cluster shape (see Profiles); switching profiles needs --reset-cluster
+python3 agentic/run_suite.py --target fake --profile site --reset-cluster --scenarios rich_gate,partition_choice,gpu_rule,login_pin_teardown
+#   ^ a different cluster shape (see Profiles); switching profiles needs --reset-cluster. These four are the
+#     `site`-only scenarios (REQUIRES the profile's capabilities; skipped elsewhere): the RICH gate judged by a
+#     budget hawk (parsed balances + a real partition choice reach the spend question), a NON-default partition
+#     pick that must reach the scheduler (accounting reads it back), the gpu partition's GPU-request RULE (a
+#     rejected block is surfaced by #32's pilot probe and relayed or satisfied, never polled forever), and the
+#     round-robin login PIN. gated_provision/happy_path run here too (the gate has real choices).
 HPCB_TARGET=fake ./agentic/run_smoke.sh spend_refusal          # one cell
 HPCB_TARGET=fake ./agentic/sweep_pool_user.sh hpcbridge-test-00 # hand sweep (rarely needed: --reset-cluster instead)
 ```
@@ -177,8 +182,9 @@ agentic/fakecluster/bin/down.sh --wipe && agentic/fakecluster/bin/up.sh
 ## Limitations (honest list)
 
 - **Not a facility.** No module system (`module load` env_setups won't work — the uv path does), no
-  MFA/Duo (the `needs_preauth` path is untestable here), no site `job_submit` plugins, no QOS/limits,
-  no accounting enforcement or balances (`allocation_command` paths untestable), no GPUs/`gres`.
+  MFA/Duo (the `needs_preauth` path is untestable here). The `default` profile also has no `job_submit`
+  rules, QOS/limits, accounting enforcement, balances or GPUs — the `site` profile adds all of those (a
+  fake `mybalance`, dummy `/dev/nvidia*`), so a scenario that needs them declares `REQUIRES` and runs there.
 - **No multi-user endpoint (MEP)** — the M1/`MEPFacility` path isn't covered. Feasible later: run
   `globus-compute-endpoint configure --multi-user` as root in the `login` container with an identity
   mapping `<your Globus identity> → hpcbridge-test-00`; a root-run MEP inside a container is the
