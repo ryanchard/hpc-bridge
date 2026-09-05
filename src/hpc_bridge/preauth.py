@@ -22,7 +22,9 @@ from pathlib import Path
 
 from .facility.remote import SshTarget
 
-_CODE_RE = re.compile(r"^[A-Za-z0-9]{4,16}$")  # a TOTP / Duo passcode; never a password
+# Code-SHAPED, not "not a password": a short password matches too. The load-bearing guard is the askpass helper
+# refusing any password prompt (below); this regex only rejects obvious non-codes before any ssh is spawned.
+_CODE_RE = re.compile(r"^[A-Za-z0-9]{4,16}$")
 _ASKPASS = r"""#!/bin/sh
 # hpc-bridge askpass: answer ONE one-time-code prompt; refuse a password prompt, and refuse a host-key
 # confirmation (answering it with the code would loop until the timeout — live 2026-09-04).

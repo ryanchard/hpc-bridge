@@ -55,7 +55,7 @@ endpoint needs no SSH at all. Design, tool reference and module notes: the **[va
 
 ## Status and security
 
-**Public beta** (0.1.2, tag `v0.1.2-beta.1`): tested live on six clusters, security-reviewed, and now in the hands
+**Public beta** (0.1.6, Apache-2.0): tested live on six clusters, security-reviewed, and now in the hands
 of test users — expect rough edges and please [report them](https://github.com/ryanchard/hpc-bridge/issues). In the
 registry: **Purdue Anvil** (multi-user endpoint), **NCSA Delta** (multi-user endpoint), **SDSC Expanse**
 (SSH with a one-time code) and Globus Labs' cluster; also proven live through the bring-your-own path on **Midway**

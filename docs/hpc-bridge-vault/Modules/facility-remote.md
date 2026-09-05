@@ -63,3 +63,13 @@ in every argv; hosts are allowlisted at the model boundary (`models.SAFE_HOST`) 
 connect re-adopted it, while the tool claimed 'deleted'. The endpoint record is now written even with no routable pin,
 so the seeded-credentials flag survives connect rebuilding the facility object.
 
+## Teardown reports what was measured (2026-09-05)
+`SlurmFacility.teardown()` returns `{stopped, deleted, credentials_wiped, ssh_closed, ssh_failed, error}` — every
+key from the remote op's own result (`stop` → `(rc, stderr)`, `wipe_storage_db` → bool, `close` → bool). An rc 255
+from the first op (ssh itself failed: no connection, or a one-time-code facility whose master expired) aborts the
+rest with `ssh_failed`; the `LoginNodeStore` record survives unless the delete happened. The tool (`server._finish_teardown`)
+answers `up` + "TEARDOWN FAILED …" for `ssh_failed`/not-stopped/raised, keeps the endpoint bound so a retry can
+finish, and arms the one-time-code handoff when the denial offers a second factor. The teardown gate no longer
+depends on the curated `auth_method`: with no master open it probes once (`_probe_login_node`, BatchMode `true`) —
+rc 0 proceeds, a second-factor denial hands off, anything else is a failed teardown. (Review 2026-09-05, Fix-now #1.)
+

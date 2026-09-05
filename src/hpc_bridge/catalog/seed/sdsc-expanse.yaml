@@ -1,13 +1,13 @@
 # src/hpc_bridge/catalog/seed/sdsc-expanse.yaml
-# SDSC Expanse (ACCESS) over SSH — an MFA facility: every login needs a TOTP code even with a key, so the first
-# contact goes through the pre-auth handoff (the user opens the ControlMaster in their own terminal; hpc-bridge
-# multiplexes). No uv / Globus Compute on the system (system Python 3.6): env_setup self-provisions uv into the
+# SDSC Expanse (ACCESS) over SSH — an MFA facility: every login needs a TOTP code even with a key. Since 0.1.2 the
+# agent asks the user for the current code in the chat and `complete_preauth(code)` opens the ControlMaster
+# (hpc-bridge multiplexes over it); a password prompt is refused and handed to the user's own terminal. No uv / Globus Compute on the system (system Python 3.6): env_setup self-provisions uv into the
 # user's home, then the endpoint at Python 3.13. Validated 2026-09-04: probe, bootstrap and the login shape over
 # the shared master; a compute block was not run in that check.
 - id: expanse
   facility_key: sdsc
   facility: "SDSC / ACCESS"
-  description: "Expanse (Slurm; AMD EPYC CPU nodes, V100 GPU nodes) over SSH with a one-time code at login — hpc-bridge hands you the ssh command to open the shared session"
+  description: "Expanse (Slurm; AMD EPYC CPU nodes, V100 GPU nodes) over SSH with a one-time code at login — the agent asks you for the current authenticator code and opens the shared connection itself (a password is never handled in the chat)"
   display_name: "HPC-Bridge Expanse"
   aliases: [login.expanse.sdsc.edu, expanse.sdsc.edu]
   compute_mep_uuid: null

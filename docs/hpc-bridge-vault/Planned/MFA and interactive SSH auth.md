@@ -80,7 +80,7 @@ the agent may now ask the user for the CURRENT code and call `complete_preauth(c
 ControlMaster with OpenSSH's `SSH_ASKPASS` hook (`SSH_ASKPASS_REQUIRE=force`), a helper that answers a code-shaped
 prompt from a 0600 file and REFUSES any prompt mentioning a password (→ `needs_terminal` with the manual command).
 Rationale: the same trade as the Globus paste code — single-use, expires in seconds, a transcript that holds it
-leaks nothing reusable. Guards: code shape `^[A-Za-z0-9]{4,16}$` (a pasted password is rejected before any ssh);
+leaks nothing reusable. Guards: code shape `^[A-Za-z0-9]{4,16}$` (rejects obvious non-codes before any ssh — a short password still matches, so the load-bearing guard is the helper's refusal of password prompts, not the regex);
 the code is never in argv, logs or notices; the temp dir is removed after the attempt. `connect_facility`'s
 `needs_preauth` result carries `preauth_code_ok` so the agent knows which case it is; `AppCtx.pending_preauth`
 remembers the target. Exercised on Expanse: the probe's denial `(gssapi-with-mic,keyboard-interactive,hostbased)`.
