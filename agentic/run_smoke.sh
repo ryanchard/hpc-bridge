@@ -96,6 +96,7 @@ ARGS=(
   -e HPCB_TARGET_NODES="$HPCB_T_NODES"
   -e HPCB_FAKE_PROFILE="${HPCB_T_PROFILE:-}"      # fake: the active cluster profile (recorded in the bundle)
   -e HPCB_TARGET_CAPS="$HPCB_T_CAPS_JSON"          # the cluster's capabilities (scenario REQUIRES; postchecks on each login node)
+  -e HPCB_HARNESS_SSH_PORT="${HPCB_T_HARNESS_SSH_PORT:-22}"   # the harness' world-channel sshd (an MFA profile runs a key-only one beside port 22)
   -e HPC_BRIDGE_USER_DIR="$USER_DIR"
   -e GLOBUS_COMPUTE_USER_DIR="$USER_DIR"   # so the MCP process's Globus SDK finds the mounted db
   -e HPCB_RUNS_DIR=/work/hpc-bridge/agentic/runs
@@ -105,6 +106,10 @@ ARGS=(
 )
 if [ -n "$HPCB_T_NETWORK" ]; then
   ARGS+=( --network "$HPCB_T_NETWORK" )   # the fake cluster's compose network: the jail reaches `login:22` directly
+fi
+if [ -n "${HPCB_T_TOTP_SECRET:-}" ]; then
+  ARGS+=( -e HPCB_SIM_TOTP_SECRET="$HPCB_T_TOTP_SECRET" )   # the human-sim's authenticator (HPCB_* — scrubbed from the agent's env)
+  echo "mfa: the login sshd wants a one-time code; the human-sim has the authenticator"
 fi
 if [ -n "$GLOBUS_DB" ]; then
   ARGS+=( -v "$GLOBUS_DB":/run/secrets/storage.db:ro )   # staged read-only; entrypoint copies to a writable owned path

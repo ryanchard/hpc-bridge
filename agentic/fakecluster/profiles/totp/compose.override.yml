@@ -1,0 +1,9 @@
+# `totp` overlay (on top of site's): the enrolment secret reaches both login nodes; the published ssh ports map to the
+# key-only harness sshd (HPCB_FAKE_SSHD_PORT=2200, exported by bin/compose_files.sh from this profile's manifest).
+services:
+  login:
+    environment:
+      HPCB_TOTP_SECRET: ${HPCB_TOTP_SECRET-}
+  login02:
+    environment:
+      HPCB_TOTP_SECRET: ${HPCB_TOTP_SECRET-}

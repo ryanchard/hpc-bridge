@@ -128,6 +128,7 @@ applied at container start, so switching shape is `down.sh --wipe && up.sh --pro
 | `default` | 2 nodes, one partition `main`, no enforcement, one login node, one NIC | the spike's cluster; every SSH scenario |
 | `site` | 3 nodes; `debug` (30 min, QOS cap) / `compute` (default) / `gpu` (c3, `hpcb-gpu` only, must request a GPU — `job_submit.lua`); accounting ENFORCED (wrong account rejected); fake `mybalance` on PATH; two NICs; **two login nodes behind the round-robin name `login`** (`login01.hpcb.test`:2222, `login02.hpcb.test`:2223, shared host keys like a real site) | discovery with real choices; the spend gate as a decision; balance parsers end to end; the login-node PIN class |
 | `mep` | `site` + a **facility multi-user endpoint** (Globus Compute MEP) run as root in login01 — TWO managers, `hpcb-mep-strict` (schema `additionalProperties:false`, no compute/interface/worker_init keys: Anvil's shape) and `hpcb-mep-open` (globus1's shape); the harness' test identity maps to the local account `hpcbmep`; a second identity is unmapped (NO ACCOUNT). Needs the MEP owner's Globus login (`HPCB_MEP_GLOBUS_DB`, defaults to `HPCB_TEST_GLOBUS_DB` from `agentic/.env`) and installs `globus-compute-endpoint==<the plugin's SDK version>` at first boot (~1–2 min; the managed python lives under `/opt/uv-python` so the mapped user can exec it — uv's default `/root/.local` store made the user endpoint die with EX_NOPERM); `HPCB_MEP_EMAIL` (REQUIRED, a real address — it is registered with Globus as the managers' contact; without it the managers are not started) | the zero-SSH path: attach, identity mapping, the strict template contract, draining-only stop, NO ACCOUNT |
+| `totp` | `site` whose login sshd demands the key **and a one-time code** (PAM google-authenticator, `AuthenticationMethods publickey,keyboard-interactive:pam`) — the Expanse/TACC shape. Every pool user is enrolled with ONE shared secret (generated on first use into the gitignored `agentic/fakecluster/.totp-secret` — `[totp] secret_file`; the sshd is local-only) that the harness' human-sim also holds, so it answers the agent's code request like a person reading their phone. A second, key-only sshd on **:2200** is the harness' world channel (the published host ports map there; `HPCB_HARNESS_SSH_PORT` inside the jail) | the in-session one-time-code handoff: `needs_preauth` → `complete_preauth` → the master; never a password |
 
 Scenarios declare what they need — `REQUIRES = {"login_nodes": 2}`, `{"accounting": "enforce"}`, `{"min_nodes": 3}`,
 `{"scheduler": "pbs"}` … — and `run_suite` skips a cell the target/profile cannot satisfy (`targets.meets`). Bundles
@@ -147,6 +148,8 @@ python3 agentic/run_suite.py --target fake --scenarios happy_path,endpoint_reuse
 python3 agentic/run_suite.py --target fake --profile site --reset-cluster --scenarios rich_gate,partition_choice,gpu_rule,submit_policy_rejected,login_pin_teardown
 python3 agentic/run_suite.py --target fake --profile mep --reset-cluster --scenarios fake_mep_compute,fake_mep_no_account
 #   ^ the facility-MEP path against the fake managers (a local catalog names their UUIDs — see below)
+python3 agentic/run_suite.py --target fake --profile totp --reset-cluster --scenarios otp_preauth
+#   ^ the one-time-code login (needs_preauth → complete_preauth); the human-sim holds the authenticator
 #   ^ a different cluster shape (see Profiles); switching profiles needs --reset-cluster. These five are the
 #     `site`-only scenarios (REQUIRES the profile's capabilities; skipped elsewhere): the RICH gate judged by a
 #     budget hawk (parsed balances + a real partition choice reach the spend question), a NON-default partition
@@ -206,8 +209,8 @@ agentic/fakecluster/bin/down.sh --wipe && agentic/fakecluster/bin/up.sh
 
 ## Limitations (honest list)
 
-- **Not a facility.** No module system (`module load` env_setups won't work — the uv path does), no
-  MFA/Duo (the `needs_preauth` path is untestable here). The `default` profile also has no `job_submit`
+- **Not a facility.** No module system (`module load` env_setups won't work — the uv path does), no Duo push
+  (the `totp` profile covers the one-time-CODE half of `needs_preauth`). The `default` profile also has no `job_submit`
   rules, QOS/limits, accounting enforcement, balances or GPUs — the `site` profile adds all of those (a
   fake `mybalance`, dummy `/dev/nvidia*`), so a scenario that needs them declares `REQUIRES` and runs there.
 - **Multi-user endpoint (MEP): covered by the `mep` profile** — two root-run MEPs in login01 (strict + open schema)

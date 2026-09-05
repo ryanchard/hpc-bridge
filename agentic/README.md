@@ -126,7 +126,9 @@ HPCB_NO_SKILL=1 ./agentic/run_smoke.sh spend_gate_enforced   # the SERVER-side f
 Keep `--concurrency 3` (globus1 SSH headroom + the subscription 5h/7d cap; big sweeps → API creds). Compute cells
 are node-gated automatically (declared or derived `NEEDS_COMPUTE_NODE`); a `saturation` cell needs all three nodes
 and runs alone. Cleanup guarantees: `run.py` tears down its own endpoint + blocks in its `finally` (also on
-`docker stop`, which now reaches it via SIGTERM); `run_suite` cleans up the cells it abandons on Ctrl-C (it mints
+`docker stop`, which now reaches it via SIGTERM) and deletes the run's endpoint RECORDS from the Globus Compute service
+through the SDK (the login-node `gce delete` deregisters only while the pool user still holds the credentials — four
+`hpc-bridge-fake-<runid>` records had accumulated in the owner's console by 2026-09-06); `run_suite` cleans up the cells it abandons on Ctrl-C (it mints
 `HPCB_RUNID`, so it knows each cell's endpoint name); stray `HPCB_*` knobs in your shell never reach a cell.
 ~30–40 min end to end. #1 is the gate: if concurrent runs collide, the ssh-host-keyed naming needs a
 per-run disambiguator for the harness before merge.

@@ -56,7 +56,25 @@ def manifest(name: str) -> dict:
         merged.update(m)
         merged["capabilities"].update(caps)
     merged["layers"] = [d.name for d in layers]
+    _resolve_totp_secret(merged)
     return merged
+
+
+def _resolve_totp_secret(m: dict) -> None:
+    """[totp] secret_file = "<path relative to fakecluster/>": the enrolment secret lives in a gitignored file, generated
+    (24 base32 chars, 0600) on first use — a secret-SHAPED literal in git trips secret scanners even when it only
+    guards a local-only sshd (GitGuardian on PR #112). Exposed to callers as m["totp"]["secret"]."""
+    t = m.get("totp")
+    if not isinstance(t, dict) or not t.get("secret_file"):
+        return
+    path = PROFILES_DIR.parent / str(t["secret_file"])
+    if not path.is_file() or not path.read_text().strip():
+        import secrets
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(secrets.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567") for _ in range(24)) + "\n")
+        path.chmod(0o600)
+    t["secret"] = path.read_text().strip()
 
 
 def build(name: str, outdir: Path) -> dict:
@@ -115,6 +133,8 @@ def main(argv: list[str]) -> int:
         print(f"PROFILE_NODES={caps.get('nodes', 0)}")
         print(f"PROFILE_LOGIN_HOSTS={shlex.quote(' '.join(map(str, caps.get('login_hosts', []))))}")
         print(f"PROFILE_CATALOG_CMD={shlex.quote(str((m.get('catalog') or {}).get('cmd') or ''))}")
+        print(f"PROFILE_HARNESS_SSH_PORT={caps.get('harness_ssh_port', 22)}")
+        print(f"PROFILE_TOTP_SECRET={shlex.quote(str((m.get('totp') or {}).get('secret') or ''))}")
         return 0
     print(__doc__, file=sys.stderr)
     return 2

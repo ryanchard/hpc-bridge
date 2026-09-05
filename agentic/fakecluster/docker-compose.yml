@@ -84,7 +84,7 @@ services:
     command: [login]
     depends_on: [slurmctld]
     ports:
-      - "${HPCB_FAKE_SSH_PORT:-2222}:22"
+      - "${HPCB_FAKE_SSH_PORT:-2222}:${HPCB_FAKE_SSHD_PORT:-22}"   # host-side channel (node gate, cleanup); an MFA profile points it at its key-only sshd
     volumes:
       - munge:/etc/munge
       - home:/home

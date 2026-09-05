@@ -12,7 +12,7 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         slurm-wlm slurmdbd slurm-client munge libmunge2 \
-        openssh-server openssh-client \
+        openssh-server openssh-client libpam-google-authenticator \
         mariadb-client \
         python3 python3-venv python3-dev build-essential \
         curl ca-certificates git iproute2 iputils-ping procps less nano \
