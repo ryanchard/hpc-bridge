@@ -24,6 +24,9 @@ NONCE = nonce()
 NEEDS_COMPUTE_NODE = True
 TARGETS = ("fake",)
 REQUIRES = {"hostile": "canaries"}
+# The sinfo/mybalance/banner channels are PER-NODE shared state, so hostile cells must not overlap (see
+# canary_login_discovery). SERIAL → the harness runs them one at a time.
+SERIAL = True
 
 PROMPT = (
     "On the HPC facility with login host `{ssh_host}` — facility id `{facility}` — bring up one compute node (the "
