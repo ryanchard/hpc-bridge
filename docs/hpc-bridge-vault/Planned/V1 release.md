@@ -65,3 +65,28 @@ fail2ban profile (2026-09-06): `profiles/f2b` layers on site — fail2ban (apt, 
 Polaris filesystems profile (2026-09-06, 0.1.11): `profiles/polaris` layers on pbs — a real `filesystems` string_array resource (qmgr create resource, node resources_available, sched_config `resources:` + HUP) and a Python queuejob hook that HOLDS jobs without it (user hold + comment). Plugin: the PBS pilot probe prints `STATE JOBID comment` and a held pilot's notice carries the scheduler's comment + 'fix scheduler_options'. Scenario `polaris_filesystems` (outcome-gated: directive added and compute ran, or held surfaced + rule relayed; no_endless_hold_wait).
 Internal hostnames profile (2026-09-06, 0.1.12): `profiles/internal` layers on site — each login node's own /etc/hosts line is rewritten (same inode; `sed -i` fails on the bind mount) so `hostname -f` = login0N.int.hpcb.test while Docker DNS never learns the name (a `hostname:` override would be resolvable network-wide). Plugin: `start()` also captures `$SSH_CONNECTION`'s server address; `_routable_pin(host, addr, resolves=)` keeps the FQDN only if it passes the heuristics AND resolves from the client, else pins the reached address (HostKeyAlias = the alias), else the alias; unit tests stub the resolver (conftest autouse). Scenario `internal_hostnames` (login-only, teardown, each_login world checks; `pinned_by_address` reported).
 Slurm pilot probe (2026-09-06, 0.1.13): the Slurm twin of the PBS fix — `_pilot_status_cmd(slurm)` = squeue live rows with the PENDING Reason + sacct finished rows matched by SubmitLine's `uep.<eid>` marker (`F JOBID EXIT STATE`; CANCELLED/TIMEOUT/COMPLETED-0 → `-`, ignored); `_summarize_pilot` gains Slurm's never-start reasons (PartitionTimeLimit, Assoc/QOS limits, JobHeld, InvalidAccount…) as `held` with the reason, and shows the reason on a plain queue wait. Scenario `slurm_worker_died` (site: an env_setup that prepends `command -v mybalance || exit 42` — the tool is login-only — kills every worker_init with 42).
+
+## Fake-cluster profile sweep — baseline 2026-09-05 (plugin 0.1.13, agent claude-opus-5, human-sim Haiku 4.5)
+
+`agentic/sweep_profiles.sh` — every profile brought up clean, then its cells. 31 cells, 30 passed on the first pass;
+the one failure (`draining_restop`, a chaos cell) was a harness flake, fixed the same day (see below). ≈ 55 min for 9
+profiles including cluster switches (2–3 min each); the mep profile ran after the sweep once `HPCB_MEP_EMAIL` was set.
+
+| profile | cells | result |
+|---|---|---|
+| default | happy_path, gated_provision, long_task_via_handle, endpoint_reuse, endpoint_reuse_chain, facility_cache, session_persistence, byo_teardown_clean, spend_refusal, unknown_host_key, zero_config_list, orphaned_task, draining_restop, stop_while_running + spend_gate_enforced (no skill) | 14/15 — `draining_restop` FAILED (`draining_seen`) |
+| site | rich_gate, partition_choice, gpu_rule, submit_policy_rejected, login_pin_teardown, slurm_worker_died, gated_provision, happy_path | 8/8 |
+| totp | otp_preauth | 1/1 |
+| pbs | happy_path, gated_provision | 2/2 |
+| lmod | lmod_bootstrap | 1/1 |
+| f2b | f2b_stranger, f2b_banned | 2/2 |
+| polaris | polaris_filesystems | 1/1 |
+| internal | internal_hostnames | 1/1 |
+| mep | fake_mep_compute, fake_mep_no_account | 2/2 |
+
+`draining_restop`: the hook KILLED the login worker and the manager relaunched it before the stop, so the stop found a
+warm channel and honestly said `down` (the product was right; the chaos had evaporated). A rerun on a two-login-node
+profile then sent the hook to the round-robin alias — the wrong node half the time. Fixed: the hook FREEZES the worker
+(`pkill -STOP`) on EVERY login node (hooks gained `on: each_login`) and a second hook thaws it after the first stop, so
+`draining` then `down` is deterministic.
+

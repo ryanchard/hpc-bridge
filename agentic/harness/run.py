@@ -115,6 +115,22 @@ def _capabilities() -> dict:
         return {}
 
 
+# Captured at IMPORT: the mid-run chaos hooks fire while runner._scrubbed_agent_env has removed every HPCB_* variable
+# for the agent's lifetime, so a live read then sees nothing — the freeze hook of draining_restop ran on the default
+# host only (hosts=[]) and on the world channel's wrong port (2026-09-06 sweep rerun). run.py is imported before the run.
+_HARNESS_SSH_PORT = os.environ.get("HPCB_HARNESS_SSH_PORT", "").strip()
+_LOGIN_HOSTS: list[str] = []
+try:
+    _LOGIN_HOSTS = [str(h) for h in (json.loads(os.environ.get("HPCB_TARGET_CAPS") or "{}").get("login_hosts") or [])]
+except Exception:  # noqa: BLE001 - a malformed capabilities blob: the live reader below reports it
+    _LOGIN_HOSTS = []
+
+
+def _login_hosts() -> list[str]:
+    """The round-robin pool's login nodes: the value captured at import, else a live read (tests set the env late)."""
+    return _LOGIN_HOSTS or list(_capabilities().get("login_hosts") or [])
+
+
 def _ssh_run(remote: str, *, timeout: int = 60, host: str | None = None) -> tuple[int, str]:
     """Run one command on the cluster as the scenario's test user (creds from env — the same
     scoped identity the agent uses). The harness' world channel: SETUP, POSTCHECKS, teardown.
@@ -131,7 +147,7 @@ def _ssh_run(remote: str, *, timeout: int = 60, host: str | None = None) -> tupl
         cmd += ["-i", key, "-o", "IdentitiesOnly=yes"]
     # A profile whose port-22 sshd demands a second factor (the fake `totp` profile) runs a second, key-only sshd for
     # the harness' world channel; HPCB_HARNESS_SSH_PORT names it (the agent's ssh still meets the MFA on 22).
-    port = os.environ.get("HPCB_HARNESS_SSH_PORT", "").strip()
+    port = _HARNESS_SSH_PORT or os.environ.get("HPCB_HARNESS_SSH_PORT", "").strip()
     if port and port != "22":
         cmd += ["-p", port]
     cmd += [f"{user}@{host}", remote]
@@ -227,7 +243,7 @@ def _seed_plain_host_keys(hosts: list[str], port: str, known_hosts: Path | None 
 def _world_cmds(entries) -> list[tuple[str, str | None]]:
     """SETUP/CLEANUP entries are shell strings (run on the default login host) or dicts {"cmd", "on": "each_login"} that
     fan out to every login node of a round-robin pool (fail2ban / per-node state). Returns (cmd, host|None) pairs."""
-    login_hosts = list(_capabilities().get("login_hosts") or []) or [None]
+    login_hosts = _login_hosts() or [None]
     out: list[tuple[str, str | None]] = []
     for c in entries or []:
         if isinstance(c, dict):
@@ -296,7 +312,7 @@ def _postchecks(scen) -> list[Result]:
     behind. Declarative: run cmd over SSH, then substring expectations on the output."""
     results = []
     universal = _universal_postchecks(_scheduler(scen))
-    login_hosts = list(_capabilities().get("login_hosts") or []) or [os.environ.get("HPC_BRIDGE_SSH_HOST", "")]
+    login_hosts = _login_hosts() or [os.environ.get("HPC_BRIDGE_SSH_HOST", "")]
     for pc in list(getattr(scen, "POSTCHECKS", [])) + universal:
         # "on": "each_login" runs the check on EVERY login node (a round-robin pool: a manager process left on the
         # node the alias did not pick is exactly the leak a pin bug produces) and joins the outputs
@@ -346,9 +362,18 @@ async def _run_hook(hook: dict) -> dict:
     cmd = str(hook["cmd"]).replace("{endpoint_name}", os.environ.get("HPC_BRIDGE_ENDPOINT_NAME", ""))
     eids = hook.get("endpoint_ids") or []
     cmd = cmd.replace("{eid}", eids[-1] if eids else "")
-    rc, out = await asyncio.to_thread(_ssh_run, cmd, timeout=int(hook.get("timeout", 120)))
-    print(f"  💥 hook {hook.get('name', hook['after_tool'])}: rc={rc} — {out.strip()[:160]}", file=sys.stderr, flush=True)
-    return {"rc": rc, "out": out.strip()[:400], "cmd": cmd[:300]}
+    # "on": "each_login" runs the hook on EVERY login node of a round-robin pool — the default host is the alias, which
+    # may resolve to the node the endpoint is NOT on (the freeze hook of draining_restop hit the wrong node on the
+    # 2026-09-06 sweep's rerun and the chaos never happened). Manager-hosting node unknown ⇒ hit them all.
+    hosts = (_login_hosts() or [None]) if hook.get("on") == "each_login" else [None]
+    rc, outs = 0, []
+    for h in hosts:
+        rc_h, out_h = await asyncio.to_thread(_ssh_run, cmd, timeout=int(hook.get("timeout", 120)), host=h)
+        rc = rc or rc_h
+        outs.append(f"[{h}] {out_h.strip()}" if h else out_h.strip())
+    out = " | ".join(outs)
+    print(f"  💥 hook {hook.get('name', hook['after_tool'])}: rc={rc} — {out[:160]}", file=sys.stderr, flush=True)
+    return {"rc": rc, "out": out[:400], "cmd": cmd[:300], "hosts": [h for h in hosts if h]}
 
 
 def _cleanup(scen) -> None:
