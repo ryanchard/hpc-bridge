@@ -1,12 +1,15 @@
 # `mep` overlay (on top of site's): the MEP manager state + owner login in login01, and the version/identity knobs.
+# `mep-tools` holds the endpoint venv + its python so bin/deregister.sh can delete the managers' Globus registrations
+# from a one-off container even when the stack is down (`down.sh --wipe`).
 services:
   login:
     environment:
       HPCB_MEP_IDENTITY: ${HPCB_MEP_IDENTITY:-gusellerm@uchicago.edu}
       HPCB_MEP_GCE_VERSION: ${HPCB_MEP_GCE_VERSION:-4.16.0}
-      HPCB_MEP_EMAIL: ${HPCB_MEP_EMAIL:-hpcb-fake-mep@example.com}
+      HPCB_MEP_EMAIL: ${HPCB_MEP_EMAIL-}     # REQUIRED to start a manager (a real contact address — it is registered with Globus)
     volumes:
       - mep-state:/root/.globus_compute
+      - mep-tools:/opt/hpcb-mep
       # the MEP OWNER's Globus login (a storage.db) — staged read-only, copied into the state volume once.
       # Long syntax: a `${VAR:?message}` inside the short `src:dst:mode` form is split on the message's colons.
       - type: bind
@@ -18,3 +21,4 @@ services:
       HPCB_MEP_GCE_VERSION: ${HPCB_MEP_GCE_VERSION:-4.16.0}
 volumes:
   mep-state:
+  mep-tools:

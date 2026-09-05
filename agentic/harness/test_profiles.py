@@ -34,6 +34,9 @@ def test_build_materialises_base_files_plus_overlay_and_a_flat_manifest(tmp_path
     assert (out / "slurm.conf").is_file() and (out / "job_submit.lua").is_file()          # site's
     assert (out / "setup.d" / "login.sh").is_file() and (out / "setup.d" / "login-mep.sh").is_file()   # both layers
     assert (out / "mep" / "schema-strict.json").is_file() and (out / "mep" / "hpcb-mep-catalog").is_file()
+    assert (out / "deregister.sh").is_file() and (out / "mep" / "tools.sh").is_file()   # down.sh --wipe runs the former
+    import os
+    assert os.access(out / "deregister.sh", os.X_OK)
     assert not (out / "compose.override.yml").exists()   # overlays go to compose -f, never into the mounted dir
     import tomllib
     flat = tomllib.loads((out / "profile.toml").read_text())

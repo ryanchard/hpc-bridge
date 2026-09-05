@@ -17,23 +17,21 @@ install -m 755 "$PROFILE_DIR/mep/hpcb-mep-catalog" /usr/local/bin/hpcb-mep-catal
 if [ "$(hostname -s)" = login01 ]; then
   VER="${HPCB_MEP_GCE_VERSION:-4.16.0}"
   IDENTITY="${HPCB_MEP_IDENTITY:-gusellerm@uchicago.edu}"
-  EMAIL="${HPCB_MEP_EMAIL:-hpcb-fake-mep@example.com}"   # the manager's contact address (required by 4.16; a fixture)
-  # The venv's interpreter must be readable by the MAPPED user: the manager forks each user endpoint as that account
-  # and execs the same globus-compute-endpoint. uv's default python store is /root/.local (0700) — the child died with
-  # EX_NOPERM (77) — so the managed python lives under /opt too.
-  export UV_PYTHON_INSTALL_DIR=/opt/uv-python
-  case "$(readlink /opt/gce/bin/python 2>/dev/null)" in /root/*) echo "[mep] /opt/gce points into /root — rebuilding"; rm -rf /opt/gce ;; esac
-  have="$(/opt/gce/bin/python -c 'import importlib.metadata as m; print(m.version("globus-compute-endpoint"))' 2>/dev/null || true)"
-  if [ "$have" != "$VER" ]; then
-    echo "[mep] installing globus-compute-endpoint==$VER into /opt/gce (had: ${have:-none})"
-    uv venv -q --python 3.11 /opt/gce && uv pip install -q --python /opt/gce/bin/python "globus-compute-endpoint==$VER" \
-      || echo "[mep] WARNING: endpoint install failed"
-    chmod -R a+rX /opt/uv-python /opt/gce 2>/dev/null || true
-  fi
+  EMAIL="${HPCB_MEP_EMAIL:-}"   # the manager's contact address: REQUIRED by 4.16 and registered with Globus — a real one, from agentic/.env
+  # The endpoint venv + its python live on the `mep-tools` volume (/opt/hpcb-mep): readable by the MAPPED user (the
+  # manager forks each user endpoint as that account and execs the same globus-compute-endpoint — uv's default python
+  # store /root/.local is 0700 and made the child exit 77), and available to bin/deregister.sh when the stack is down.
+  # shellcheck disable=SC1091
+  source "$PROFILE_DIR/mep/tools.sh"
+  mep_tools_install "$VER" || echo "[mep] WARNING: endpoint install failed"
   mkdir -p /root/.globus_compute && chmod 700 /root/.globus_compute
   if [ ! -s /root/.globus_compute/storage.db ]; then
     if [ -s /run/hpcb/mep-storage.db ]; then install -m 600 /run/hpcb/mep-storage.db /root/.globus_compute/storage.db
     else echo "[mep] WARNING: no /run/hpcb/mep-storage.db mounted — the MEP cannot log in"; fi
+  fi
+  if [ -z "$EMAIL" ]; then
+    echo "[mep] WARNING: HPCB_MEP_EMAIL is unset — NOT starting the managers (a Globus registration needs a real contact address; set it in agentic/.env)"
+    return 0
   fi
   for kind in strict open; do
     name="hpcb-mep-$kind"; d="/root/.globus_compute/$name"
@@ -43,7 +41,7 @@ if [ "$(hostname -s)" = login01 ]; then
     sed "s/@@VER@@/$VER/g" "$PROFILE_DIR/mep/user_config_template.yaml.j2" > "$d/user_config_template.yaml.j2"
     cp "$PROFILE_DIR/mep/schema-$kind.json" "$d/user_config_schema.json"
     rm -f "$d/daemon.pid"   # a stale pidfile from a killed container blocks the start for 90 s
-    ( cd / && nohup /opt/gce/bin/globus-compute-endpoint start "$name" >"/var/log/$name.log" 2>&1 & ) || true
+    ( cd / && nohup "$MEP_GCE/bin/globus-compute-endpoint" start "$name" >"/var/log/$name.log" 2>&1 & ) || true
     echo "[mep] started $name (log /var/log/$name.log)"
   done
 fi

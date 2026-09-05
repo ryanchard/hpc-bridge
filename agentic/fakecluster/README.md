@@ -127,7 +127,7 @@ applied at container start, so switching shape is `down.sh --wipe && up.sh --pro
 |---|---|---|
 | `default` | 2 nodes, one partition `main`, no enforcement, one login node, one NIC | the spike's cluster; every SSH scenario |
 | `site` | 3 nodes; `debug` (30 min, QOS cap) / `compute` (default) / `gpu` (c3, `hpcb-gpu` only, must request a GPU — `job_submit.lua`); accounting ENFORCED (wrong account rejected); fake `mybalance` on PATH; two NICs; **two login nodes behind the round-robin name `login`** (`login01.hpcb.test`:2222, `login02.hpcb.test`:2223, shared host keys like a real site) | discovery with real choices; the spend gate as a decision; balance parsers end to end; the login-node PIN class |
-| `mep` | `site` + a **facility multi-user endpoint** (Globus Compute MEP) run as root in login01 — TWO managers, `hpcb-mep-strict` (schema `additionalProperties:false`, no compute/interface/worker_init keys: Anvil's shape) and `hpcb-mep-open` (globus1's shape); the harness' test identity maps to the local account `hpcbmep`; a second identity is unmapped (NO ACCOUNT). Needs the MEP owner's Globus login (`HPCB_MEP_GLOBUS_DB`, defaults to `HPCB_TEST_GLOBUS_DB` from `agentic/.env`) and installs `globus-compute-endpoint==<the plugin's SDK version>` at first boot (~1–2 min; the managed python lives under `/opt/uv-python` so the mapped user can exec it — uv's default `/root/.local` store made the user endpoint die with EX_NOPERM); `HPCB_MEP_EMAIL` is the manager's contact address (4.16 refuses to start without one) | the zero-SSH path: attach, identity mapping, the strict template contract, draining-only stop, NO ACCOUNT |
+| `mep` | `site` + a **facility multi-user endpoint** (Globus Compute MEP) run as root in login01 — TWO managers, `hpcb-mep-strict` (schema `additionalProperties:false`, no compute/interface/worker_init keys: Anvil's shape) and `hpcb-mep-open` (globus1's shape); the harness' test identity maps to the local account `hpcbmep`; a second identity is unmapped (NO ACCOUNT). Needs the MEP owner's Globus login (`HPCB_MEP_GLOBUS_DB`, defaults to `HPCB_TEST_GLOBUS_DB` from `agentic/.env`) and installs `globus-compute-endpoint==<the plugin's SDK version>` at first boot (~1–2 min; the managed python lives under `/opt/uv-python` so the mapped user can exec it — uv's default `/root/.local` store made the user endpoint die with EX_NOPERM); `HPCB_MEP_EMAIL` (REQUIRED, a real address — it is registered with Globus as the managers' contact; without it the managers are not started) | the zero-SSH path: attach, identity mapping, the strict template contract, draining-only stop, NO ACCOUNT |
 
 Scenarios declare what they need — `REQUIRES = {"login_nodes": 2}`, `{"accounting": "enforce"}`, `{"min_nodes": 3}`,
 `{"scheduler": "pbs"}` … — and `run_suite` skips a cell the target/profile cannot satisfy (`targets.meets`). Bundles
@@ -170,6 +170,11 @@ python3 agentic/run_suite.py --target fake --profile mep --reset-cluster --scena
 #   `[catalog] cmd` — a host command printing this cluster's seed-format catalog (mep: `hpcb-mep-catalog` in login01,
 #   reading each manager's endpoint.json). run_smoke.sh runs it per cell and mounts the output into the jail as
 #   HPC_BRIDGE_CATALOG_FILE — the plugin's dev/test seam (0.1.8) that replaces the registry for that process.
+#
+#   REGISTRATIONS: each manager (and every user endpoint it forks) is a record in the Globus Compute service under the
+#   owner identity. A warm restart reuses them (the `mep-state` volume keeps the UUIDs). `down.sh --wipe` runs the
+#   profile's deregister.sh FIRST — a one-off container on the mep-state + mep-tools volumes runs
+#   `globus-compute-endpoint delete` per manager — so wiping never orphans records (HPCB_FAKE_KEEP_REGISTRATIONS=1 skips).
 HPCB_TARGET=fake ./agentic/run_smoke.sh spend_refusal          # one cell
 HPCB_TARGET=fake ./agentic/sweep_pool_user.sh hpcbridge-test-00 # hand sweep (rarely needed: --reset-cluster instead)
 ```
