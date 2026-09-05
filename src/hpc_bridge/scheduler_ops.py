@@ -10,6 +10,7 @@ release call patch `scheduler_ops._release_blocks_over_login`.
 from __future__ import annotations
 
 import asyncio
+import re
 import shlex
 from collections.abc import Awaitable, Callable
 
@@ -98,13 +99,33 @@ def _pilot_status_cmd(scheduler: str, eid: str) -> str:
             'c=""; if (match($0,/comment = [^\\n]*/)) c=substr($0,RSTART+10,RLENGTH-10); '
             "print s\" \"$1\" \"x\" \"c}'"
         )
+    m = shlex.quote(marker)
+    # Live pilots from squeue — `STATE JOBID - REASON` (the PENDING reason tells a normal queue wait from a job the
+    # scheduler will never start: PartitionTimeLimit, AssocMaxJobsLimit, JobHeldUser…) — plus FINISHED pilots from
+    # accounting (sacct's SubmitLine carries the script path, hence the marker) as `F JOBID EXIT STATE`, so a pilot
+    # that ran and died is not read as "never submitted" (the PBS twin, 0.1.9). EXIT is `-` for what is not a
+    # diagnosis: CANCELLED (our own release / re-bind), TIMEOUT (the walltime), COMPLETED with 0 (a worker that
+    # simply ended). Filter by the marker INSIDE awk (not `grep -F | awk`): grep exits non-zero on no-match, which
+    # under a `set -o pipefail` shell would mask an empty result as an error and swallow the "no pilot" signal.
+    # sacct is best-effort (no accounting daemon ⇒ no rows, not an error).
     return (
-        # Filter by the marker INSIDE awk (not `grep -F | awk`): grep exits non-zero on no-match,
-        # which under a `set -o pipefail` shell would mask an empty result as an error and swallow the
-        # "no pilot -> rejected" signal this exists to surface. awk matches AND exits 0 either way.
-        'squeue -u "$USER" -h -O "State:20,JobID:24,StdOut:1024" 2>/dev/null '
-        f"| awk -v m={shlex.quote(marker)} 'index($0,m){{print $1\" \"$2}}'"
+        '{ squeue -u "$USER" -h -O "State:20,JobID:24,Reason:60,StdOut:1024" 2>/dev/null '
+        f"| awk -v m={m} 'index($0,m){{print $1\" \"$2\" - \"$3}}'; "
+        'sacct -X -n -P -u "$USER" -S now-6hours -o State,JobID,ExitCode,SubmitLine 2>/dev/null '
+        f"| awk -F'|' -v m={m} 'index($4,m){{st=$1; sub(/ .*/,\"\",st); "
+        'if (st ~ /^(PENDING|RUNNING|COMPLETING|CONFIGURING|SUSPENDED)$/) next; '
+        'split($3,e,":"); x=e[1]; '
+        'if (st ~ /^(CANCELLED|TIMEOUT|PREEMPTED|NODE_FAIL|DEADLINE|REQUEUED|REVOKED)$/) x="-"; '
+        'if (st == "COMPLETED" && x == "0") x="-"; '
+        "print \"F \"$2\" \"x\" \"st}'; } 2>/dev/null; true"
     )
+
+# Slurm PENDING reasons that mean "never, as submitted" (Slurm leaves such a job PENDING forever unless
+# EnforcePartLimits rejects it at submit) — the Slurm analogue of a PBS hold.
+_NEVER_PENDING = re.compile(
+    r"PartitionTimeLimit|PartitionNodeLimit|PartitionConfig|QOS\w*Limit|Assoc\w*Limit|JobHeld|BadConstraints|"
+    r"InvalidAccount|InvalidQOS|ReqNodeNotAvail|DependencyNeverSatisfied|AccountNotAllowed|PartitionDown", re.I)
+
 
 def _summarize_pilot(stdout: str, provisioning_elapsed_s: float) -> tuple[str, str]:
     """(category, notice-suffix) from `_pilot_status_cmd` output. category ∈ {starting, queued, held,
@@ -153,7 +174,17 @@ def _summarize_pilot(stdout: str, provisioning_elapsed_s: float) -> tuple[str, s
         )
     if "R" in states:
         return "starting", f"— pilot {jid} is RUNNING; the worker is starting, retry shortly."
-    return "queued", f"— pilot {jid} is queued (PENDING); waiting on the scheduler."
+    pend = next((r for r in rows if r[0][:1].upper() == "P"), rows[0])
+    reason = pend[3].strip() if len(pend) > 3 else ""
+    pjid = pend[1] if len(pend) > 1 else jid
+    if reason and _NEVER_PENDING.search(reason):
+        return "held", (
+            f"— pilot {pjid} is PENDING with reason {reason!r}: the scheduler will not start it as submitted (a "
+            "walltime or size over the partition's or QOS's limit, an account/QOS it may not use, a held job). Fix the "
+            "facility's walltime/partition/account (connect_facility with details=), then start again."
+        )
+    tail = f" (reason {reason})" if reason and reason.lower() != "none" else ""
+    return "queued", f"— pilot {pjid} is queued (PENDING{tail}); waiting on the scheduler."
 
 async def _pilot_status_over_login(app: AppCtx, eid: str, elapsed_s: float, run_login: LoginRunner) -> tuple[str, str] | None:  # noqa: E501
     """Ask the scheduler (over the login shape — AMQP, no SSH) what state THIS endpoint's pilot is in.

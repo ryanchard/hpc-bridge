@@ -3,6 +3,17 @@
 All notable changes to hpc-bridge. The plugin version lives in `.claude-plugin/plugin.json` (Claude Code updates an
 installed plugin only when that version changes); git tags mark releases.
 
+## 0.1.13 — 2026-09-06 — a Slurm pilot that died, or will never start, says so
+
+### Changed
+- **On Slurm the pilot probe reads finished pilots from accounting and the PENDING reason from the queue.** The
+  Slurm twin of the PBS fix in 0.1.9: `squeue` shows live jobs only, so a pilot whose worker died was invisible and the
+  tool said the submission was "likely REJECTED"; now `sacct` (matched by the submit line's endpoint marker) reports
+  "pilot N already FINISHED (exit status 42) … read its stdout/stderr in submit_scripts". A cancelled pilot (our own
+  release or a re-bind), a walltime end, or a clean exit is not a diagnosis and is ignored. A PENDING pilot whose
+  reason means it will never start as submitted — `PartitionTimeLimit`, `AssocMaxJobsLimit`, `JobHeldUser`, an invalid
+  account or QOS — is reported like a PBS hold, with the reason and what to fix; an ordinary wait shows its reason too.
+
 ## 0.1.12 — 2026-09-06 — the login-node pin survives an internal hostname
 
 ### Changed

@@ -1773,3 +1773,23 @@ def test_summarize_pilot_relays_a_held_jobs_comment():
     assert cat2 == "held" and "bad scheduler directive" in why2
     assert _summarize_pilot("Q 7.pbsserver - \n", 10)[0] == "queued"   # a trailing empty comment is fine
     assert _summarize_pilot("PD 12345\nR 12346\n", 10)[0] == "starting"       # Slurm rows have no exit column
+
+
+def test_slurm_pilot_probe_reads_finished_pilots_and_pending_reasons():
+    # the Slurm twin of the PBS fix (0.1.13): sacct rows (SubmitLine carries the uep marker) for pilots that ran and
+    # died, and squeue's Reason for a PENDING job the scheduler will never start
+    from hpc_bridge.server import _pilot_status_cmd, _summarize_pilot
+    cmd = _pilot_status_cmd("slurm", "E")
+    assert "sacct -X -n -P" in cmd and "SubmitLine" in cmd and "Reason:60" in cmd and "uep.E" in cmd
+    assert "COMPLETED" in cmd and "CANCELLED" in cmd   # a clean/cancelled end is not a diagnosis
+    cat, why = _summarize_pilot("F 12 42 FAILED\n", 200)
+    assert cat == "finished" and "12" in why and "exit status 42" in why
+    assert _summarize_pilot("F 12 - CANCELLED\n", 200)[0] == "rejected"         # our own scancel: ignored past the grace
+    assert _summarize_pilot("F 12 - CANCELLED\n", 10)[0] == "starting"
+    cat, why = _summarize_pilot("PENDING 13 - PartitionTimeLimit\n", 30)
+    assert cat == "held" and "PartitionTimeLimit" in why and "will not start" in why
+    assert _summarize_pilot("PENDING 13 - AssocMaxJobsLimit\n", 30)[0] == "held"
+    cat, why = _summarize_pilot("PENDING 13 - Priority\n", 30)
+    assert cat == "queued" and "reason Priority" in why
+    assert _summarize_pilot("PENDING 13 - None\n", 30) == ("queued", "— pilot 13 is queued (PENDING); waiting on the scheduler.")
+    assert _summarize_pilot("RUNNING 14 - None\nF 12 42 FAILED\n", 30)[0] == "starting"   # a live pilot wins
