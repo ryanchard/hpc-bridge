@@ -60,6 +60,14 @@ def release_backoff_s() -> float:
     return float(env("HPC_BRIDGE_RELEASE_BACKOFF_S") or "6")
 
 
+def provisioning_release_attempts() -> int:
+    """Release attempts when a block was REQUESTED but never confirmed running (stop-during-provisioning): the pilot's
+    sbatch may not be in the scheduler yet, so a one-shot scancel finds nothing — keep polling for it to land and
+    cancel it (× release_backoff_s ≈ a ~30 s window by default) rather than falsely reporting 'down' (issue: the
+    spend_revoked race, 2026-09-05)."""
+    return max(release_attempts(), int(env("HPC_BRIDGE_PROVISIONING_RELEASE_ATTEMPTS") or "6"))
+
+
 def charge_factor() -> float:
     return _env_float("HPC_BRIDGE_CHARGE_FACTOR", 0.0)
 

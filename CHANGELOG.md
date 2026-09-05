@@ -3,6 +3,19 @@
 All notable changes to hpc-bridge. The plugin version lives in `.claude-plugin/plugin.json` (Claude Code updates an
 installed plugin only when that version changes); git tags mark releases.
 
+## 0.1.14 — 2026-09-05 — stopping during provisioning waits for the pilot instead of falsely reporting `down`
+
+### Changed
+- **`stop_endpoint` during provisioning polls for the block's pilot to land and cancels it, rather than reporting
+  `down` on a `scancel` that found nothing.** The stop-during-provisioning race: a user who approves a spend then
+  revokes it while the block is still coming up (the `spend_revoked` flip-flopper) triggered a `scancel` before
+  parsl's `sbatch` had reached the scheduler, so the one-shot release found no job and the tool said `down` — then the
+  pilot appeared and burned until idle-release. Now, when the compute shape was requested (`spend_confirmed`) but never
+  confirmed running, the release keeps polling (`HPC_BRIDGE_PROVISIONING_RELEASE_ATTEMPTS`, default 6 × the release
+  backoff ≈ a 30 s window) until it actually cancels the pilot — reporting `down` with the job it cancelled. Only if no
+  pilot appears within that window does it return the honest `draining` (call `stop_endpoint` again; idle-release,
+  min_blocks=0, is the backstop). A block confirmed running whose `scancel` finds it already finished is still `down`.
+
 ## 0.1.13 — 2026-09-06 — a Slurm pilot that died, or will never start, says so
 
 ### Changed

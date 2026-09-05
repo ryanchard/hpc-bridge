@@ -573,12 +573,19 @@ async def _stop_endpoint(app: AppCtx) -> EndpointStatus:
                     f"after a false 'down'. poll_task them to completion (at most ~{ceiling}s more; their results stay "
                     "retrievable), then call stop_endpoint. To abandon them and remove everything, teardown_endpoint."),
         )
+    # Was a block REQUESTED but never CONFIRMED running? Then a scheduler submit may still be in flight — a
+    # one-shot scancel that finds nothing has NOT confirmed the block gone: the pilot's sbatch can land a moment
+    # after (the stop-during-provisioning race — a user revoking mid-bring-up, spend_revoked 2026-09-05). The
+    # release then POLLS for the pilot to land and cancels it (expect_block); captured before the shape is dropped.
+    rt_pre = app.shapes.get(DEFAULT_SHAPE)
+    expect_block = rt_pre is not None and rt_pre.spend_confirmed and rt_pre.warm_confirmed_at is None
     # Cancel the scheduler block over the login shape (AMQP) — no SSH.
-    confirmed, detail = await scheduler_ops._release_blocks_over_login(app, eid, _login_runner(app))
+    confirmed, detail = await scheduler_ops._release_blocks_over_login(
+        app, eid, _login_runner(app), expect_block=expect_block)
     dropped = await warmth._drop_compute_shape(app)
     if confirmed:
         return EndpointStatus(
-            status="down",  # cancel CONFIRMED: no billed block running (manager stays online for reuse)
+            status="down",  # cancel CONFIRMED: a block was found + cancelled, or none was ever requested
             block_state="cold",
             endpoint_id=eid,
             session_spend=_total_session_spend(app) + dropped,
@@ -596,16 +603,24 @@ async def _stop_endpoint(app: AppCtx) -> EndpointStatus:
                     "A block without its manager exits on its own; nothing is spending through hpc-bridge. "
                     "Do not call stop_endpoint again; connect_facility stands the endpoint up afresh."),
         )
+    # HONEST unconfirmed release (#24): NEVER "down" here — the agent must know spend may still be running.
+    if expect_block:
+        # the block was still being submitted and no pilot appeared in the scheduler within the release window;
+        # one may land shortly (the stop-during-provisioning race, 0.1.14).
+        notice = (f"{detail}. Spend is NOT confirmed stopped — the compute block was still being submitted and no "
+                  "pilot had appeared in the scheduler yet, so there was nothing to cancel; one may land shortly. "
+                  "Call stop_endpoint again in a few seconds to cancel it once it lands (idle-release, ~10 min, "
+                  "min_blocks=0, is the backstop). The login endpoint stays online for reuse.")
+    else:
+        notice = (f"{detail}. Spend is NOT confirmed stopped — the login release channel was cold. "
+                  "idle-release (~10 min, min_blocks=0) is the backstop; call stop_endpoint again in a few "
+                  "seconds (the channel is warming) to confirm the cancel. The login endpoint stays online for reuse.")
     return EndpointStatus(
-        # HONEST unconfirmed release (#24): the cancel dispatched but the cold login channel couldn't
-        # confirm it, so spend may still be running. NEVER "down" here — the agent must know.
         status="draining",
         block_state="cold",
         endpoint_id=eid,
         session_spend=_total_session_spend(app) + dropped,
-        notice=f"{detail}. Spend is NOT confirmed stopped — the login release channel was cold. "
-        "idle-release (~10 min, min_blocks=0) is the backstop; call stop_endpoint again in a few "
-        "seconds (the channel is warming) to confirm the cancel. The login endpoint stays online for reuse.",
+        notice=notice,
     )
 
 

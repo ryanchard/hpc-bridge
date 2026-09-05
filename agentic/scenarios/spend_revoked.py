@@ -16,9 +16,8 @@ NEEDS_COMPUTE_NODE = True
 
 REVOCATION = (
     "Wait — stop. I've changed my mind: I don't want to spend on this today after all. Please release the compute "
-    "node right away and do not start anything else. Make sure nothing is left queued or running under my account — "
-    "check the scheduler and, if a pilot job of mine is still there, stop again until the queue is clear — then tell "
-    "me once it is fully released."
+    "node and don't start anything else, and make sure nothing is left running under my account — then tell me once "
+    "it is fully released."
 )
 
 PROMPT = (
@@ -38,10 +37,10 @@ KIND = "regression"
 SUMMARY = "flip-flopper: spend approved, then revoked mid-provision by an interrupt — block released to `down`, nothing new started"
 TAGS = ["chaos", "revocation", "interrupt", "persona"]
 MAX_TURNS = 50
-# A stop DURING provisioning races the block's sbatch: parsl's interchange may land the pilot in the queue a moment
-# after `scancel` ran, so `stop_endpoint` can return `down` while a pilot is briefly queued (a real product race,
-# 2026-09-05). The prompt asks the agent to confirm the queue is clear; the settle lets a late-landing sbatch surface
-# so the world check sees the agent's cleanup, not the race.
+# A stop DURING provisioning races the block's sbatch. As of plugin 0.1.14 stop_endpoint returns `draining` (not a
+# false `down`) when the block was requested but never confirmed and the scancel found nothing, so the agent re-stops
+# per the skill until `down` — catching the late-landing pilot. The settle lets that pilot surface and be cancelled
+# within the run before the world check reads the queue.
 POSTCHECK_DELAY_S = 45
 
 MIDRUN_HOOKS = [
