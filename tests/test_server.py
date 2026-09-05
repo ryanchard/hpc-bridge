@@ -548,6 +548,60 @@ async def test_stop_is_honest_when_release_channel_is_cold(monkeypatch):
     assert "compute" not in app.shapes and slurm_runner.closed  # billed shape still dropped (spend clock banked)
 
 
+async def test_stop_during_provisioning_is_draining_not_down(monkeypatch):
+    # The stop-during-provisioning race (spend_revoked, 2026-09-05): the block was REQUESTED
+    # (spend_confirmed) but never CONFIRMED running (warm_confirmed_at is None), and the scancel finds
+    # no job yet ("released none") because parsl's sbatch is still in flight. Claiming "down" would leak
+    # a pilot that lands a moment later; stop_endpoint must report "draining" so the agent re-stops.
+    from hpc_bridge import server
+    from hpc_bridge.models import ShellOutcome
+    from hpc_bridge.server import ShapeRuntime, _stop_endpoint
+
+    monkeypatch.setenv("HPC_BRIDGE_RELEASE_BACKOFF_S", "0")  # no real sleeps in the provisioning poll
+    app = AppCtx(facility=FakeFacility(), profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
+    app.facility.manager_up = True  # the endpoint is up (not orphaned) — only the block isn't visible yet
+    slurm_runner = _FakeRunner("eid-1", _Res(0, "", ""))
+    app.shapes["compute"] = ShapeRuntime(
+        user_endpoint_config={"compute": True}, runner=slurm_runner,
+        spend_confirmed=True, warm_confirmed_at=None,  # requested, never confirmed running
+    )
+    app.shapes["login"] = ShapeRuntime(user_endpoint_config={"provider_type": "LocalProvider"}, warm_confirmed_at=1.0)
+
+    async def released_nothing(a, command, session_id="default", shape="compute"):
+        return ShellOutcome(phase="complete", exit_code=0, stdout="released none\n", block_state="warm")
+
+    monkeypatch.setattr(server, "_run_shell", released_nothing)
+    res = await _stop_endpoint(app)
+    assert res.status == "draining"  # NOT "down": the pilot never appeared in the window, may still be landing
+    assert "still being submitted" in (res.notice or "") and "stop_endpoint again" in (res.notice or "")
+
+    # RECOVERY: the release POLLS during provisioning — "released none" first, then the pilot lands and is cancelled
+    app3 = AppCtx(facility=FakeFacility(), profile=Profile(), state=EndpointState(endpoint_id="eid-3"))
+    app3.shapes["compute"] = ShapeRuntime(
+        user_endpoint_config={"compute": True}, runner=_FakeRunner("eid-3", _Res(0, "", "")),
+        spend_confirmed=True, warm_confirmed_at=None,
+    )
+    app3.shapes["login"] = ShapeRuntime(user_endpoint_config={"provider_type": "LocalProvider"}, warm_confirmed_at=1.0)
+    seq = ["released none\n", "released none\n", "released 12345\n"]  # pilot lands on the 3rd poll
+
+    async def lands_then_cancelled(a, command, session_id="default", shape="compute"):
+        return ShellOutcome(phase="complete", exit_code=0, stdout=seq.pop(0) if seq else "released none\n", block_state="warm")
+
+    monkeypatch.setattr(server, "_run_shell", lands_then_cancelled)
+    res3 = await _stop_endpoint(app3)
+    assert res3.status == "down" and "released 12345" in (res3.notice or "")  # caught the late pilot in ONE stop call
+
+    # control: a block CONFIRMED running (warm) whose scancel finds nothing (it already finished) is honest "down"
+    app2 = AppCtx(facility=FakeFacility(), profile=Profile(), state=EndpointState(endpoint_id="eid-2"))
+    app2.shapes["compute"] = ShapeRuntime(
+        user_endpoint_config={"compute": True}, runner=_FakeRunner("eid-2", _Res(0, "", "")),
+        spend_confirmed=True, warm_confirmed_at=1.0,  # was confirmed running
+    )
+    app2.shapes["login"] = ShapeRuntime(user_endpoint_config={"provider_type": "LocalProvider"}, warm_confirmed_at=1.0)
+    monkeypatch.setattr(server, "_run_shell", released_nothing)
+    assert (await _stop_endpoint(app2)).status == "down"
+
+
 async def test_stop_retries_cold_channel_then_confirms(monkeypatch):
     # The first dispatch wakes the cold login worker (returns cold_start); a bounded retry catches
     # it once warm and CONFIRMS the cancel -> honest "down". This is the common, recoverable case.
@@ -1660,7 +1714,7 @@ async def test_ssh_teardown_reports_the_spend_it_ended(monkeypatch):
     await _ensure_endpoint_up(app, shape="compute", confirm_spend=True)
     _shape_runtime(app, "compute").spend_accrued = 3.5
 
-    async def _released(app_, eid, *rest):
+    async def _released(app_, eid, *rest, **kw):
         return True, "released"
 
     monkeypatch.setattr("hpc_bridge.scheduler_ops._release_blocks_over_login", _released)
@@ -1733,7 +1787,7 @@ async def test_ssh_stop_refuses_while_a_task_runs_and_keeps_its_handle(monkeypat
 
     released = []
 
-    async def fake_release(a, eid, runner):
+    async def fake_release(a, eid, runner, **kw):
         released.append(eid)
         return True, "released 7"
 

@@ -197,7 +197,7 @@ async def test_stop_on_a_gone_endpoint_is_terminal(monkeypatch):
     app.shapes["compute"] = ShapeRuntime(user_endpoint_config={"compute": True}, runner=_FakeRunner("eid-1", _Res(0, "", "")))
     app.shapes["login"] = ShapeRuntime(user_endpoint_config={"provider_type": "LocalProvider"})
 
-    async def cold(a, eid, *rest):
+    async def cold(a, eid, *rest, **kw):
         return False, "login channel cold"
 
     async def nothing(a):

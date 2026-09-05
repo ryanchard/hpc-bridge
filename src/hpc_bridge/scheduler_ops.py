@@ -44,7 +44,9 @@ def _release_cmd(scheduler: str, eid: str) -> str:
         '[ -n "$ids" ] && scancel $ids; echo "released ${ids:-none}"'
     )
 
-async def _release_blocks_over_login(app: AppCtx, eid: str, run_login: LoginRunner) -> tuple[bool, str]:
+async def _release_blocks_over_login(
+    app: AppCtx, eid: str, run_login: LoginRunner, *, expect_block: bool = False
+) -> tuple[bool, str]:
     """Cancel this endpoint's scheduler block(s) by running the scheduler's cancel (scancel/qdel)
     on the **login shape (AMQP)** — never SSH. That's the whole point of the login-node endpoint:
     talk to the cluster over Compute, not a fresh SSH. Matches blocks precisely by the UEP StdOut
@@ -64,17 +66,26 @@ async def _release_blocks_over_login(app: AppCtx, eid: str, run_login: LoginRunn
     # of the Facility protocol.
     scheduler = getattr(getattr(app.facility, "profile", None), "scheduler", "slurm")
     cmd = _release_cmd(scheduler, eid)
-    attempts = config.release_attempts()
+    # `expect_block`: a block was requested but never confirmed running (stop-during-provisioning). Its sbatch may not
+    # be in the scheduler yet, so a scancel that finds nothing ("released none") has NOT confirmed the block gone — the
+    # pilot can land a moment later and burn (the spend_revoked race). Keep polling for it to appear (a longer budget),
+    # and only count a run that actually CANCELLED a job as confirmed. Without a block expected, "released none" is a
+    # genuine confirm (nothing was ever there).
+    attempts = config.provisioning_release_attempts() if expect_block else config.release_attempts()
     backoff = config.release_backoff_s()
     detail = "unconfirmed"
     for i in range(attempts):
         out = await run_login(cmd)
         if out.phase == "complete" and out.exit_code == 0:
             line = (out.stdout or "").strip().splitlines()
-            return True, (line[-1] if line else "released none")
-        detail = out.notice or out.phase or "unconfirmed"
+            last = (line[-1] if line else "released none").strip()
+            if last != "released none" or not expect_block:
+                return True, last  # cancelled a job, or none was expected — the cancel is confirmed
+            detail = "no pilot in the scheduler yet (block still being submitted)"  # expect_block: keep polling for it
+        else:
+            detail = out.notice or out.phase or "unconfirmed"
         if i + 1 < attempts and backoff > 0:
-            await asyncio.sleep(backoff)  # let the woken login worker register, then re-confirm
+            await asyncio.sleep(backoff)  # let the woken login worker register / the sbatch land, then re-confirm
     return False, f"cancel not confirmed ({detail}); idle-release will reclaim it"
 
 def _pilot_status_cmd(scheduler: str, eid: str) -> str:
