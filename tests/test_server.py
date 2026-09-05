@@ -1751,8 +1751,25 @@ def test_summarize_pilot_names_a_pilot_that_ran_and_died():
     # PBS with -x lists finished jobs: every row F/E ⇒ the block ran and its worker exited — not "never submitted"
     # (fake OpenPBS 2026-09-06: an empty-account submit became an empty STDIN job, exit 127, read as REJECTED).
     from hpc_bridge.server import _summarize_pilot
-    cat, why = _summarize_pilot("F 1.pbsserver\n", 200)
-    assert cat == "finished" and "1.pbsserver" in why and "FINISHED" in why and "submit_scripts" in why
+    cat, why = _summarize_pilot("F 1.pbsserver 127\n", 200)
+    assert cat == "finished" and "1.pbsserver" in why and "exit status 127" in why and "submit_scripts" in why
     # a live pilot beside an old finished one: the live state wins
-    assert _summarize_pilot("F 1.pbsserver\nR 3.pbsserver\n", 200)[0] == "starting"
-    assert _summarize_pilot("F 1.pbsserver\nQ 3.pbsserver\n", 200)[0] == "queued"
+    assert _summarize_pilot("F 1.pbsserver 127\nR 3.pbsserver -\n", 200)[0] == "starting"
+    assert _summarize_pilot("F 1.pbsserver 127\nQ 3.pbsserver -\n", 200)[0] == "queued"
+    # leftovers are NOT a diagnosis: a pilot deleted before it ran (no exit status — a held pilot cancelled by a re-bind)
+    # and one killed/qdel'd (271) read as "no pilot": starting within the grace, rejected after it
+    assert _summarize_pilot("F 4.pbsserver - HELD by the site\n", 10)[0] == "starting"
+    assert _summarize_pilot("F 4.pbsserver - HELD by the site\nF 5.pbsserver 271 Job run … terminated\n", 200)[0] == "rejected"
+    assert _summarize_pilot("F 5.pbsserver 271 terminated\nQ 6.pbsserver -\n", 200)[0] == "queued"
+
+
+def test_summarize_pilot_relays_a_held_jobs_comment():
+    # PBS: the probe prints `STATE JOBID comment…`; a Polaris-style hook's comment is the site's own explanation
+    from hpc_bridge.server import _pilot_status_cmd, _summarize_pilot
+    assert "comment = " in _pilot_status_cmd("pbs", "E")
+    cat, why = _summarize_pilot("H 5.pbsserver - HELD by the site: every job must request -l filesystems=home:eagle\n", 30)
+    assert cat == "held" and "5.pbsserver" in why and "filesystems=home:eagle" in why and "scheduler_options" in why
+    cat2, why2 = _summarize_pilot("H 42.aurora\n", 0)          # no comment: the generic hint
+    assert cat2 == "held" and "bad scheduler directive" in why2
+    assert _summarize_pilot("Q 7.pbsserver - \n", 10)[0] == "queued"   # a trailing empty comment is fine
+    assert _summarize_pilot("PD 12345\nR 12346\n", 10)[0] == "starting"       # Slurm rows have no exit column

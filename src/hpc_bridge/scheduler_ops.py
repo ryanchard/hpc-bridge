@@ -90,9 +90,13 @@ def _pilot_status_cmd(scheduler: str, eid: str) -> str:
             # -x: finished jobs too — a pilot that RAN AND DIED (a broken worker_init, a missing module) is otherwise
             # invisible and read as "never submitted"; the summary prefers a live state when both are present.
             "qstat -x -f 2>/dev/null | sed ':a;N;$!ba;s/\\n\\t//g' "
+            # …plus the scheduler's `comment` for the record: a HELD pilot's comment is the site's own explanation
+            # (a Polaris-style hook: "requires -l filesystems=…"), which the agent otherwise has to dig out of qstat -f.
             f"| awk -v m={shlex.quote(marker)} 'BEGIN{{RS=\"Job Id: \"}} index($0,m){{"
             's="?"; if (match($0,/job_state = [A-Za-z]/)) s=substr($0,RSTART+12,1); '
-            "print s\" \"$1}'"
+            'x="-"; if (match($0,/Exit_status = -?[0-9]+/)) x=substr($0,RSTART+14,RLENGTH-14); '
+            'c=""; if (match($0,/comment = [^\\n]*/)) c=substr($0,RSTART+10,RLENGTH-10); '
+            "print s\" \"$1\" \"x\" \"c}'"
         )
     return (
         # Filter by the marker INSIDE awk (not `grep -F | awk`): grep exits non-zero on no-match,
@@ -107,8 +111,24 @@ def _summarize_pilot(stdout: str, provisioning_elapsed_s: float) -> tuple[str, s
     rejected, finished}. A visible pilot (Q/R/H) is reported at once; a MISSING pilot is only called
     `rejected` once the block has been cold past `PROVISION_GRACE_S` — before that it's a normal
     cold-start gap (empty suffix ⇒ the caller leaves 'allocating nodes…' unchanged)."""
-    rows = [ln.split() for ln in stdout.splitlines() if ln.strip()]
-    if not rows:
+    # Slurm rows are `STATE JOBID`; PBS rows are `STATE JOBID EXIT [comment…]` (EXIT = Exit_status, or `-` when the
+    # job never ran). Finished rows are read by WHY they finished: an exit status of its own means the worker died
+    # there; `-` (deleted before it ever ran — a held pilot cancelled by a re-bind) or 271 (killed/qdel'd: our own
+    # release, or the walltime) is a leftover of an earlier block, not a diagnosis, and is ignored.
+    rows = [ln.split(None, 3) for ln in stdout.splitlines() if ln.strip()]
+    done_states = {"F", "E", "X"}
+    live = [r for r in rows if r and r[0][:1].upper() not in done_states]
+    died = [r for r in rows
+            if r and r[0][:1].upper() in done_states and len(r) > 2 and r[2] not in ("-", "271", "?")]
+    if not live:
+        if died:  # every pilot this endpoint submitted has FINISHED with an exit status of its own: it ran and died
+            r = died[-1]
+            return "finished", (
+                f"— pilot {r[1]} already FINISHED (exit status {r[2]}): the block started and its worker exited "
+                "(a failed worker_init, an environment the compute node lacks, a network the worker cannot reach). "
+                "Not a queue wait: read that job's stdout/stderr in the endpoint's submit_scripts directory "
+                "(run_shell shape='login')."
+            )
         if provisioning_elapsed_s < PROVISION_GRACE_S:
             return "starting", ""  # normal cold-start window — pilot not visible yet, don't cry wolf
         return "rejected", (
@@ -117,19 +137,19 @@ def _summarize_pilot(stdout: str, provisioning_elapsed_s: float) -> tuple[str, s
             "rather than queued. Check run_shell('qstat -u $USER', shape='login') (squeue on Slurm) "
             "and the endpoint log."
         )
-    states = {r[0][:1].upper() for r in rows if r}
+    rows = live
+    states = {r[0][:1].upper() for r in rows}
     jid = rows[0][1] if len(rows[0]) > 1 else "?"
-    if states <= {"F", "E", "X"}:  # every pilot this endpoint submitted has FINISHED/exited: it ran and its worker died
-        jid = rows[-1][1] if len(rows[-1]) > 1 else jid
-        return "finished", (
-            f"— pilot {jid} already FINISHED: the block started and its worker exited (a failed worker_init, "
-            "an environment the compute node lacks, a network the worker cannot reach). Not a queue wait: read "
-            "that job's stdout/stderr in the endpoint's submit_scripts directory (run_shell shape='login')."
-        )
     if "H" in states:
+        held = next((r for r in rows if r[0][:1].upper() == "H"), rows[0])
+        comment = held[3].strip() if len(held) > 3 else ""
+        why = (f" The scheduler's comment: {comment[:300]!r}." if comment else
+               " A held job usually means a bad scheduler directive (e.g. filesystems/account) — inspect qstat -f / "
+               "the #PBS|#SBATCH directives.")
+        hjid = held[1] if len(held) > 1 else jid
         return "held", (
-            f"— pilot {jid} is HELD; a held job usually means a bad scheduler directive "
-            "(e.g. filesystems/account) — inspect qstat -f / the #PBS|#SBATCH directives."
+            f"— pilot {hjid} is HELD and will not start on its own.{why} Fix the facility's scheduler_options "
+            "(connect_facility with details=) or the account/queue, then start again."
         )
     if "R" in states:
         return "starting", f"— pilot {jid} is RUNNING; the worker is starting, retry shortly."

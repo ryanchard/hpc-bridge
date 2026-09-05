@@ -1,0 +1,13 @@
+# `polaris` = the `pbs` cluster with ALCF Polaris's best-known site rule: every job must request the filesystems it
+# uses (`-l filesystems=home:eagle`), and a queuejob hook HOLDS any job that does not — it sits in state H with the
+# site's comment, never runs, and nothing on the client side says why unless something reads the job record. The
+# plugin's pilot probe must report the hold WITH the comment (0.1.11) so the agent can add the directive through
+# `scheduler_options` rather than wait on a queue that will never move. `filesystems` is a real PBS host-level
+# string_array resource here (nodes offer home, eagle, grand), so a correct request is also SCHEDULED correctly.
+name = "polaris"
+description = "pbs + Polaris's filesystems rule: a queuejob hook holds jobs without -l filesystems=…"
+base = "pbs"
+
+[capabilities]
+site_rule = "filesystems"
+filesystems = ["home", "eagle", "grand"]

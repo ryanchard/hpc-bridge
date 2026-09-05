@@ -534,7 +534,7 @@ wheels = [
 
 [[package]]
 name = "hpc-bridge"
-version = "0.1.10"
+version = "0.1.11"
 source = { editable = "." }
 dependencies = [
     { name = "globus-compute-sdk" },
