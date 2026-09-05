@@ -35,6 +35,8 @@ DEFAULT_MODEL = "claude-opus-5"
 # A gated cell's Slurm block is not submitted until 115–196 s into the run (09-03 endpoint logs), so a node it
 # will take still reads `idle` for that long. Launches within this window count against the idle count.
 NODE_CLAIM_S = 300.0
+# On interrupt, how long a terminated cell gets to tear itself down before the suite cleans up after it.
+CELL_STOP_GRACE_S = 150.0
 # Knobs that must NOT leak from the operator's shell into every cell (a persisted HPCB_NO_SKILL ablated a
 # baseline cell; HPCB_EFFORT relabelled a whole matrix — review 2026-09-05). These prefixes are the exceptions.
 _CELL_ENV_KEEP_PREFIXES = ("HPCB_TEST_", "HPCB_POOL_", "HPCB_NODE_")
@@ -230,6 +232,20 @@ def _cell_env(user: str, runid: str) -> dict[str, str]:
     return env
 
 
+async def _terminate_and_wait(proc, grace_s: float) -> bool:
+    """SIGTERM the cell's `docker run` client (proxied into the jail) and wait up to `grace_s` for it to exit on its
+    own — True when it did (its teardown ran), False when it had to be left for _emergency_cleanup."""
+    try:
+        proc.terminate()
+    except ProcessLookupError:
+        return True
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=grace_s)
+        return True
+    except TimeoutError:
+        return False
+
+
 def _emergency_cleanup(inflight: dict[str, tuple[str, str]]) -> None:
     """Best-effort, run-scoped cleanup for cells this suite abandons (SIGINT, a crash): as each cell's pool user,
     stop+delete ITS endpoint by name and cancel ITS `uep.<eid>` blocks — the same commands run.py's teardown
@@ -296,9 +312,19 @@ async def _run_job(scenario, model, effort, persona, ablate, claims, sem, stagge
         )
         try:
             out, _ = await proc.communicate()
-        finally:
-            if inflight is not None:
-                inflight.pop(runid, None)  # the cell ran to its own teardown (or is being cleaned up by the caller)
+        except asyncio.CancelledError:
+            # The suite is being interrupted. Give the cell the chance to clean up after ITSELF: SIGTERM to the docker
+            # client is proxied into the jail, whose entrypoint forwards it to run.py, whose `finally` tears the
+            # endpoint + block down and writes the bundle (run_smoke.sh gives it --stop-timeout 120). Only a cell that
+            # does not finish in time stays on the cleanup list for _emergency_cleanup. (Live 2026-09-05: the list was
+            # emptied by this very cancellation before the cleanup ran, and the container ran on for 3 minutes.)
+            print(f"⏹ stop   {label} — terminating the cell so it tears itself down", flush=True)
+            finished = await _terminate_and_wait(proc, CELL_STOP_GRACE_S)
+            if finished and inflight is not None:
+                inflight.pop(runid, None)
+            raise
+        if inflight is not None:
+            inflight.pop(runid, None)  # the cell ran to its own teardown
         text = out.decode(errors="replace")
         ok = proc.returncode == 0
         if proc.returncode == 3:  # RATE_LIMITED (run.py) — stop launching new jobs
@@ -391,7 +417,10 @@ async def _main(args) -> int:
     try:
         results = await asyncio.gather(*[gated(s, m, e, pe, ab) for s, m, e, pe, ab in jobs])
     except (KeyboardInterrupt, asyncio.CancelledError):
-        print("\n⛔ interrupted — cleaning up the cells still in flight", flush=True)
+        # gather() cancels every cell task; each _run_job terminates its jail and waits for it to tear itself down
+        # (removing itself from `inflight` when it did). What is left is cleaned up from here, run-scoped.
+        print("\n⛔ interrupted — waiting for the running cells to tear themselves down, then cleaning up leftovers",
+              flush=True)
         _emergency_cleanup(inflight)
         raise
     finally:

@@ -29,6 +29,13 @@ child=$!
 trap 'kill -TERM "$child" 2>/dev/null' TERM INT
 rc=0
 wait "$child" || rc=$?
+# `wait` returns as soon as a trapped signal arrives (rc 143), BEFORE the child has finished: exiting here killed
+# the container — and run.py's teardown with it (live 2026-09-05: the block and endpoint were left behind, no
+# bundle). Wait again until the child has really exited; its own rc is the run's rc.
+while kill -0 "$child" 2>/dev/null; do
+  rc=0
+  wait "$child" || rc=$?
+done
 if [ -n "${HPCB_RUNS_DIR:-}" ] && [ -n "${HPCB_RUNID:-}" ]; then
   # `|| true` guards set -e/pipefail: when the bundle dir doesn't exist (provenance write
   # failed), a bare failing ls|head aborted the script HERE and replaced run.py's rc with
