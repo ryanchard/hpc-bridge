@@ -264,7 +264,7 @@ def test_reuse_signalled_accepts_the_post_78_intra_session_reconnect():
 
 def test_reuse_signalled_needs_the_field_not_a_notice_substring():
     r = _reuse_signalled()(_reuse_trace(reconnect_reused=False, notice="reused the already-online endpoint"))
-    assert not r.ok and "reused=False (want True" in r.detail
+    assert not r.ok and "NEITHER the reused field NOR the notice" in r.detail  # a generic "reuse" substring is not the #78 notice
 
 
 def test_reuse_signalled_needs_a_fresh_bringup_before_the_first_up_connect():
