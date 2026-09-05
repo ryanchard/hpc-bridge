@@ -223,3 +223,33 @@ def test_run_scenario_executes_hooks_and_records_them(runner):
                                         hook_runner=fake_hook))
     assert ran == ["kill_manager"]
     assert [(h["name"], h["call_index"], h.get("rc")) for h in r.hooks_fired] == [("kill_manager", 0, 0), ("never", None, None)]
+
+
+def test_postchecks_on_each_login_judge_raw_output_per_host(runner, monkeypatch):
+    # site profile 2026-09-05: an `expect_empty` check over two login nodes failed on its own host labels
+    # ("[login01.hpcb.test] \n[login02.hpcb.test]") although every node's real output was empty
+    sys.modules.pop("run", None)
+    import run as run_mod
+
+    monkeypatch.setenv("HPCB_TARGET_CAPS", '{"login_hosts": ["l1", "l2"]}')
+    calls = []
+
+    def fake_ssh(cmd, *, timeout=60, host=None):
+        calls.append(host)
+        return 0, {"l1": "", "l2": ""}.get(host, "parsl.block-1\n") if host else "parsl.block-1\n"
+
+    monkeypatch.setattr(run_mod, "_ssh_run", fake_ssh)
+
+    class Scen:
+        POSTCHECKS: ClassVar[list] = [{"name": "no_proc", "on": "each_login", "cmd": "pgrep x || true", "expect_empty": True}]
+
+    res = {r.name: r for r in run_mod._postchecks(Scen)}
+    assert calls[:2] == ["l1", "l2"] and res["world:no_proc"].ok, res["world:no_proc"].detail
+    assert not res["world:stop_honesty_no_pilot_left"].ok  # the universal check ran on the default host and found a pilot
+
+    def leaky(cmd, *, timeout=60, host=None):
+        return 0, "12345 globus-compute-endpoint\n" if host == "l2" else ""
+
+    monkeypatch.setattr(run_mod, "_ssh_run", leaky)
+    r = {r.name: r for r in run_mod._postchecks(Scen)}["world:no_proc"]
+    assert not r.ok and "[l2] 12345" in r.detail  # the leaking node is named

@@ -7,6 +7,8 @@
 #   HPCB_FAKE_KEY=~/.ssh/other …/up.sh       # a different (host-side) test key path
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck disable=SC1091
+source "$HERE/bin/compose_files.sh" "$@"       # --profile <name> | HPCB_FAKE_PROFILE (default: default)
 KEY="${HPCB_FAKE_KEY:-$HOME/.ssh/hpcb-fake}"
 
 if [ ! -f "$KEY" ]; then
@@ -17,5 +19,6 @@ fi
 export HPCB_FAKE_KEY_PUB="$KEY.pub"   # compose bind-mounts this into the login node
 
 cd "$HERE"
-docker compose up -d --build
-exec "$HERE/bin/wait-for-cluster.sh"
+echo "fake cluster: profile '$PROFILE' ($PROFILE_NODES compute nodes; login: $PROFILE_LOGIN_HOSTS)"
+"${COMPOSE[@]}" up -d --build --remove-orphans
+exec "$HERE/bin/wait-for-cluster.sh" --profile "$PROFILE"

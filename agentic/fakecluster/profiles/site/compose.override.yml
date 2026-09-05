@@ -1,0 +1,53 @@
+# `site` profile overlay (docker compose -f docker-compose.yml -f profiles/site/compose.override.yml):
+# a third compute node, a second network (eth1 on every node), and TWO login nodes behind the round-robin
+# name `login` (login01.hpcb.test on host port 2222, login02.hpcb.test on 2223). Both share /home and the
+# image's host keys — like a real site's login pool — so the endpoint's pin to one node is checkable.
+services:
+  c1:
+    networks: [default, data]
+  c2:
+    networks: [default, data]
+  c3:
+    build: .
+    image: hpcb-fake:latest
+    platform: linux/arm64
+    hostname: c3
+    command: [slurmd]
+    environment:
+      SLURM_DB_PASS: ${SLURM_DB_PASS:-slurm-local-dev}
+    depends_on: [slurmctld]
+    volumes:
+      - munge:/etc/munge
+      - home:/home
+      - ${HPCB_FAKE_PROFILE_DIR:-./profiles/default}:/etc/hpcb/profile:ro
+    networks: [default, data]
+    restart: unless-stopped
+  login:
+    hostname: login01.hpcb.test
+    networks:
+      default:
+        aliases: [login, login01, login01.hpcb.test]
+      data: {}
+  login02:
+    build: .
+    image: hpcb-fake:latest
+    platform: linux/arm64
+    hostname: login02.hpcb.test
+    command: [login]
+    environment:
+      SLURM_DB_PASS: ${SLURM_DB_PASS:-slurm-local-dev}
+    depends_on: [slurmctld]
+    ports:
+      - "${HPCB_FAKE_SSH_PORT2:-2223}:22"
+    volumes:
+      - munge:/etc/munge
+      - home:/home
+      - ${HPCB_FAKE_KEY_PUB:-~/.ssh/hpcb-fake.pub}:/run/hpcb/authorized_keys:ro
+      - ${HPCB_FAKE_PROFILE_DIR:-./profiles/default}:/etc/hpcb/profile:ro
+    networks:
+      default:
+        aliases: [login, login02, login02.hpcb.test]
+      data: {}
+    restart: unless-stopped
+networks:
+  data: {}

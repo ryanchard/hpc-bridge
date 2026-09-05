@@ -1,0 +1,25 @@
+# A site-like Slurm: three compute nodes; debug / compute / gpu partitions with QOS walltime caps; accounting
+# ENFORCED (a wrong account is rejected; the gpu partition takes only hpcb-gpu); a job_submit rule that rejects a
+# gpu job without a GPU request (Delta's shape); a fake `mybalance` on PATH (Anvil's format, so discovery finds an
+# allocation tool and the parser gets an end-to-end path); two NICs (eth0/eth1 — the interface pick is a real
+# decision); and TWO login nodes behind the round-robin name `login` (login01.hpcb.test / login02.hpcb.test share
+# host keys like a real site does), so the endpoint lands on one and later control-plane SSH must reach THAT one
+# (the login-node pin, the class behind this week's Expanse bugs).
+name = "site"
+description = "site-like Slurm — 3 nodes, debug/compute/gpu, QOS caps, enforced accounting, fake mybalance, 2 NICs, 2 login nodes (round-robin)"
+
+[capabilities]
+scheduler = "slurm"
+nodes = 3
+login_nodes = 2
+login_hosts = ["login01.hpcb.test", "login02.hpcb.test"]
+partitions = ["debug", "compute", "gpu"]
+default_partition = "compute"
+accounting = "enforce"
+accounts = ["hpcb", "hpcb-gpu"]
+balance_tool = "mybalance"
+nics = 2
+qos = ["normal", "debug"]
+gres = "gpu"
+module_system = "none"
+mfa = "none"

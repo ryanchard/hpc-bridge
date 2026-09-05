@@ -29,7 +29,9 @@ RUN mkdir -p /var/spool/slurmctld /var/spool/slurmd /var/log/slurm \
     && chown slurm:slurm /var/spool/slurmctld /var/log/slurm \
     && chown -R munge:munge /etc/munge /run/munge /var/log/munge /var/lib/munge
 
-COPY slurm/slurm.conf slurm/cgroup.conf /etc/slurm/
+# cgroup.conf is common to every profile; slurm.conf (+ gres.conf, job_submit.lua) come from the mounted PROFILE
+# (/etc/hpcb/profile, applied by the entrypoint) so one image serves every cluster shape.
+COPY slurm/cgroup.conf /etc/slurm/
 COPY slurm/slurmdbd.conf.tmpl /etc/slurm/slurmdbd.conf.tmpl
 COPY sshd_config /etc/ssh/sshd_config.d/00-hpcb-fake.conf
 # Host keys baked at build time — throwaway (the recommended ssh alias disables known_hosts pinning).

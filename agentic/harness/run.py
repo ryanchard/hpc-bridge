@@ -106,14 +106,26 @@ async def _run_chain(phase_prompts, scen, *, model, effort, persona, user_goal, 
     return _combine(results)
 
 
-def _ssh_run(remote: str, *, timeout: int = 60) -> tuple[int, str]:
+def _capabilities() -> dict:
+    """The target cluster's capabilities (HPCB_TARGET_CAPS, JSON from targets.py via run_smoke.sh)."""
+    try:
+        return json.loads(os.environ.get("HPCB_TARGET_CAPS") or "{}")
+    except json.JSONDecodeError:
+        return {}
+
+
+def _ssh_run(remote: str, *, timeout: int = 60, host: str | None = None) -> tuple[int, str]:
     """Run one command on the cluster as the scenario's test user (creds from env — the same
-    scoped identity the agent uses). The harness' world channel: SETUP, POSTCHECKS, teardown."""
+    scoped identity the agent uses). The harness' world channel: SETUP, POSTCHECKS, teardown.
+    `host` overrides the login host — a postcheck can target a SPECIFIC login node of a round-robin pool."""
     user = os.environ.get("HPC_BRIDGE_SSH_USER", "hpcbridge-test")
-    host = os.environ.get("HPC_BRIDGE_SSH_HOST", "globus1.cs.uchicago.edu")
+    host = host or os.environ.get("HPC_BRIDGE_SSH_HOST", "globus1.cs.uchicago.edu")
     key = os.environ.get("HPC_BRIDGE_SSH_KEY", "")
     cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20",
-           "-o", "StrictHostKeyChecking=accept-new"]
+           # LogLevel=ERROR so the ssh client's "Warning: Permanently added <host> to known hosts" does not land in
+           # the command output — an `expect_empty` postcheck counted that warning as content (site profile, the
+           # round-robin login pool whose per-node keys are new; 2026-09-05). Real errors still come through.
+           "-o", "StrictHostKeyChecking=accept-new", "-o", "LogLevel=ERROR"]
     if key:
         cmd += ["-i", key, "-o", "IdentitiesOnly=yes"]
     cmd += [f"{user}@{host}", remote]
@@ -202,8 +214,18 @@ def _postchecks(scen) -> list[Result]:
     behind. Declarative: run cmd over SSH, then substring expectations on the output."""
     results = []
     universal = _universal_postchecks(getattr(scen, "SCHEDULER", "slurm"))
+    login_hosts = list(_capabilities().get("login_hosts") or []) or [os.environ.get("HPC_BRIDGE_SSH_HOST", "")]
     for pc in list(getattr(scen, "POSTCHECKS", [])) + universal:
-        rc, out = _ssh_run(pc["cmd"], timeout=pc.get("timeout", 60))
+        # "on": "each_login" runs the check on EVERY login node (a round-robin pool: a manager process left on the
+        # node the alias did not pick is exactly the leak a pin bug produces) and joins the outputs
+        hosts = login_hosts if pc.get("on") == "each_login" else [None]
+        rc, raw, shown = 0, [], []
+        for h in hosts:
+            rc_h, out_h = _ssh_run(pc["cmd"], timeout=pc.get("timeout", 60), host=h)
+            rc = rc or rc_h
+            raw.append(out_h)                                       # what the expectations are judged on
+            shown.append(f"[{h}] {out_h.strip()}" if h else out_h.strip())  # what the detail shows
+        out = "\n".join(raw)
         ok, why = True, []
         if not pc.get("allow_nonzero_rc") and rc != 0:
             # rc=255 is ssh itself failing (host down, sshd refused): the world could not be checked at
@@ -215,10 +237,10 @@ def _postchecks(scen) -> list[Result]:
         if "expect_absent" in pc and pc["expect_absent"] in out:
             ok = False
             why.append(f"found {pc['expect_absent']!r}")
-        if "expect_empty" in pc and out.strip():
+        if "expect_empty" in pc and any(o.strip() for o in raw):   # per host: the host labels are not output
             ok = False
             why.append("output not empty")
-        detail = "ok" if ok else f"{'; '.join(why)} — output: {out.strip()[:200]!r}"
+        detail = "ok" if ok else f"{'; '.join(why)} — output: {' | '.join(shown)[:200]!r}"
         results.append(Result(f"world:{pc['name']}", ok, detail))
     return results
 
@@ -381,6 +403,9 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
         "midrun_hooks": [{k: v for k, v in h.items() if k != "cmd"} | {"cmd": str(h.get("cmd", ""))[:200]}
                          for h in (getattr(scen, "MIDRUN_HOOKS", None) or [])],
         "targets": list(getattr(scen, "TARGETS", []) or []),
+        "requires": dict(getattr(scen, "REQUIRES", {}) or {}),
+        "profile": os.environ.get("HPCB_FAKE_PROFILE") or None,
+        "capabilities": _capabilities(),
         # Code provenance (review 2026-09-05, 2.3): `build` pins what this image was built from; `git_sha` is the
         # host's HEAD when the cell was LAUNCHED (kept as `host_head` too, so drift between the two is visible).
         "build": _build_info(),

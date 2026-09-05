@@ -96,7 +96,15 @@ def _knobs(scenario: str) -> dict[str, str]:
                              capture_output=True, text=True, timeout=30).stdout
     except Exception:  # noqa: BLE001 - unknown scenario / import error: run.py reports it; no knobs
         return {}
-    return dict(ln.split("=", 1) for ln in out.splitlines() if "=" in ln)
+    import shlex
+    knobs = {}
+    for ln in out.splitlines():
+        if "=" not in ln:
+            continue
+        k, v = ln.split("=", 1)
+        # scenario_knobs.py shell-quotes values for run_smoke.sh's `eval`; here we read them as data
+        knobs[k] = shlex.split(v)[0] if v and v[0] in "'\"" else v
+    return knobs
 
 
 def _is_serial(scenario: str) -> bool:
@@ -118,6 +126,13 @@ def _needs_nodes(scenario: str) -> int:
         return int(_knobs(scenario).get("HPCB_KNOB_NEEDS_NODE", "0") or 0)
     except ValueError:
         return 0
+
+
+def _requires(scenario: str) -> dict:
+    """REQUIRES: the cluster capabilities a scenario needs (matched against the target's — targets.meets)."""
+    import json
+    raw = _knobs(scenario).get("HPCB_KNOB_REQUIRES")
+    return json.loads(raw) if raw else {}
 
 
 def _allowed_targets(scenario: str) -> set[str] | None:
@@ -143,14 +158,14 @@ def _probe_ssh(remote: str) -> str | None:
 
 
 def _idle_nodes() -> int | None:
-    """Nodes on the partition (HPCB_NODE_PARTITION, default `main`) whose short state is EXACTLY `idle`. None =
+    """Nodes on the target's default partition (HPCB_NODE_PARTITION overrides) whose short state is EXACTLY `idle`. None =
     the probe failed or answered something unparseable (a misnamed partition) — "unknown", never 0.
 
     Per-node `%t`, not `sinfo -t idle -o %D`: Slurm's `-t idle` filter matches the base state, so a DRAINED node
     (`drain` = idle+drained, unusable) counted as idle — live 2026-09-05 the gate launched a block cell onto a
     cluster whose only "idle" node was globus2, drained with "Duplicate jobid"; the block PENDed and the cell
     failed `compute_ran`. `idle*` (not responding), `drain`, `drng`, `down`, `mix`, `alloc` are all not idle."""
-    part = os.environ.get("HPCB_NODE_PARTITION", "main")
+    part = os.environ.get("HPCB_NODE_PARTITION") or str(_TARGET.capabilities.get("default_partition") or "main")
     out = _probe_ssh(f"sinfo -h -p {part} -N -o %t")
     if out is None:
         return None
@@ -349,16 +364,17 @@ async def _run_job(scenario, model, effort, persona, ablate, claims, sem, stagge
         sem.release()
 
 
-async def _fake_cluster_up(reset: bool) -> bool:
-    """Bring the fake cluster up (build if needed, wait until schedulable + sshd answers) before the first cell;
-    `reset` wipes it first — a wiped cluster has no stale endpoints, worker dirs or processes, so no pool sweeps."""
+async def _fake_cluster_up(reset: bool, profile: str) -> bool:
+    """Bring the fake cluster up on `profile` (build if needed, wait until schedulable + sshd answers) before the
+    first cell; `reset` wipes it first — a wiped cluster has no stale endpoints, worker dirs or processes, so no
+    pool sweeps. Switching profiles needs a reset (the compose overlay changes)."""
     if reset:
-        print("fake cluster: wiping (down.sh --wipe)…", flush=True)
-        r = await asyncio.create_subprocess_exec(str(FAKE_BIN / "down.sh"), "--wipe")
+        print(f"fake cluster: wiping (down.sh --wipe --profile {profile})…", flush=True)
+        r = await asyncio.create_subprocess_exec(str(FAKE_BIN / "down.sh"), "--wipe", "--profile", profile)
         await r.wait()
-    print("fake cluster: up.sh (build if needed, then wait until schedulable)…", flush=True)
-    proc = await asyncio.create_subprocess_exec(str(FAKE_BIN / "up.sh"), stdout=asyncio.subprocess.PIPE,
-                                                stderr=asyncio.subprocess.STDOUT)
+    print(f"fake cluster: up.sh --profile {profile} (build if needed, then wait until schedulable)…", flush=True)
+    proc = await asyncio.create_subprocess_exec(str(FAKE_BIN / "up.sh"), "--profile", profile,
+                                                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
     out, _ = await proc.communicate()
     tail = out.decode(errors="replace").strip().splitlines()[-3:]
     print("fake cluster: " + " | ".join(ln.strip() for ln in tail), flush=True)
@@ -368,12 +384,20 @@ async def _fake_cluster_up(reset: bool) -> bool:
 async def _main(args) -> int:
     global _TARGET
     os.environ["HPCB_TARGET"] = args.target  # every cell, knob probe and helper reads the same target
+    if args.target == "fake":
+        os.environ["HPCB_FAKE_PROFILE"] = args.profile
     _TARGET = targets.get(args.target)
     scenarios = [s.strip() for s in args.scenarios.split(",") if s.strip()]
     for s in list(scenarios):
         allowed = _allowed_targets(s)
         if allowed is not None and _TARGET.name not in allowed:
             print(f"⏭ skip   {s}: declares TARGETS={sorted(allowed)} — not runnable on --target {_TARGET.name}", flush=True)
+            scenarios.remove(s)
+            continue
+        ok, why = targets.meets(_requires(s), _TARGET.capabilities)
+        if not ok:
+            print(f"⏭ skip   {s}: REQUIRES {why} — not met by {_TARGET.name}"
+                  f"{' profile ' + _TARGET.profile if _TARGET.profile else ''}", flush=True)
             scenarios.remove(s)
     if not scenarios:
         print("nothing to run on this target", flush=True)
@@ -388,11 +412,11 @@ async def _main(args) -> int:
     print(f"suite: {len(jobs)} jobs "
           f"({len(scenarios)} scenario × {len(models)} model × {len(efforts)} effort × "
           f"{len(personas)} persona × {len(ablations)} ablation × {args.repeat}) | "
-          f"≤{slots} parallel | {args.stagger}s stagger | target {_TARGET.name} ({_TARGET.ssh_host}, "
-          f"{_TARGET.nodes} nodes)",
+          f"≤{slots} parallel | {args.stagger}s stagger | target {_TARGET.name}"
+          f"{' profile ' + _TARGET.profile if _TARGET.profile else ''} ({_TARGET.ssh_host}, {_TARGET.nodes} nodes)",
           flush=True)
 
-    if _TARGET.name == "fake" and not args.no_cluster_up and not await _fake_cluster_up(args.reset_cluster):
+    if _TARGET.name == "fake" and not args.no_cluster_up and not await _fake_cluster_up(args.reset_cluster, args.profile):
         print("fake cluster did not come up — see agentic/fakecluster/README.md", file=sys.stderr)
         return 2
     if not args.no_build and not await _build_once():
@@ -509,6 +533,8 @@ def main() -> None:
     ap.add_argument("--no-build", action="store_true", help="skip the one-time image build")
     ap.add_argument("--target", default=os.environ.get("HPCB_TARGET", targets.DEFAULT_TARGET), choices=["globus1", "fake"],
                     help="the cluster to run against: globus1 (the lab cluster) or fake (agentic/fakecluster, local compose Slurm)")
+    ap.add_argument("--profile", default=os.environ.get("HPCB_FAKE_PROFILE", "default"),
+                    help="fake: the cluster profile (agentic/fakecluster/profiles/<name>) — default | site | …")
     ap.add_argument("--no-cluster-up", action="store_true", help="fake: do not run fakecluster/bin/up.sh first")
     ap.add_argument("--reset-cluster", action="store_true", help="fake: wipe the cluster (down.sh --wipe) before up")
     ap.add_argument("--node-wait-s", type=int, default=3600,

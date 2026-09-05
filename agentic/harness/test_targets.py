@@ -57,3 +57,33 @@ def test_every_ssh_scenario_names_the_login_host_by_token():
         mod = importlib.import_module(p.stem)
         texts = [getattr(mod, "PROMPT", ""), getattr(mod, "USER_GOAL", ""), *(getattr(mod, "PHASES", []) or [])]
         assert not any("globus1.cs.uchicago.edu" in t for t in texts), p.stem
+
+
+def test_fake_profiles_load_and_requires_match(monkeypatch):
+    monkeypatch.setenv("HPCB_FAKE_PROFILE", "site")
+    t = targets.get("fake")
+    assert t.profile == "site" and t.nodes == 3 and t.capabilities["login_nodes"] == 2
+    assert t.capabilities["accounting"] == "enforce" and "gpu" in t.capabilities["partitions"]
+    assert t.capabilities["login_hosts"] == ["login01.hpcb.test", "login02.hpcb.test"]
+    monkeypatch.setenv("HPCB_FAKE_PROFILE", "default")
+    d = targets.get("fake")
+    assert d.nodes == 2 and d.capabilities["login_nodes"] == 1 and d.capabilities["balance_tool"] == "none"
+    # REQUIRES vocabulary against capabilities
+    assert targets.meets({"login_nodes": 2}, t.capabilities) == (True, "")
+    ok, why = targets.meets({"login_nodes": 2}, d.capabilities)
+    assert not ok and "login_nodes" in why
+    assert targets.meets({"scheduler": "slurm", "min_nodes": 3, "accounting": "enforce", "min_partitions": 3}, t.capabilities)[0]
+    assert not targets.meets({"min_nodes": 4}, t.capabilities)[0]
+    assert not targets.meets({"scheduler": "pbs"}, targets.GLOBUS1_CAPABILITIES)[0]
+    assert targets.meets(None, d.capabilities)[0] and targets.meets({}, d.capabilities)[0]
+    with pytest.raises(SystemExit):
+        targets.load_profile("no-such-profile")
+    r = subprocess.run([sys.executable, str(HERE / "targets.py"), "fake"], capture_output=True, text=True, timeout=30,
+                       env={**__import__("os").environ, "HPCB_FAKE_PROFILE": "site"})
+    assert "HPCB_T_PROFILE=site" in r.stdout and '"login_nodes":2' in r.stdout
+
+
+def test_login_pin_scenario_requires_two_login_nodes():
+    r = subprocess.run([sys.executable, str(HERE / "scenario_knobs.py"), "login_pin_teardown"], capture_output=True, text=True, timeout=60)
+    kv = dict(ln.split("=", 1) for ln in r.stdout.splitlines() if "=" in ln)
+    assert kv.get("HPCB_KNOB_TARGETS") == "fake" and '"login_nodes": 2' in kv.get("HPCB_KNOB_REQUIRES", "")

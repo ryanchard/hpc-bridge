@@ -1,0 +1,19 @@
+# The spike's cluster: two compute nodes, one partition, no accounting enforcement, one login node, one NIC.
+name = "default"
+description = "two compute nodes, one partition (main), no enforcement, one login node — the spike's cluster"
+
+[capabilities]
+scheduler = "slurm"
+nodes = 2
+login_nodes = 1
+login_hosts = ["login"]          # as the jail reaches them (compose service/alias names)
+partitions = ["main"]
+default_partition = "main"
+accounting = "none"              # none | enforce  (enforce: wrong account rejected, QOS walltime caps)
+accounts = ["hpcb"]
+balance_tool = "none"            # none | mybalance
+nics = 1
+qos = []
+gres = "none"                    # none | gpu
+module_system = "none"
+mfa = "none"

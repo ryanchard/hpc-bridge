@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # Tear the fake cluster down. Default keeps the volumes (homes, accounting DB, munge key) so the
-# next `up.sh` is a warm restart; `--wipe` also removes them (a truly fresh cluster).
+# next `up.sh` is a warm restart; `--wipe` also removes them (a truly fresh cluster — no stale endpoints, worker
+# dirs or processes under any pool user). `--profile <name>` selects the overlay so its extra services come down too
+# (`--remove-orphans` catches a switch between profiles).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck disable=SC1091
+source "$HERE/bin/compose_files.sh" "$@"
 cd "$HERE"
-if [ "${1:-}" = "--wipe" ]; then
-  docker compose down -v --remove-orphans
+if [ "${ARGS_LEFT[0]:-}" = "--wipe" ]; then
+  "${COMPOSE[@]}" down -v --remove-orphans
 else
-  docker compose down --remove-orphans
+  "${COMPOSE[@]}" down --remove-orphans
 fi
