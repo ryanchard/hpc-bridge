@@ -53,6 +53,8 @@ def main(argv: list[str]) -> int:
     warm = getattr(mod, "WARM_BLOCK_USER", None)
     if warm:
         print(f"HPCB_KNOB_WARM_BLOCK_USER={shlex.quote(str(warm))}")
+    if getattr(mod, "TRUST_HOST_KEY", True) is False:
+        print("HPCB_KNOB_COLD_HOST_KEY=1")  # informational: this cell starts with an EMPTY known_hosts
     return 0
 
 

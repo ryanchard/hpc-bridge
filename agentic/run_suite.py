@@ -133,17 +133,21 @@ def _probe_ssh(remote: str) -> str | None:
 
 
 def _idle_nodes() -> int | None:
-    """Idle nodes on the cluster partition (HPCB_NODE_PARTITION, default `main`). None = the probe failed OR
-    answered something that is not a count (a misnamed partition, stdout noise) — both read as "unknown", never
-    as 0 (which used to make the gate wait an hour for nothing and then SKIP the cell as "0 idle")."""
+    """Nodes on the partition (HPCB_NODE_PARTITION, default `main`) whose short state is EXACTLY `idle`. None =
+    the probe failed or answered something unparseable (a misnamed partition) — "unknown", never 0.
+
+    Per-node `%t`, not `sinfo -t idle -o %D`: Slurm's `-t idle` filter matches the base state, so a DRAINED node
+    (`drain` = idle+drained, unusable) counted as idle — live 2026-09-05 the gate launched a block cell onto a
+    cluster whose only "idle" node was globus2, drained with "Duplicate jobid"; the block PENDed and the cell
+    failed `compute_ran`. `idle*` (not responding), `drain`, `drng`, `down`, `mix`, `alloc` are all not idle."""
     part = os.environ.get("HPCB_NODE_PARTITION", "main")
-    out = _probe_ssh(f"sinfo -h -p {part} -t idle -o %D")
+    out = _probe_ssh(f"sinfo -h -p {part} -N -o %t")
     if out is None:
         return None
-    out = out.strip()
-    if not out:
-        return 0  # sinfo prints nothing when no node is in the state
-    return int(out) if out.isdigit() else None
+    states = [ln.strip() for ln in out.splitlines() if ln.strip()]
+    if any(" " in st or not st.replace("*", "").replace("~", "").replace("#", "").isalpha() for st in states):
+        return None  # not a state column (an error message came back on stdout)
+    return sum(1 for st in states if st == "idle")
 
 
 def _warm_block_running(user: str) -> bool | None:

@@ -124,14 +124,28 @@ def test_gate_gives_up_after_max_wait_and_launches_unguarded_on_probe_failure():
     asyncio.run(go2())
 
 
-def test_idle_probe_treats_a_non_count_as_unknown_not_zero(monkeypatch):
+def test_idle_probe_counts_only_exactly_idle_nodes(monkeypatch):
     mod = _run_suite()
+    # the live 2026-09-05 cluster: globus1 allocated, globus2 DRAINED ("Duplicate jobid"), globus3 mixed -> ZERO
+    # usable nodes; `sinfo -t idle -o %D` said 1 (drain = idle+drained) and a block cell launched onto nothing
+    monkeypatch.setattr(mod, "_probe_ssh", lambda remote: "alloc\ndrain\nmix\n")
+    assert mod._idle_nodes() == 0
+    monkeypatch.setattr(mod, "_probe_ssh", lambda remote: "idle\nidle*\ndrng\nidle\n")  # idle* = not responding
+    assert mod._idle_nodes() == 2
     monkeypatch.setattr(mod, "_probe_ssh", lambda remote: "sinfo: error: Invalid partition name")
-    assert mod._idle_nodes() is None  # was 0 -> an hour of waiting then a "0 idle" SKIP
+    assert mod._idle_nodes() is None  # unknown, never 0
     monkeypatch.setattr(mod, "_probe_ssh", lambda remote: "")
     assert mod._idle_nodes() == 0
-    monkeypatch.setattr(mod, "_probe_ssh", lambda remote: "2\n")
-    assert mod._idle_nodes() == 2
+    monkeypatch.setattr(mod, "_probe_ssh", lambda remote: None)
+    assert mod._idle_nodes() is None
+
+
+def test_only_the_unknown_host_key_scenario_starts_with_a_cold_known_hosts():
+    # every other SSH scenario models a RETURNING user whose own ssh already trusts the cluster (run.py pre-trusts
+    # the key through the harness channel); the first block-tier run after #75 failed 5/5 on UNKNOWN HOST KEY
+    cold = {p.stem for p in (HERE.parent / "scenarios").glob("*.py")
+            if not p.stem.startswith("_") and _knobs(p.stem)[1].get("HPCB_KNOB_COLD_HOST_KEY") == "1"}
+    assert cold == {"unknown_host_key"}
 
 
 def test_cell_env_strips_stray_knobs_but_keeps_credentials(monkeypatch):
