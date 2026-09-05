@@ -39,11 +39,11 @@ def test_draining_restop_and_stop_while_running_graders():
     assert not dr.draining_seen(Trace([_stop("down")])).ok
     assert dr.MIDRUN_HOOKS[0]["when_input"] == {"shape": "compute"} and dr.MIDRUN_HOOKS[0]["nth"] == 2
     run = ToolCall.of("mcp__endpoint__run_shell", {"shape": "compute", "command": "python3 -c ..."}, {"phase": "running", "task_id": "t"})
-    named = ToolCall.of("mcp__endpoint__stop_endpoint", {}, {"status": "down", "notice": "block released; a task was still running and was drained"})
+    refused = ToolCall.of("mcp__endpoint__stop_endpoint", {}, {"status": "up", "notice": "can't stop yet: task(s) compute-1 are still running on the compute block"})
     silent = ToolCall.of("mcp__endpoint__stop_endpoint", {}, {"status": "down", "notice": "compute block released over AMQP (released 6)"})
-    assert sw.stop_names_live_task(Trace([run, named])).ok
-    assert not sw.stop_names_live_task(Trace([run, silent])).ok
-    assert "stop_names_live_task" not in sw.EXPECT_OK  # reported, not gated: it decides a product question
+    assert sw.stop_names_live_task(Trace([run, refused])).ok
+    assert not sw.stop_names_live_task(Trace([run, silent])).ok  # the 2026-09-05 shape: released under the task
+    assert "stop_names_live_task" in sw.EXPECT_OK  # gated now that the product refuses
 
 
 def test_chaos_scenarios_declare_fake_only_and_the_suite_honours_it():

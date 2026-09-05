@@ -1511,10 +1511,16 @@ async def test_stop_endpoint_drains_task_registry(monkeypatch):
         return ShellOutcome(phase="complete", exit_code=0, stdout="released\n", block_state="warm")
 
     monkeypatch.setattr(server, "_run_shell", fake_run_shell)
-    await _stop_endpoint(app)
-    assert "compute-1" not in app.tasks  # drained with the released block
-    ended = await _poll_task(app, "compute-1")
-    assert ended.phase == "failed" and "no task" in (ended.notice or "").lower()
+    # 2026-09-05 (fake-cluster chaos): a stop under a RUNNING task no longer drains it — releasing the block does not
+    # end the task, the endpoint relaunches a block for it. The stop REFUSES and the handle stays pollable.
+    res = await _stop_endpoint(app)
+    assert res.status == "up" and "compute-1" in app.tasks and "can't stop yet" in res.notice
+    # once the task has finished the stop proceeds; a FINISHED handle is kept (its result stays retrievable)
+    app.tasks["compute-1"].future.finish(_Res(0, "done", ""))
+    res = await _stop_endpoint(app)
+    assert res.status == "down" and "compute-1" in app.tasks
+    got = await _poll_task(app, "compute-1")
+    assert got.phase == "complete" and got.stdout == "done"
 
 
 async def test_second_command_on_busy_session_is_rejected():
@@ -1706,3 +1712,36 @@ async def test_poll_status_hiccup_does_not_orphan_a_live_task():
 async def _poll_task_for_test(app, task_id, wait=0.0):
     from hpc_bridge.server import _poll_task
     return await _poll_task(app, task_id, wait)
+
+
+async def test_ssh_stop_refuses_while_a_task_runs_and_keeps_its_handle(monkeypatch):
+    # Fake-cluster chaos run 2026-09-05 (stop_while_running): stop_endpoint under a RUNNING compute task answered
+    # "down, released 7" while the endpoint relaunched block-1 for the orphaned task and poll_task then said the
+    # task was gone. Releasing a block does not end the task it hosts. Refuse, like the facility-endpoint stop.
+    from concurrent.futures import Future
+
+    from hpc_bridge import server
+    from hpc_bridge.context import TaskHandle
+    from hpc_bridge.server import ShapeRuntime, _stop_endpoint
+
+    app = AppCtx(facility=FakeFacility(), profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
+    app.shapes["login"] = ShapeRuntime(user_endpoint_config={"provider_type": "LocalProvider"})
+    app.shapes["compute"] = ShapeRuntime(user_endpoint_config={"compute": True, "walltime": "00:30:00"},
+                                         runner=_FakeRunner("eid-1", _Res(0, "", "")))
+    app.tasks["compute-1"] = TaskHandle(future=Future(), shape="compute", session_id="default", command="sleep 180",
+                                        submitted_at=0.0, ceiling_s=1780.0)  # not done: still RUNNING
+
+    released = []
+
+    async def fake_release(a, eid, runner):
+        released.append(eid)
+        return True, "released 7"
+
+    monkeypatch.setattr(server.scheduler_ops, "_release_blocks_over_login", fake_release)
+    res = await _stop_endpoint(app)
+    assert res.status == "up" and res.block_state == "warm"
+    assert "can't stop yet" in res.notice and "compute-1" in res.notice and "poll_task" in res.notice and "teardown_endpoint" in res.notice
+    assert released == [] and "compute-1" in app.tasks and "compute" in app.shapes  # nothing released, handle kept
+    app.tasks["compute-1"].future.set_result(None)  # the task finished: the same stop now releases
+    res = await _stop_endpoint(app)
+    assert res.status == "down" and released == ["eid-1"]
