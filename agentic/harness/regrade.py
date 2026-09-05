@@ -21,8 +21,8 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 sys.path.insert(0, str(_HERE.parents[0] / "scenarios"))
 
-from invariants import check_all  # noqa: E402
-from trace_adapter import trace_from_bundle  # noqa: E402
+from invariants import FLOOR_NAMES, check_all, floor_graders  # noqa: E402
+from trace_adapter import insert_interjections, trace_from_bundle  # noqa: E402
 
 
 def regrade(runs_dir: Path, *, strict: bool = False) -> int:
@@ -40,9 +40,10 @@ def regrade(runs_dir: Path, *, strict: bool = False) -> int:
         old = {g["name"]: g["ok"] for g in rec.get("grading", [])
                if not g["name"].startswith("world:")}
 
-        t = trace_from_bundle(d)
-        results = check_all(t)
-        critical = {"agent_engaged"}
+        t = insert_interjections(trace_from_bundle(d), [e for e in rec.get("events") or [] if e.get("interject")])
+        # the floor replays too — without the jail's secret material (no_secret_material says so, vacuously)
+        results = check_all(t) + [fn(t) for fn in floor_graders(own_user=cfg.get("pool_user"))]
+        critical = {"agent_engaged", *FLOOR_NAMES}
         try:
             scen = importlib.import_module(scen_name)
             results += [fn(t) for fn in getattr(scen, "EXTRA_INVARIANTS", [])]
