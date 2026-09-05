@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Fake-cluster PROFILES with inheritance. A profile dir (profiles/<name>/) holds profile.toml, slurm.conf and
 optional gres.conf / job_submit.lua / compose.override.yml / setup.d/<role>[-<tag>].sh / other fixture dirs. A profile
+may name its BASE compose file (`compose = "docker-compose.pbs.yml"` — a different scheduler is a different stack) and
 may declare `base = "<other>"`: it then LAYERS on that profile — files merged (the derived profile's win),
 [capabilities] merged (derived keys win), every compose.override.yml in the chain passed to compose (base first), and
 setup.d scripts from every layer kept (the entrypoint sources setup.d/<role>.sh then setup.d/<role>-*.sh, sorted).
@@ -134,6 +135,8 @@ def main(argv: list[str]) -> int:
         print(f"PROFILE_LOGIN_HOSTS={shlex.quote(' '.join(map(str, caps.get('login_hosts', []))))}")
         print(f"PROFILE_CATALOG_CMD={shlex.quote(str((m.get('catalog') or {}).get('cmd') or ''))}")
         print(f"PROFILE_HARNESS_SSH_PORT={caps.get('harness_ssh_port', 22)}")
+        print(f"PROFILE_COMPOSE={shlex.quote(str(m.get('compose') or 'docker-compose.yml'))}")   # the stack's base compose file
+        print(f"PROFILE_SCHEDULER={shlex.quote(str(caps.get('scheduler', 'slurm')))}")
         print(f"PROFILE_TOTP_SECRET={shlex.quote(str((m.get('totp') or {}).get('secret') or ''))}")
         return 0
     print(__doc__, file=sys.stderr)

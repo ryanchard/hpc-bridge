@@ -1263,3 +1263,28 @@ async def test_teardown_credentials_wiped_is_measured():
     fac._seeded_credentials = True
     report = await fac.teardown("eid-1", wipe_credentials=True)
     assert report["credentials_wiped"] is False  # rm failed: never claim the token copy is gone
+
+
+def _render_pbs(account_default: str, **uec):
+    """The PBS template as the endpoint's manager renders it (Jinja over the client's user_endpoint_config), with the
+    plugin's json.dumps'd defaults substituted."""
+    import jinja2
+    import yaml
+
+    from hpc_bridge.facility import remote as rm
+    tpl = rm._PBS_TEMPLATE
+    for k, v in {"@@MAXW@@": "1", "@@IFACE@@": '"eth0"', "@@IDLE@@": "60.0", "@@PARTITION@@": '"debug"',
+                 "@@ACCOUNT@@": account_default, "@@WALLTIME@@": '"00:30:00"', "@@WORKER_INIT@@": '"true"',
+                 "@@EAGER@@": "0", "@@NODES@@": "1", "@@MAXBLK@@": "1"}.items():
+        tpl = tpl.replace(k, v)
+    return yaml.safe_load(jinja2.Template(tpl).render(uec))["engine"]["provider"]
+
+
+def test_pbs_template_omits_an_empty_account():
+    """parsl's PBSProProvider emits `-A <account>` for any non-None account; an empty string made qsub swallow the
+    script path as the account name (an empty STDIN job, exit 127 — fake OpenPBS 2026-09-06). No account ⇒ no key."""
+    assert "account" not in _render_pbs('""')                                   # no facility account
+    assert "account" not in _render_pbs('""', account='""')                     # the manager's sanitizer quotes "" as '""'
+    assert _render_pbs('"cis250223"')["account"] == "cis250223"                # the facility default
+    assert _render_pbs('""', account='"proj"')["account"] == "proj"             # the agent's choice
+    assert _render_pbs('"cis250223"')["queue"] == "debug"

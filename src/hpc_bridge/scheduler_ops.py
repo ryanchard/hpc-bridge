@@ -87,7 +87,9 @@ def _pilot_status_cmd(scheduler: str, eid: str) -> str:
         # line continuations, split on records, and for records carrying the marker print the
         # job_state letter (R/Q/H) + the job id.
         return (
-            "qstat -f 2>/dev/null | sed ':a;N;$!ba;s/\\n\\t//g' "
+            # -x: finished jobs too — a pilot that RAN AND DIED (a broken worker_init, a missing module) is otherwise
+            # invisible and read as "never submitted"; the summary prefers a live state when both are present.
+            "qstat -x -f 2>/dev/null | sed ':a;N;$!ba;s/\\n\\t//g' "
             f"| awk -v m={shlex.quote(marker)} 'BEGIN{{RS=\"Job Id: \"}} index($0,m){{"
             's="?"; if (match($0,/job_state = [A-Za-z]/)) s=substr($0,RSTART+12,1); '
             "print s\" \"$1}'"
@@ -102,7 +104,7 @@ def _pilot_status_cmd(scheduler: str, eid: str) -> str:
 
 def _summarize_pilot(stdout: str, provisioning_elapsed_s: float) -> tuple[str, str]:
     """(category, notice-suffix) from `_pilot_status_cmd` output. category ∈ {starting, queued, held,
-    rejected}. A visible pilot (Q/R/H) is reported at once; a MISSING pilot is only called
+    rejected, finished}. A visible pilot (Q/R/H) is reported at once; a MISSING pilot is only called
     `rejected` once the block has been cold past `PROVISION_GRACE_S` — before that it's a normal
     cold-start gap (empty suffix ⇒ the caller leaves 'allocating nodes…' unchanged)."""
     rows = [ln.split() for ln in stdout.splitlines() if ln.strip()]
@@ -117,6 +119,13 @@ def _summarize_pilot(stdout: str, provisioning_elapsed_s: float) -> tuple[str, s
         )
     states = {r[0][:1].upper() for r in rows if r}
     jid = rows[0][1] if len(rows[0]) > 1 else "?"
+    if states <= {"F", "E", "X"}:  # every pilot this endpoint submitted has FINISHED/exited: it ran and its worker died
+        jid = rows[-1][1] if len(rows[-1]) > 1 else jid
+        return "finished", (
+            f"— pilot {jid} already FINISHED: the block started and its worker exited (a failed worker_init, "
+            "an environment the compute node lacks, a network the worker cannot reach). Not a queue wait: read "
+            "that job's stdout/stderr in the endpoint's submit_scripts directory (run_shell shape='login')."
+        )
     if "H" in states:
         return "held", (
             f"— pilot {jid} is HELD; a held job usually means a bad scheduler directive "

@@ -16,19 +16,34 @@ cd "$HERE"
 say() { echo "wait-for-cluster: $*"; }
 left() { echo $(( DEADLINE - $(date +%s) )); }
 
-say "waiting for $PROFILE_NODES idle compute nodes (profile $PROFILE)…"
-until [ "$("${COMPOSE[@]}" exec -T login sinfo -h -N -o '%N %t' 2>/dev/null | sort -u | grep -c ' idle$' | tr -d '[:space:]')" = "$PROFILE_NODES" ]; do
-  [ "$(left)" -gt 0 ] || { say "TIMEOUT — sinfo:"; "${COMPOSE[@]}" exec -T login sinfo -N -l || true; "${COMPOSE[@]}" logs --tail=30 slurmctld c1 c2; exit 1; }
-  sleep 2
-done
-say "nodes: $("${COMPOSE[@]}" exec -T login sinfo -h -N -o '%N:%t:%P' | tr '\n' ' ')"
+if [ "${PROFILE_SCHEDULER:-slurm}" = pbs ]; then
+  say "waiting for $PROFILE_NODES free PBS nodes (profile $PROFILE)…"
+  until [ "$("${COMPOSE[@]}" exec -T login bash -lc 'pbsnodes -a 2>/dev/null' | grep -c 'state = free' | tr -d '[:space:]')" = "$PROFILE_NODES" ]; do
+    [ "$(left)" -gt 0 ] || { say "TIMEOUT — pbsnodes:"; "${COMPOSE[@]}" exec -T login bash -lc 'pbsnodes -a' || true; "${COMPOSE[@]}" logs --tail=30 pbsserver c1 c2; exit 1; }
+    sleep 2
+  done
+  say "nodes: $("${COMPOSE[@]}" exec -T login bash -lc 'pbsnodes -a' | awk '/^[a-z]/{n=$1} /state = /{printf "%s:%s ", n, $3}')"
+  say "waiting for the queues (qstat -Q)…"
+  until "${COMPOSE[@]}" exec -T login bash -lc 'qstat -Q' >/dev/null 2>&1; do
+    [ "$(left)" -gt 0 ] || { say "TIMEOUT — pbsserver logs:"; "${COMPOSE[@]}" logs --tail=30 pbsserver; exit 1; }
+    sleep 2
+  done
+  say "queues: $("${COMPOSE[@]}" exec -T login bash -lc 'qstat -Q' | awk 'NR>2{printf "%s ", $1}')"
+else
+  say "waiting for $PROFILE_NODES idle compute nodes (profile $PROFILE)…"
+  until [ "$("${COMPOSE[@]}" exec -T login sinfo -h -N -o '%N %t' 2>/dev/null | sort -u | grep -c ' idle$' | tr -d '[:space:]')" = "$PROFILE_NODES" ]; do
+    [ "$(left)" -gt 0 ] || { say "TIMEOUT — sinfo:"; "${COMPOSE[@]}" exec -T login sinfo -N -l || true; "${COMPOSE[@]}" logs --tail=30 slurmctld c1 c2; exit 1; }
+    sleep 2
+  done
+  say "nodes: $("${COMPOSE[@]}" exec -T login sinfo -h -N -o '%N:%t:%P' | tr '\n' ' ')"
 
-say "waiting for accounting (sacct)…"
-until "${COMPOSE[@]}" exec -T login sacct -n -X >/dev/null 2>&1; do
-  [ "$(left)" -gt 0 ] || { say "TIMEOUT — slurmdbd logs:"; "${COMPOSE[@]}" logs --tail=30 slurmdbd; exit 1; }
-  sleep 2
-done
-say "sacct answers"
+  say "waiting for accounting (sacct)…"
+  until "${COMPOSE[@]}" exec -T login sacct -n -X >/dev/null 2>&1; do
+    [ "$(left)" -gt 0 ] || { say "TIMEOUT — slurmdbd logs:"; "${COMPOSE[@]}" logs --tail=30 slurmdbd; exit 1; }
+    sleep 2
+  done
+  say "sacct answers"
+fi
 
 say "waiting for sshd (port $PORT, user $USER_)…"
 SSH=(ssh -p "$PORT" -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=3

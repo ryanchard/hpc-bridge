@@ -1,0 +1,44 @@
+# hpc-bridge fake cluster — the PBS image (OpenPBS built from source: the project ships x86_64 packages only, and
+# Docker on Apple silicon runs linux/arm64). One image, three roles (entrypoint-pbs.sh): server | mom | login.
+# Same pool users / uids, sshd drop-in, uv and shared-/home contract as the Slurm image, so the harness is unchanged.
+# Ubuntu 22.04, not 24.04: OpenPBS 23.06 includes <eval.h>, which Python 3.12 removed — it builds against 22.04's 3.10.
+FROM ubuntu:22.04 AS build
+ENV DEBIAN_FRONTEND=noninteractive
+ARG OPENPBS_VERSION=23.06.06
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc g++ make autoconf automake libtool pkg-config git ca-certificates curl \
+        libhwloc-dev libx11-dev libxt-dev libedit-dev libical-dev ncurses-dev perl \
+        postgresql-server-dev-all postgresql-contrib python3-dev tcl-dev tk-dev swig \
+        libexpat-dev libssl-dev libxext-dev libxft-dev libcjson-dev \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+RUN curl -fsSL "https://github.com/openpbs/openpbs/archive/refs/tags/v${OPENPBS_VERSION}.tar.gz" | tar xz --strip-components=1 \
+    && ./autogen.sh && ./configure --prefix=/opt/pbs >/dev/null && make -j"$(nproc)" >/dev/null && make install >/dev/null
+
+FROM ubuntu:22.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libhwloc15 libical3 libedit2 libssl3 libexpat1 libx11-6 libxt6 libxext6 libxft2 libcjson1 tcl tk \
+        postgresql postgresql-contrib \
+        openssh-server openssh-client \
+        python3 python3-venv python3-dev build-essential \
+        curl ca-certificates git iproute2 iputils-ping procps less nano hostname sudo \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /opt/pbs /opt/pbs
+# pbs_postinstall: /etc/pbs.conf (rewritten per role at start), the init script, /etc/profile.d/pbs.sh (qsub/qstat on
+# every login shell's PATH — the plugin's discovery probe and the endpoint both run `bash -lc`), setuid pbs_iff.
+RUN /opt/pbs/libexec/pbs_postinstall >/dev/null && chmod 4755 /opt/pbs/sbin/pbs_iff /opt/pbs/sbin/pbs_rcp
+# The clients on the DEFAULT PATH too: a non-interactive `ssh host cmd` is not a login shell, so /etc/profile.d does
+# not apply — the endpoint the plugin starts over ssh must still find qsub/qstat/qdel (parsl's PBSProProvider).
+RUN for b in qsub qstat qdel qalter qhold qrls qselect qmgr pbsnodes pbs_rstat; do ln -s /opt/pbs/bin/$b /usr/local/bin/$b; done
+COPY --from=ghcr.io/astral-sh/uv:0.12.9 /uv /uvx /usr/local/bin/
+RUN mkdir -p /run/sshd
+COPY sshd_config /etc/ssh/sshd_config.d/00-hpcb-fake.conf
+RUN ssh-keygen -A
+# The same test-user pool as the Slurm image (fixed uids: the shared /home works across both stacks).
+RUN groupadd -g 2000 hpcb \
+    && useradd -M -u 1999 -g hpcb -s /bin/bash -p '*' hpcbridge-test \
+    && for i in $(seq -f "%02g" 0 9); do useradd -M -u 20$i -g hpcb -s /bin/bash -p '*' "hpcbridge-test-$i"; done
+COPY entrypoint-pbs.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

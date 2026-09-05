@@ -172,6 +172,16 @@ def _idle_nodes() -> int | None:
     (`drain` = idle+drained, unusable) counted as idle — live 2026-09-05 the gate launched a block cell onto a
     cluster whose only "idle" node was globus2, drained with "Duplicate jobid"; the block PENDed and the cell
     failed `compute_ran`. `idle*` (not responding), `drain`, `drng`, `down`, `mix`, `alloc` are all not idle."""
+    if str(_TARGET.capabilities.get("scheduler", "slurm")) == "pbs":
+        # PBS: a node is usable when pbsnodes reports `state = free` (offline/down/job-busy/job-exclusive are not);
+        # queues are not partitions, so the count is cluster-wide. `bash -lc`: /opt/pbs/bin is a login-shell PATH.
+        out = _probe_ssh("bash -lc 'pbsnodes -a 2>/dev/null' | awk '$1==\"state\"{print $3}'")
+        if out is None:
+            return None
+        states = [ln.strip() for ln in out.splitlines() if ln.strip()]
+        if any(not st.replace("-", "").isalpha() for st in states):
+            return None
+        return sum(1 for st in states if st == "free")
     part = os.environ.get("HPCB_NODE_PARTITION") or str(_TARGET.capabilities.get("default_partition") or "main")
     out = _probe_ssh(f"sinfo -h -p {part} -N -o %t")
     if out is None:

@@ -249,12 +249,18 @@ def _universal_postchecks(scheduler: str) -> list[dict]:
     return [{"name": "stop_honesty_no_pilot_left", "cmd": cmd, "expect_absent": "parsl"}]
 
 
+def _scheduler(scen) -> str:
+    """The cluster's scheduler for the world channel (squeue/scancel vs qstat/qdel): the TARGET's capability when the
+    harness knows it (fake profiles carry it), else the scenario's `SCHEDULER` (aurora_pbs_bringup), else slurm."""
+    return str(_capabilities().get("scheduler") or getattr(scen, "SCHEDULER", "slurm"))
+
+
 def _postchecks(scen) -> list[Result]:
     """World-state assertions, run AFTER the agent but BEFORE teardown — the ordering is the
     grading integrity: harness cleanup (scancel/delete) must never mask what the agent left
     behind. Declarative: run cmd over SSH, then substring expectations on the output."""
     results = []
-    universal = _universal_postchecks(getattr(scen, "SCHEDULER", "slurm"))
+    universal = _universal_postchecks(_scheduler(scen))
     login_hosts = list(_capabilities().get("login_hosts") or []) or [os.environ.get("HPC_BRIDGE_SSH_HOST", "")]
     for pc in list(getattr(scen, "POSTCHECKS", [])) + universal:
         # "on": "each_login" runs the check on EVERY login node (a round-robin pool: a manager process left on the
@@ -353,7 +359,7 @@ def _teardown(scen, res=None) -> str:
     if getattr(scen, "TEARDOWN", "delete") != "delete":
         print("teardown: KEEP — leaving endpoint(s) + jobs for the chain", file=sys.stderr, flush=True)
         return ""
-    scheduler = getattr(scen, "SCHEDULER", "slurm")
+    scheduler = _scheduler(scen)
     name = os.environ.get("HPC_BRIDGE_ENDPOINT_NAME", "").strip()
     eids = _run_endpoint_ids(res)
     if name:  # the registered uuid, from the endpoint's own endpoint.json (works even if the agent never saw it)
@@ -473,6 +479,7 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
         "admin_cleanup": list(getattr(scen, "ADMIN_CLEANUP", []) or []),
         "catalog_file": bool(os.environ.get("HPC_BRIDGE_CATALOG_FILE")),   # a per-cluster local catalog stood in for the registry
         "harness_ssh_port": os.environ.get("HPCB_HARNESS_SSH_PORT") or None,  # the world channel's sshd (MFA profiles)
+        "scheduler": _scheduler(scen),                                          # squeue/scancel vs qstat/qdel for the world channel
         "profile": os.environ.get("HPCB_FAKE_PROFILE") or None,
         "capabilities": _capabilities(),
         # Code provenance (review 2026-09-05, 2.3): `build` pins what this image was built from; `git_sha` is the

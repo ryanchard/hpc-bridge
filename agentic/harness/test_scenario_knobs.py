@@ -269,3 +269,18 @@ def test_admin_knobs_are_printed_and_gate_the_target():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     assert mod._needs_admin("submit_policy_rejected") and not mod._needs_admin("happy_path")
+
+
+def test_idle_probe_counts_free_pbs_nodes_on_a_pbs_target(monkeypatch):
+    spec = importlib.util.spec_from_file_location("run_suite", HERE.parent / "run_suite.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    import targets as tg
+    monkeypatch.setattr(mod, "_TARGET", tg.Target(name="fake", ssh_host="login", nodes=2, endpoint_prefix="x", default_key="k",
+                                                  docker_network=None, probe_argv=("true",), cleanup_host="localhost", cleanup_ssh_opts=(),
+                                                  profile="pbs", capabilities={"scheduler": "pbs", "default_partition": "workq"}))
+    seen = []
+    monkeypatch.setattr(mod, "_probe_ssh", lambda cmd: (seen.append(cmd), "free\njob-busy\nfree\noffline\n")[1])
+    assert mod._idle_nodes() == 2 and "pbsnodes" in seen[0] and "sinfo" not in seen[0]
+    monkeypatch.setattr(mod, "_probe_ssh", lambda cmd: "pbsnodes: Server has no node list\n")
+    assert mod._idle_nodes() is None   # an error message is not a state column

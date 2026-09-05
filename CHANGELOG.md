@@ -3,6 +3,21 @@
 All notable changes to hpc-bridge. The plugin version lives in `.claude-plugin/plugin.json` (Claude Code updates an
 installed plugin only when that version changes); git tags mark releases.
 
+## 0.1.9 — 2026-09-06 — PBS without an account; a pilot that died is not "never submitted"
+
+Both found on the new fake OpenPBS cluster, the first place the PBS path ran end to end (every PBS facility we had
+met before required an account).
+
+### Fixed
+- **A PBS facility with no account no longer breaks the block submit.** The submit template emitted `account: ""`,
+  and Parsl's PBS provider adds `-A <account>` for any non-None value — so `qsub` took the script path as the account
+  name and read an empty script from stdin: a job named STDIN that exited 127, no worker, and a tool that then said
+  the submission was "likely REJECTED". The account line is now emitted only when there is one.
+- **On PBS the pilot probe sees finished jobs (`qstat -x`) and names a pilot that ran and died** — "pilot N already
+  FINISHED: the block started and its worker exited … read that job's stdout/stderr in submit_scripts" — instead of
+  the misleading "NO pilot job … likely REJECTED". A live pilot beside an old finished one still reports the live
+  state. (Slurm's probe has the same blind spot; `sacct` would close it — follow-up.)
+
 ## 0.1.8 — 2026-09-05 — a local catalog for development and testing
 
 ### Added

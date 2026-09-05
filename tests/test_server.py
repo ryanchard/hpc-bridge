@@ -151,7 +151,7 @@ def test_pilot_status_cmd_and_summarize():
     # #32: the read-only pilot query is scheduler-specific and marker-scoped; the summary maps the
     # scheduler state to a category (a rejected pilot -> "no pilot in the scheduler").
     from hpc_bridge.server import _pilot_status_cmd, _summarize_pilot
-    assert "qstat -f" in _pilot_status_cmd("pbs", "E") and "uep.E" in _pilot_status_cmd("pbs", "E")
+    assert "qstat -x -f" in _pilot_status_cmd("pbs", "E") and "uep.E" in _pilot_status_cmd("pbs", "E")
     slurm_cmd = _pilot_status_cmd("slurm", "E")
     assert "squeue" in slurm_cmd and "uep.E" in slurm_cmd
     # awk filters the marker (exits 0 on no-match) — no `grep`, whose non-zero no-match exit could
@@ -1745,3 +1745,14 @@ async def test_ssh_stop_refuses_while_a_task_runs_and_keeps_its_handle(monkeypat
     app.tasks["compute-1"].future.set_result(None)  # the task finished: the same stop now releases
     res = await _stop_endpoint(app)
     assert res.status == "down" and released == ["eid-1"]
+
+
+def test_summarize_pilot_names_a_pilot_that_ran_and_died():
+    # PBS with -x lists finished jobs: every row F/E ⇒ the block ran and its worker exited — not "never submitted"
+    # (fake OpenPBS 2026-09-06: an empty-account submit became an empty STDIN job, exit 127, read as REJECTED).
+    from hpc_bridge.server import _summarize_pilot
+    cat, why = _summarize_pilot("F 1.pbsserver\n", 200)
+    assert cat == "finished" and "1.pbsserver" in why and "FINISHED" in why and "submit_scripts" in why
+    # a live pilot beside an old finished one: the live state wins
+    assert _summarize_pilot("F 1.pbsserver\nR 3.pbsserver\n", 200)[0] == "starting"
+    assert _summarize_pilot("F 1.pbsserver\nQ 3.pbsserver\n", 200)[0] == "queued"
