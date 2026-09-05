@@ -130,6 +130,7 @@ applied at container start, so switching shape is `down.sh --wipe && up.sh --pro
 | `mep` | `site` + a **facility multi-user endpoint** (Globus Compute MEP) run as root in login01 — TWO managers, `hpcb-mep-strict` (schema `additionalProperties:false`, no compute/interface/worker_init keys: Anvil's shape) and `hpcb-mep-open` (globus1's shape); the harness' test identity maps to the local account `hpcbmep`; a second identity is unmapped (NO ACCOUNT). Needs the MEP owner's Globus login (`HPCB_MEP_GLOBUS_DB`, defaults to `HPCB_TEST_GLOBUS_DB` from `agentic/.env`) and installs `globus-compute-endpoint==<the plugin's SDK version>` at first boot (~1–2 min; the managed python lives under `/opt/uv-python` so the mapped user can exec it — uv's default `/root/.local` store made the user endpoint die with EX_NOPERM); `HPCB_MEP_EMAIL` (REQUIRED, a real address — it is registered with Globus as the managers' contact; without it the managers are not started) | the zero-SSH path: attach, identity mapping, the strict template contract, draining-only stop, NO ACCOUNT |
 | `totp` | `site` whose login sshd demands the key **and a one-time code** (PAM google-authenticator, `AuthenticationMethods publickey,keyboard-interactive:pam`) — the Expanse/TACC shape. Every pool user is enrolled with ONE shared secret (generated on first use into the gitignored `agentic/fakecluster/.totp-secret` — `[totp] secret_file`; the sshd is local-only) that the harness' human-sim also holds, so it answers the agent's code request like a person reading their phone. A second, key-only sshd on **:2200** is the harness' world channel (the published host ports map there; `HPCB_HARNESS_SSH_PORT` inside the jail) | the in-session one-time-code handoff: `needs_preauth` → `complete_preauth` → the master; never a password |
 | `pbs` | an **OpenPBS** cluster on its own image and compose stack (`Dockerfile.pbs` builds OpenPBS 23.06 from source for arm64 on Ubuntu 22.04; `docker-compose.pbs.yml`: `pbsserver` + moms `c1`,`c2` + `login`). Queues `workq` (default, 48 h) and `debug` (30-min cap); no allocation enforcement; nodes report `ncpus=4`; jobs get a real PATH (`pbs_environment` — OpenPBS's default `/bin:/usr/bin` hid `uv` from the plugin's worker_init and the pilot exited 127). The harness' world channel switches to `qstat`/`qdel` and the node gate to `pbsnodes` from the profile's `scheduler` capability | the plugin's PBS path end to end — `qstat -Q` discovery, `PBSProProvider` blocks (`select`, `-q`, `-A`), `qstat -x -f -F json` polling, the `qstat -f` pilot probe, `qdel` release — which had only ever met Aurora (blocked on allocation) |
+| `lmod` | `site` whose toolchain comes through **Lmod**: `uv` is moved off the default PATH and served as `module load uv/0.12.9`, a module-served CPython as `python/3.11` (plus a decoy `gcc/13.2`); Lmod is in the image but its `/etc/profile.d` hooks are parked until this profile restores them, so no other profile grows a `module` command | module-aware discovery (0.1.10): the proposal must be `module load …`, not a curl-installed uv, and must re-initialise `module` for the compute node's batch shell |
 
 Scenarios declare what they need — `REQUIRES = {"login_nodes": 2}`, `{"accounting": "enforce"}`, `{"min_nodes": 3}`,
 `{"scheduler": "pbs"}` … — and `run_suite` skips a cell the target/profile cannot satisfy (`targets.meets`). Bundles
@@ -153,6 +154,8 @@ python3 agentic/run_suite.py --target fake --profile totp --reset-cluster --scen
 #   ^ the one-time-code login (needs_preauth → complete_preauth); the human-sim holds the authenticator
 python3 agentic/run_suite.py --target fake --profile pbs --reset-cluster --scenarios happy_path,gated_provision
 #   ^ the same scenarios on an OpenPBS cluster (a different stack: `compose = "docker-compose.pbs.yml"` in the manifest)
+python3 agentic/run_suite.py --target fake --profile lmod --reset-cluster --scenarios lmod_bootstrap
+#   ^ a module-system site: discovery proposes `module load`, and the worker's batch shell can replay it
 #   ^ a different cluster shape (see Profiles); switching profiles needs --reset-cluster. These five are the
 #     `site`-only scenarios (REQUIRES the profile's capabilities; skipped elsewhere): the RICH gate judged by a
 #     budget hawk (parsed balances + a real partition choice reach the spend question), a NON-default partition
@@ -212,7 +215,7 @@ agentic/fakecluster/bin/down.sh --wipe && agentic/fakecluster/bin/up.sh
 
 ## Limitations (honest list)
 
-- **Not a facility.** No module system (`module load` env_setups won't work — the uv path does), no Duo push
+- **Not a facility.** No Duo push
   (the `totp` profile covers the one-time-CODE half of `needs_preauth`). The `default` profile also has no `job_submit`
   rules, QOS/limits, accounting enforcement, balances or GPUs — the `site` profile adds all of those (a
   fake `mybalance`, dummy `/dev/nvidia*`), so a scenario that needs them declares `REQUIRES` and runs there.

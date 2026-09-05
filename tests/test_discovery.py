@@ -150,3 +150,72 @@ async def test_discover_raises_when_probe_never_ran(monkeypatch):
     monkeypatch.setattr(discovery, "ssh_exec", fake_ssh_exec)
     with pytest.raises(RuntimeError, match="discovery probe failed"):
         await discover_facility_details(SshTarget("h", "u", "/k"))
+
+
+# Lmod-shaped: nothing useful on the DEFAULT PATH (no endpoint, no uv), but a module system offering uv and Python.
+_LMOD = """\
+HPCB_PROBE_BEGIN
+USER=hpcbridge-test-00
+HOME=/home/hpcbridge-test-00
+SCRATCH=
+WORK=
+PSCRATCH=
+SCHED=slurm
+GCE=
+UV=
+MYBALANCE=
+XDUSAGE=
+LMOD_INIT=/etc/profile.d/lmod.sh
+MODULE=gcc/
+MODULE=gcc/13.2
+MODULE=python/
+MODULE=python/3.11
+MODULE=uv/
+MODULE=uv/0.12.9
+PART=compute*|up
+NIC=eth0|172.20.0.5/16
+HPCB_PROBE_END
+"""
+
+
+def test_probe_script_looks_for_a_module_system():
+    assert "module -t avail" in discovery._PROBE and "LMOD_INIT=" in discovery._PROBE
+
+
+def test_parse_probe_prefers_the_sites_uv_module_over_the_curl_bootstrap():
+    draft, notes = parse_probe(_LMOD, ssh_host="login")
+    assert draft.env_setup.startswith("type module >/dev/null 2>&1 || . /etc/profile.d/lmod.sh; module load uv/0.12.9; ")
+    assert "uv venv {venv}" in draft.env_setup and "astral.sh" not in draft.env_setup
+    assert any("module load uv/0.12.9" in n for n in notes)
+
+
+def test_parse_probe_uses_a_python_module_matching_this_client():
+    py = discovery._client_python()
+    stdout = _LMOD.replace("MODULE=uv/0.12.9\n", "").replace("MODULE=uv/\n", "").replace("MODULE=python/3.11", f"MODULE=python/{py}")
+    draft, notes = parse_probe(stdout, ssh_host="login")
+    assert f"module load python/{py}; [ -d {{venv}} ] || python3 -m venv {{venv}}" in draft.env_setup
+    assert "pip install -q" in draft.env_setup and "astral.sh" not in draft.env_setup
+    assert any(f"python/{py}" in n and "matches this client" in n for n in notes)
+
+
+def test_parse_probe_falls_back_to_the_uv_bootstrap_when_no_module_matches():
+    stdout = _LMOD.replace("MODULE=uv/0.12.9\n", "").replace("MODULE=uv/\n", "").replace("MODULE=python/3.11", "MODULE=python/2.7")
+    draft, notes = parse_probe(stdout, ssh_host="login")
+    assert "astral.sh" in draft.env_setup and "module load" not in draft.env_setup
+    assert any("python/2.7" in n and "none matches" in n for n in notes)
+    # no module system at all: unchanged behaviour and the old hint
+    draft2, notes2 = parse_probe(_GLOBUS.replace("UV=/usr/local/bin/uv", "UV="), ssh_host="globus1")
+    assert "astral.sh" in draft2.env_setup and any("say so and use that instead" in n for n in notes2)
+
+
+def test_module_env_setup_reinitialises_module_for_batch_scripts():
+    # a compute node's #!/bin/bash job script never ran /etc/profile.d: the setup sources the init itself
+    setup, _ = discovery._module_env_setup(["uv/0.12.9"], "/usr/share/lmod/lmod/init/bash")
+    assert setup.startswith("type module >/dev/null 2>&1 || . /usr/share/lmod/lmod/init/bash; module load uv/0.12.9;")
+    setup2, _ = discovery._module_env_setup(["uv/0.12.9"], None)
+    assert setup2.startswith("module load uv/0.12.9;")
+    assert discovery._module_env_setup([], "/etc/profile.d/lmod.sh") is None
+    assert discovery._module_env_setup(["gcc/13.2", "openmpi/4.1"], "/etc/profile.d/lmod.sh") is None
+    # Lmod's terse `avail` prints directory rows too ("uv/"): never `module load uv/`
+    assert discovery._module_env_setup(["uv/", "python/"], "/etc/profile.d/lmod.sh") is None
+    assert "module load uv/0.12.9;" in discovery._module_env_setup(["uv/", "uv/0.12.9"], None)[0]

@@ -1,0 +1,12 @@
+# `lmod` = the `site` cluster whose toolchain comes through a MODULE SYSTEM (Lmod), the way most facilities ship it:
+# nothing useful on the default PATH — `uv` is moved off it, there is no endpoint — and `module load python/3.11` or
+# `module load uv/0.12.9` is how a user gets a toolchain. The plugin's discovery must notice the module system and
+# propose a `module load …` env_setup (module-aware discovery, 0.1.10) rather than curl-installing uv; and that
+# env_setup must survive a COMPUTE node's batch script, which is not a login shell (Lmod's init is not sourced there).
+name = "lmod"
+description = "site + Lmod: toolchain only via `module load` (python/3.11, uv/0.12.9); uv off the default PATH"
+base = "site"
+
+[capabilities]
+module_system = "lmod"
+modules = ["python/3.11", "uv/0.12.9", "gcc/13.2"]

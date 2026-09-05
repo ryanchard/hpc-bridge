@@ -12,7 +12,7 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         slurm-wlm slurmdbd slurm-client munge libmunge2 \
-        openssh-server openssh-client libpam-google-authenticator \
+        openssh-server openssh-client libpam-google-authenticator lmod \
         mariadb-client \
         python3 python3-venv python3-dev build-essential \
         curl ca-certificates git iproute2 iputils-ping procps less nano \
@@ -21,6 +21,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # uv — hpc-bridge's discover-first flow proposes an env_setup that self-provisions the
 # globus-compute-endpoint venv with `uv venv` + `uv pip install` (see discovery._UV_ENV_SETUP).
 COPY --from=ghcr.io/astral-sh/uv:0.12.9 /uv /uvx /usr/local/bin/
+# Lmod is installed for every profile but ENABLED only by one (profiles/lmod): its /etc/profile.d hooks are parked, so
+# the `module` command does not exist unless a profile puts them back. The module-served Python (3.11 — the jail's,
+# so dill'd tasks deserialise) lives under /opt for the `python/3.11` modulefile.
+# (`uv python find` names the interpreter: uv's store holds both a versioned dir and an unversioned symlink, so a glob
+# matched two paths and produced a dangling two-line link — 2026-09-06.) uv's CPython ships only `python3.11`; the
+# module's users (and `python3 -m venv`) expect python3/python too.
+RUN mkdir -p /opt/lmod-profile.d && mv /etc/profile.d/*lmod* /opt/lmod-profile.d/ 2>/dev/null; \
+    export UV_PYTHON_INSTALL_DIR=/opt/uv-python && uv python install 3.11 -q \
+    && PYBIN="$(uv python find 3.11)" && PYHOME="$(dirname "$(dirname "$PYBIN")")" \
+    && mkdir -p /opt/python && ln -s "$PYHOME" /opt/python/3.11 \
+    && ln -sf python3.11 "$PYHOME/bin/python3" && ln -sf python3.11 "$PYHOME/bin/python" \
+    && chmod -R a+rX /opt/uv-python && /opt/python/3.11/bin/python3 --version
 
 # Slurm / munge / sshd runtime dirs. /etc/munge is a shared volume at run time (the generated
 # munge.key); the entrypoint re-chowns it once mounted.
