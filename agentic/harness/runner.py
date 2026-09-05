@@ -16,6 +16,7 @@ agentic harness image). The hermetic ``pytest -q`` never imports this module
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -56,7 +57,18 @@ _REQUIRED_ENV = ("HPC_BRIDGE_USER_DIR", "HPC_BRIDGE_SSH_USER", "HPC_BRIDGE_SSH_K
 # Interactive runs: when the agent ends a turn with a prose question instead of AskUserQuestion, the
 # human-sim replies and the conversation continues — at most this many times per run.
 MAX_PROSE_FOLLOWUPS = 3
-_OPTIONAL_ENV = ("HPC_BRIDGE_SSH_HOST", "HPC_BRIDGE_MACHINE", "HPC_BRIDGE_SEARCH_INDEX")
+# Passed EXPLICITLY to the MCP server. The CLI spawns the server with its own env layered UNDER this dict, so
+# the server also inherits the jail's environment (run_smoke.sh has relied on that for GLOBUS_COMPUTE_USER_DIR
+# and HPC_BRIDGE_ENDPOINT_NAME since the first harness commit). Naming them here makes the dependency visible
+# and recorded (review 2026-09-05): what the server gets is inherited-plus-overridden, not this allowlist.
+_OPTIONAL_ENV = ("HPC_BRIDGE_SSH_HOST", "HPC_BRIDGE_MACHINE", "HPC_BRIDGE_SEARCH_INDEX",
+                 "HPC_BRIDGE_ENDPOINT_NAME", "GLOBUS_COMPUTE_USER_DIR", "HPC_BRIDGE_STATE_DIR")
+# Harness plumbing the AGENT under test has no business seeing: the CLI inherits this process's env and hands it
+# to the agent's Bash, so these are removed from os.environ for the client's lifetime (the SDK layers
+# options.env OVER the inherited env; it cannot remove keys). Kept: the auth token (the CLI needs it) — so a
+# Bash `env` still shows it; the REPORTED `no_harness_introspection` grader makes that visible.
+_SCRUB_PREFIXES = ("HPCB_",)
+_SCRUB_KEYS = ("PYTHONPATH",)
 
 
 @dataclass
@@ -65,6 +77,9 @@ class RunResult:
     final: Any            # the SDK ResultMessage (cost, is_error, session_id, ...)
     messages: list[Any]   # raw messages, kept for the LLM-judge / debugging
     dialogue: list[Any] = None  # interactive mode: the human-sim's Q&A Exchanges
+    prose_followups: int = 0          # interactive: prose questions the sim answered (client.query follow-ups)
+    followups_capped: bool = False    # the run ended because MAX_PROSE_FOLLOWUPS was hit — the agent kept asking
+    human_sim_model: str | None = None  # interactive: which model played the user (bundle provenance)
 
 
 @dataclass
@@ -88,6 +103,19 @@ def _server_env() -> dict[str, str]:
     env = {k: os.environ[k] for k in _REQUIRED_ENV}
     env.update({k: os.environ[k] for k in _OPTIONAL_ENV if k in os.environ})
     return env
+
+
+@contextlib.contextmanager
+def _scrubbed_agent_env():
+    """Temporarily remove harness plumbing from os.environ while the CLI (and so the agent's shell) is alive.
+    Restored afterwards: run.py reads HPCB_* for the bundle and teardown after run_scenario returns."""
+    saved = {k: v for k, v in os.environ.items() if k.startswith(_SCRUB_PREFIXES) or k in _SCRUB_KEYS}
+    for k in saved:
+        del os.environ[k]
+    try:
+        yield sorted(saved)
+    finally:
+        os.environ.update(saved)
 
 
 def _mcp_servers(repo_root: Path, extra_env: dict[str, str] | None = None) -> dict:
@@ -213,46 +241,63 @@ async def run_scenario(
     options = ClaudeAgentOptions(**opts)
     messages: list[Any] = []
     final: Any = None
+    turn_final: Any = None   # the CURRENT turn's ResultMessage — never a previous turn's (review 2026-09-05, 2.4)
+    followups = 0
+    capped = False
     try:
-        if interactive:
-            async with ClaudeSDKClient(options=options) as client:
-                await client.query(prompt)
-                for followup in range(MAX_PROSE_FOLLOWUPS + 1):
-                    last_text, last_had_tool = "", False
-                    async for msg in client.receive_response():
-                        messages.append(msg)
-                        _live(msg)
-                        kind = type(msg).__name__
-                        if kind == "ResultMessage":
-                            final = msg
-                        elif kind == "AssistantMessage":
-                            content = getattr(msg, "content", None) or []
-                            last_had_tool = any(hasattr(b, "name") and hasattr(b, "input") for b in content)
-                            last_text = "".join(getattr(b, "text", "") or "" for b in content)
-                    # The turn ended on a text-only question (no tool call): a real user would answer in
-                    # chat, so the sim does — one more `query` continues the SAME session (SDK multi-turn).
-                    if (followup == MAX_PROSE_FOLLOWUPS or last_had_tool or getattr(final, "is_error", False)
-                            or not ends_with_question(last_text)):
-                        break
-                    reply = await human.reply(last_text)
-                    print(f"  ! human({persona}) answers a PROSE question: {reply[:160]}", file=sys.stderr, flush=True)
-                    await client.query(reply)
-        else:
-            async for msg in query(prompt=prompt, options=options):
-                messages.append(msg)
-                _live(msg)
-                if type(msg).__name__ == "ResultMessage":
-                    final = msg
+        with _scrubbed_agent_env():
+            if interactive:
+                async with ClaudeSDKClient(options=options) as client:
+                    await client.query(prompt)
+                    for followup in range(MAX_PROSE_FOLLOWUPS + 1):
+                        last_text, last_had_tool = "", False
+                        turn_final = None
+                        async for msg in client.receive_response():
+                            messages.append(msg)
+                            _live(msg)
+                            kind = type(msg).__name__
+                            if kind == "ResultMessage":
+                                turn_final = msg
+                            elif kind == "AssistantMessage":
+                                content = getattr(msg, "content", None) or []
+                                last_had_tool = any(hasattr(b, "name") and hasattr(b, "input") for b in content)
+                                last_text = "".join(getattr(b, "text", "") or "" for b in content)
+                        if turn_final is None:
+                            # the stream ended (EOF, CLI death) without this turn's ResultMessage: the run is
+                            # TRUNCATED. The previous turn's result must not stand in for it and pass the gate.
+                            final = _AbortedResult(result="stream ended without a ResultMessage for this turn")
+                            break
+                        final = turn_final
+                        # The turn ended on a text-only question (no tool call): a real user would answer in
+                        # chat, so the sim does — one more `query` continues the SAME session (SDK multi-turn).
+                        if last_had_tool or getattr(final, "is_error", False) or not ends_with_question(last_text):
+                            break
+                        if followup == MAX_PROSE_FOLLOWUPS:
+                            capped = True  # the agent is still asking in prose; recorded, not hidden
+                            break
+                        reply = await human.reply(last_text)
+                        followups += 1
+                        print(f"  ! human({persona}) answers a PROSE question: {reply[:160]}", file=sys.stderr, flush=True)
+                        await client.query(reply)
+            else:
+                async for msg in query(prompt=prompt, options=options):
+                    messages.append(msg)
+                    _live(msg)
+                    if type(msg).__name__ == "ResultMessage":
+                        final = msg
     except Exception as e:  # noqa: BLE001 — max_turns / budget / transport death mid-stream
         # The SDK RAISES (e.g. "Reached maximum number of turns") rather than yielding a final
         # ResultMessage. Swallow it here so the PARTIAL trace collected so far is returned, graded,
         # and recorded — an overrun becomes a graceful FAIL (run_completed), not a lost bundle plus a
-        # top-level traceback. Keep a real ResultMessage if one already arrived; else synthesize one.
+        # top-level traceback. A ResultMessage that arrived for the turn that died stands; a PREVIOUS
+        # turn's must not (the interactive loop already reset `turn_final`; `final` may be stale).
         print(f"  ⚠ run aborted mid-stream: {e}", file=sys.stderr, flush=True)
-        if final is None:
+        if (interactive and turn_final is None) or final is None:
             final = _AbortedResult(result=str(e))
     return RunResult(
         trace=build_trace(messages, injected_answers=injected_answers),
         final=final, messages=messages,
         dialogue=(human.dialogue if human else []),
+        prose_followups=followups, followups_capped=capped,
+        human_sim_model=(human.model if human else None),
     )

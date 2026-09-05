@@ -92,5 +92,6 @@ EXTRA_INVARIANTS = [launched_detached_on_compute]
 # NOT ends_with_stop: the agent is told to leave the job running — the idle timer does the killing.
 EXPECT_OK = ["launched_detached_on_compute"]
 
+NEEDS_COMPUTE_NODE = True   # brings up a billed block (no compute_ran grader to derive it from) — run_suite gates it
 TEARDOWN = "delete"
 MAX_TURNS = 60

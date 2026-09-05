@@ -115,7 +115,11 @@ HPCB_NO_SKILL=1 ./agentic/run_smoke.sh spend_gate_enforced   # the SERVER-side f
 ./agentic/run_smoke.sh unknown_host_key     # the host-key boundary, both halves: refused + explained on an unknown key (phase 1), succeeds once trusted (phase 2)
 ```
 
-Keep `--concurrency 3` (globus1 SSH headroom + the subscription 5h/7d cap; big sweeps → API creds).
+Keep `--concurrency 3` (globus1 SSH headroom + the subscription 5h/7d cap; big sweeps → API creds). Compute cells
+are node-gated automatically (declared or derived `NEEDS_COMPUTE_NODE`); a `saturation` cell needs all three nodes
+and runs alone. Cleanup guarantees: `run.py` tears down its own endpoint + blocks in its `finally` (also on
+`docker stop`, which now reaches it via SIGTERM); `run_suite` cleans up the cells it abandons on Ctrl-C (it mints
+`HPCB_RUNID`, so it knows each cell's endpoint name); stray `HPCB_*` knobs in your shell never reach a cell.
 ~30–40 min end to end. #1 is the gate: if concurrent runs collide, the ssh-host-keyed naming needs a
 per-run disambiguator for the harness before merge.
 
@@ -197,7 +201,19 @@ EXTRA_INVARIANTS = [my_grader]   # optional: scenario-local Trace -> Result func
 PHASES = ["…", "…"]              # optional: a multi-session CHAIN (fresh MCP server per phase); every
                                  #   ToolCall carries its 0-based `phase` — grade with t.named(..., phase=k)
 TEARDOWN = "delete"              # or "keep" for reuse chains; POSTCHECK_DELAY_S for slow worlds
+CLEANUP = ["scancel -n hpcb-sat"]  # optional: undo what SETUP created (run after postchecks + teardown, always)
+NEEDS_COMPUTE_NODE = True        # nodes the cell occupies (True=1, an int, False=0). DERIVED when absent: 1 if
+                                 #   `compute_ran` is gated. run_suite's NodeGate admits a cell only when idle nodes
+                                 #   minus blocks claimed by launches in the last 300 s cover the need.
+WARM_BLOCK_USER = "glabs"        # optional: a facility MEP's running block (that user's) satisfies the need instead
+SERIAL = True                    # one cell at a time (a shared facility identity, or a cell that holds every node)
 ```
+Every bundle's `record.json` (schema 2) carries `result` (OK | FAILED | RATE_LIMITED | SETUP FAILED | CRASHED),
+`failed` (the gating checks that broke), `gating` (which checks decided), a `gating` flag per grading row, and
+harness rows (`run_completed`, `rate_limited`, `harness:prose_followups`) — so a bundle explains its own verdict
+and `regrade.py --strict` can re-derive it. `config.build` is the image's `git describe` (what actually ran);
+`config.git_sha`/`host_head` is the host's HEAD at launch; `image_id`, `sdk_version`, `human_sim_model` are recorded.
+`no_harness_introspection` is REPORTED on every run: did the agent read the harness or the jail's env?
 A behaviour that should hold *everywhere* becomes a new universal invariant: add the function
 + registry entry in `invariants.py` and a synthetic-trace unit test in `test_invariants.py`
 (pure — no cluster needed). A scenario-specific expectation stays in the scenario file as an

@@ -21,8 +21,14 @@ fi
 
 # Run the scenario, then harvest the CLI's NATIVE session transcripts (the operator's AND the
 # human-sim's — both actors) into the run's provenance bundle before the container dies.
+# `docker stop` sends SIGTERM to PID 1 (this script). Forward it to run.py, whose handler turns it into a
+# KeyboardInterrupt so its `finally` still tears the endpoint down and writes the bundle (run_smoke.sh gives
+# it --stop-timeout 120). Without this the jail died silently and stranded the endpoint (review 2026-09-05).
+python /work/hpc-bridge/agentic/harness/run.py "$@" &
+child=$!
+trap 'kill -TERM "$child" 2>/dev/null' TERM INT
 rc=0
-python /work/hpc-bridge/agentic/harness/run.py "$@" || rc=$?
+wait "$child" || rc=$?
 if [ -n "${HPCB_RUNS_DIR:-}" ] && [ -n "${HPCB_RUNID:-}" ]; then
   # `|| true` guards set -e/pipefail: when the bundle dir doesn't exist (provenance write
   # failed), a bare failing ls|head aborted the script HERE and replaced run.py's rc with

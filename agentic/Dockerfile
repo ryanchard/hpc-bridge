@@ -29,6 +29,10 @@ COPY src ./src
 RUN uv sync --extra integration
 # The rest of the repo (harness, scenarios, skill, .mcp.json, entrypoint).
 COPY . /work/hpc-bridge
+# What this image is built from (`git describe --always --dirty`), so a run's bundle pins the CODE it exercised —
+# the launch-time HEAD on the host can move under a long suite (one 2026-09-03 image was recorded under two SHAs).
+ARG GIT_DESCRIBE=unknown
+RUN echo "$GIT_DESCRIBE" > /work/hpc-bridge/BUILD_INFO
 
 # Non-root user — Claude Code refuses --dangerously-skip-permissions (bypassPermissions)
 # under root/sudo. Own the repo + venv so `uv run` can use it as this user.

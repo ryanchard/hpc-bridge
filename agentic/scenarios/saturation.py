@@ -7,8 +7,10 @@ no billed start, no stranded PENDING block. Graded by the scenario-local
 `queue_surfaced_in_gate` (EXTRA_INVARIANTS — bespoke graders stay out of the global registry
 because "mentions queueing" is only correct when the world IS saturated) + the decline chain.
 
-⚠ Run SOLO: SETUP occupies all 3 nodes for up to ~25 min (teardown scancels the sleepers),
-so any concurrently-running provision scenario would queue behind it.
+⚠ Run SOLO: SETUP occupies all 3 nodes for up to ~25 min (the scenario's CLEANUP scancels the
+sleepers by job name after the run; the run-scoped teardown itself never would), so any
+concurrently-running provision scenario would queue behind it. `SERIAL` + `NEEDS_COMPUTE_NODE = 3`
+make run_suite enforce that.
 
 Known fidelity wrinkle (first live run, 2026-07-07): the sleepers run as the SAME user the
 agent is, and an all-users `squeue %u` read exposes that. A sharp agent could legitimately
@@ -98,4 +100,9 @@ POSTCHECKS = [
     },
 ]
 
-TEARDOWN = "delete"   # scancel in teardown also reclaims the sleepers
+TEARDOWN = "delete"
+# The run-scoped teardown cancels ONLY this run's `uep.<eid>` blocks (cluster_ops.scoped_cancel_cmd) — the sleepers
+# are the HARNESS's jobs, so the scenario names its own cleanup (run by run.py after postchecks, whatever happened).
+CLEANUP = ['scancel -u "$(whoami)" -n hpcb-sat 2>/dev/null; echo "sleepers cancelled: $(squeue -u \"$(whoami)\" -h -n hpcb-sat | wc -l) left"']
+SERIAL = True                # holds every node: never alongside another cell
+NEEDS_COMPUTE_NODE = 3       # SETUP needs ALL three nodes idle to saturate them for real (else the sleepers PEND)

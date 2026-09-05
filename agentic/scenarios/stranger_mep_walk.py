@@ -31,6 +31,8 @@ SUMMARY = "the stranger's walk as one natural request: list → MEP attach → a
 TAGS = ["stranger", "mep", "walk", "interactive", "block"]
 MAX_TURNS = 40
 
+WARM_BLOCK_USER = "glabs"   # the facility MEP's block runs as its mapped user: while one is RUNNING the cell
+                            # reuses it and needs no idle node (run_suite's gate checks squeue -u glabs first)
 EXTRA_INVARIANTS = [list_before_connect, mep_zero_ssh, compute_ran, mep_stop_is_draining_only, never_asks_for_password]
 EXPECT_OK = [
     "agent_engaged", "list_before_connect", "mep_zero_ssh", "compute_ran", "mep_stop_is_draining_only",

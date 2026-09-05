@@ -48,7 +48,7 @@ def _jsonable(obj: Any, depth: int = 0) -> Any:
 def _safe_env() -> dict[str, str]:
     out = {}
     for k, v in os.environ.items():
-        if k.startswith(("HPCB_", "HPC_BRIDGE_")) or k in _REDACT:
+        if k.startswith(("HPCB_", "HPC_BRIDGE_")) or k in _REDACT or k == "GLOBUS_COMPUTE_USER_DIR":
             out[k] = "<redacted>" if k in _REDACT else v
     return out
 
@@ -74,14 +74,19 @@ def _block_lines(block: Any) -> list[str]:
 
 
 def _transcript_md(config: dict, messages: list[Any], dialogue: list[Any],
-                   grading: list[Any], rc: int | None) -> str:
+                   grading: list[Any], rc: int | None, gating: list[str] | None = None,
+                   result: str | None = None, failed: list[str] | None = None) -> str:
+    gates = set(gating or [])
     lines = [
         f"# {config.get('scenario', 'run')} — {config.get('runid', '')}",
         "",
         f"*{datetime.now(UTC).isoformat(timespec='seconds')} · model "
         f"{config.get('model')} · effort {config.get('effort') or 'default'} · persona "
         f"{config.get('persona') or 'autonomous'}"
-        f"{' · ABLATED: skill' if config.get('ablate_skill') else ''} · rc {rc}*",
+        f"{' · ABLATED: skill' if config.get('ablate_skill') else ''} · rc {rc}"
+        f" · build {config.get('build', 'unknown')}*",
+        "",
+        f"RESULT: {result or '?'}" + (f" — gating checks that failed: {failed}" if failed else ""),
         "",
         "## Conversation",
         "",
@@ -108,9 +113,10 @@ def _transcript_md(config: dict, messages: list[Any], dialogue: list[Any],
             if getattr(x, "note", ""):
                 lines.append(f"  - *user note:* {x.note}")
         lines.append("")
-    lines += ["## Grading", ""]
+    lines += ["## Grading", "", "*`*gate*` marks the checks that decide the verdict; the rest are reported only.*", ""]
     for r in grading:
-        lines.append(f"- [{'PASS' if r.ok else 'FAIL'}] `{r.name}` — {r.detail}")
+        gate = " *gate*" if r.name in gates or r.name.startswith("world:") else ""
+        lines.append(f"- [{'PASS' if r.ok else 'FAIL'}{gate}] `{r.name}` — {r.detail}")
     return "\n".join(lines) + "\n"
 
 
@@ -123,20 +129,32 @@ def write_run_record(
     grading: list[Any],
     final: Any,
     rc: int | None,
+    gating: list[str] | None = None,
+    failed: list[str] | None = None,
+    result: str | None = None,
 ) -> Path | None:
-    """Write the bundle; never raises (best-effort provenance must not fail the run)."""
+    """Write the bundle; never raises (best-effort provenance must not fail the run).
+
+    `gating` (the check names that decided the verdict), `failed` and `result` (OK | FAILED | RATE_LIMITED |
+    SETUP FAILED | CRASHED) are persisted so a bundle explains its own verdict — regrade.py and watch.sh read them
+    (review 2026-09-05, 2.5: `run_completed` used to exist only on stdout)."""
     try:
         d = runs_dir / f"{config.get('runid', 'local')}-{config.get('scenario', 'run')}"
         d.mkdir(parents=True, exist_ok=True)
         with (d / "messages.jsonl").open("w") as fh:
             for m in messages:
                 fh.write(json.dumps(_jsonable(m), default=str) + "\n")
+        gates = set(gating or [])
         record = {
-            "schema": 1,
+            "schema": 2,
             "written_at": datetime.now(UTC).isoformat(timespec="seconds"),
             "config": config,
             "env": _safe_env(),
-            "grading": [{"name": r.name, "ok": r.ok, "detail": r.detail} for r in grading],
+            "result": result,
+            "failed": list(failed or []),
+            "gating": sorted(gates),
+            "grading": [{"name": r.name, "ok": r.ok, "detail": r.detail,
+                         "gating": r.name in gates or r.name.startswith("world:")} for r in grading],
             "rc": rc,
             "final": {
                 "is_error": getattr(final, "is_error", None),
@@ -151,7 +169,7 @@ def write_run_record(
         }
         (d / "record.json").write_text(json.dumps(record, indent=2, default=str))
         (d / "transcript.md").write_text(
-            _transcript_md(config, messages, dialogue, grading, rc)
+            _transcript_md(config, messages, dialogue, grading, rc, gating=sorted(gates), result=result, failed=failed)
         )
         return d
     except Exception as exc:  # noqa: BLE001 - provenance must never break the run

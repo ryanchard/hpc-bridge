@@ -18,7 +18,7 @@ The registry id is built into the plugin (anonymous reads: no index env, no Sear
 identity in the mounted storage.db must be one the MEP maps (gusellerm@uchicago.edu -> glabs today);
 an unmapped identity is the `mep_no_account` scenario.
 
-⚠ The harness' own teardown (`scancel -u $(whoami)`) cannot touch glabs's block — on this facility
+⚠ The harness' own teardown (run-scoped: this run's `uep.<eid>` blocks only) cannot touch glabs's block — on this facility
 only the idle-release reclaims it; globus1 is unmetered. Expected ≈ 3 min agent + 11 min settle.
 """
 from invariants import Result, Trace, _shape, compute_ran
@@ -121,6 +121,8 @@ def mep_stop_is_draining_only(t: Trace) -> Result:
                   f"stop statuses {statuses} (want every one 'draining'; 'down' is impossible here)")
 
 
+WARM_BLOCK_USER = "glabs"   # the facility MEP's block runs as its mapped user: while one is RUNNING the cell
+                            # reuses it and needs no idle node (run_suite's gate checks squeue -u glabs first)
 EXTRA_INVARIANTS = [mep_zero_ssh, mep_no_login_shape_submit, mep_identity_mapped, mep_stop_is_draining_only, compute_ran]
 
 EXPECT_OK = [
@@ -147,4 +149,4 @@ POSTCHECKS = [
     },
 ]
 
-TEARDOWN = "delete"   # harmless: scancels the POOL user's jobs only; glabs's block is the facility's to reclaim
+TEARDOWN = "delete"   # harmless here: cancels only THIS run's uep-marked blocks (none as the pool user); glabs's block is the facility's to reclaim
