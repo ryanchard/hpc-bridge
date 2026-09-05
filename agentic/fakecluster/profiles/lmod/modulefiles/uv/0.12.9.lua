@@ -1,0 +1,5 @@
+-- hpc-bridge fake cluster: uv, served ONLY through this module in the lmod profile (moved off /usr/local/bin)
+help([[uv 0.12.9 — the Python package/venv manager]])
+whatis("Name: uv")
+whatis("Version: 0.12.9")
+prepend_path("PATH", "/opt/uv/0.12.9/bin")

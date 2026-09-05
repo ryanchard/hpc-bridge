@@ -8,6 +8,7 @@ catalog entry or `SlurmFacility` exists.
 """
 from __future__ import annotations
 
+import re
 import shlex
 from typing import Literal
 
@@ -72,6 +73,12 @@ echo "GCE=$(command -v globus-compute-endpoint 2>/dev/null)"
 echo "UV=$(command -v uv 2>/dev/null)"
 echo "MYBALANCE=$(command -v mybalance 2>/dev/null)"
 echo "XDUSAGE=$(command -v xdusage 2>/dev/null)"
+for f in /etc/profile.d/lmod.sh /etc/profile.d/modules.sh /usr/share/lmod/lmod/init/bash; do
+  [ -r "$f" ] && { echo "LMOD_INIT=$f"; break; }
+done
+if type module >/dev/null 2>&1; then
+  module -t avail 2>&1 | grep -vE ':$|^$|^-|/$' | head -300 | awk '{print "MODULE="$1}'
+fi
 sinfo -h -o 'PART=%P|%a' 2>/dev/null || true
 qstat -Q 2>/dev/null | awk 'NR>2 && $1!="" {print "QUEUE="$1}' || true
 ip -o -4 addr show 2>/dev/null | awk '{print "NIC="$2"|"$4}' || true
@@ -123,7 +130,8 @@ def parse_probe(stdout: str, *, ssh_host: str) -> tuple[FacilityDetails, list[st
     interface, nic_note = _interface(f.get("NIC", []))
     notes.append(nic_note)  # interface is always flagged — it's the field the canary most often fails on
 
-    env_setup, env_note = _env_setup(f.get("GCE"), f.get("UV"), user)
+    env_setup, env_note = _env_setup(f.get("GCE"), f.get("UV"), user,
+                                     modules=f.get("MODULE", []), lmod_init=f.get("LMOD_INIT"))
     notes.append(env_note)
 
     alloc_cmd, alloc_parser, alloc_note = _allocation(f)
@@ -146,7 +154,7 @@ def parse_probe(stdout: str, *, ssh_host: str) -> tuple[FacilityDetails, list[st
 def _collect(stdout: str) -> dict:
     """Frame-bounded parse of `KEY=value` lines; PART/NIC accumulate into lists."""
     scalars: dict[str, str] = {}
-    multi: dict[str, list[str]] = {"PART": [], "NIC": [], "QUEUE": []}
+    multi: dict[str, list[str]] = {"PART": [], "NIC": [], "QUEUE": [], "MODULE": []}
     in_block = False
     for raw in stdout.splitlines():
         line = raw.strip()
@@ -231,8 +239,48 @@ def _interface(nic_lines: list[str]) -> tuple[str, str]:
                   "never register; the login canary catches it).")
 
 
-def _env_setup(gce: str | None, uv: str | None, user: str) -> tuple[str, str]:
-    """Propose how to put globus-compute-endpoint on PATH for the bootstrap's `bash -lc`."""
+_PYTHON_MODULE = re.compile(
+    r"^(python|python3|anaconda|anaconda3|miniconda|miniconda3|miniforge|conda|cray-python)(/|$)", re.I)
+_UV_MODULE = re.compile(r"^uv(/|$)", re.I)
+
+
+def _module_env_setup(modules: list[str], lmod_init: str | None) -> tuple[str, str] | None:
+    """A `module load` based env_setup when the facility's module system (Lmod/Tmod) offers uv or a Python matching
+    this client's — the site-supported way to a toolchain, ahead of curl-installing uv. None when no usable module.
+
+    The setup re-initialises the module command itself when it is missing: a compute node's batch script is NOT a
+    login shell (Slurm's and PBS's start `#!/bin/bash`), so `/etc/profile.d` never ran there and `module` is
+    undefined unless the site exports BASH_ENV — `worker_init` replays env_setup exactly there."""
+    modules = [m for m in modules if m and not m.endswith("/")]  # Lmod's terse `avail` also prints `name/` dir rows
+    if not modules:
+        return None
+    client_py = _client_python()
+    init = f"type module >/dev/null 2>&1 || . {lmod_init}; " if lmod_init else ""
+    uv_mods = [m for m in modules if _UV_MODULE.match(m)]
+    py_mods = [m for m in modules if _PYTHON_MODULE.match(m)]
+    py_match = [m for m in py_mods if client_py in m]
+    if uv_mods:
+        return (f"{init}module load {uv_mods[0]}; " + _UV_ENV_SETUP,
+                f"env_setup: no globus-compute-endpoint or uv on the default PATH, but the module system offers "
+                f"`{uv_mods[0]}` — proposed `module load {uv_mods[0]}` then the idempotent uv venv+install "
+                f"(Python {client_py}, this client's). Confirm the module name (`module avail`).")
+    if py_match:
+        mod = py_match[0]
+        return (f"{init}module load {mod}; [ -d {{venv}} ] || python3 -m venv {{venv}}; . {{venv}}/bin/activate; "
+                f"command -v globus-compute-endpoint >/dev/null 2>&1 || pip install -q {_gce_pin()}",
+                f"env_setup: no globus-compute-endpoint or uv on the default PATH, but the module system offers "
+                f"`{mod}` (matches this client's Python {client_py}, so tasks deserialise) — proposed "
+                f"`module load {mod}`, a venv and a pip install of the endpoint. Confirm the module name "
+                "(`module avail`).")
+    if py_mods:
+        return None  # a Python module of the WRONG minor: fall through to the uv bootstrap (uv fetches the right one)
+    return None
+
+
+def _env_setup(gce: str | None, uv: str | None, user: str, modules: list[str] | None = None,
+               lmod_init: str | None = None) -> tuple[str, str]:
+    """Propose how to put globus-compute-endpoint on PATH for the bootstrap's `bash -lc`: an endpoint already
+    there > uv on PATH > the site's module system (uv or a matching Python module) > curl-install uv."""
     if gce:
         if gce.endswith("/bin/globus-compute-endpoint"):
             venv = _templatize(gce[: -len("/bin/globus-compute-endpoint")], user)
@@ -244,11 +292,17 @@ def _env_setup(gce: str | None, uv: str | None, user: str) -> tuple[str, str]:
         return _UV_ENV_SETUP, ("env_setup: no globus-compute-endpoint found, but `uv` is present — "
                                "proposed an idempotent uv create-venv+install (first connect provisions "
                                "the toolchain).")
+    via_modules = _module_env_setup(list(modules or []), lmod_init)
+    if via_modules:
+        return via_modules
+    py_mods = [m for m in (modules or []) if _PYTHON_MODULE.match(m)]
+    hint = (f" The module system lists Python modules ({', '.join(py_mods[:4])}) but none matches this client's "
+            f"Python {_client_python()}; uv fetches a matching one." if py_mods else
+            " If the facility provides Python/uv via `module load`, say so and use that instead.")
     return (_BOOTSTRAP_UV_ENV_SETUP,
             "env_setup: neither globus-compute-endpoint nor uv found — proposed installing uv into $HOME/.local/bin "
             "(astral.sh installer, ~20 MB) and then the endpoint into a venv at this client's Python; needs outbound "
-            "HTTPS from the login and compute nodes. If the facility provides Python/uv via `module load`, say so "
-            "and use that instead.")
+            "HTTPS from the login and compute nodes." + hint)
 
 
 def _allocation(f: dict) -> tuple[str | None, Literal["sbank", "iris", "mybalance"] | None, str | None]:

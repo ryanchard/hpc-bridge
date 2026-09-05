@@ -3,6 +3,17 @@
 All notable changes to hpc-bridge. The plugin version lives in `.claude-plugin/plugin.json` (Claude Code updates an
 installed plugin only when that version changes); git tags mark releases.
 
+## 0.1.10 — 2026-09-06 — discovery knows the site's module system
+
+### Added
+- **Module-aware discovery.** The login-node probe now records the module system (Lmod/Tmod init script and
+  `module -t avail`). When neither `globus-compute-endpoint` nor `uv` is on the default PATH — the normal state of a
+  site where everything comes through `module load` — discovery proposes the site-supported route instead of
+  curl-installing uv: `module load <uv module>` and the usual uv venv, or `module load <python module>` matching this
+  client's Python plus a venv and a pip install. The proposed `env_setup` re-initialises the `module` command itself
+  first, because a compute node's batch script is not a login shell and `worker_init` replays `env_setup` exactly
+  there. A Python module of the wrong minor is named in the note and the uv bootstrap stays the fallback.
+
 ## 0.1.9 — 2026-09-06 — PBS without an account; a pilot that died is not "never submitted"
 
 Both found on the new fake OpenPBS cluster, the first place the PBS path ran end to end (every PBS facility we had
