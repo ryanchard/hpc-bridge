@@ -478,6 +478,7 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
             rc = 0
     except asyncio.CancelledError:
         result_label = "INTERRUPTED"
+        rc = 130  # the bundle's rc says "stopped", not "graded FAIL" (live 2026-09-05: it read 1)
         print("RESULT: INTERRUPTED — the run was stopped (signal); tearing down and writing the bundle", flush=True)
         raise
     finally:
