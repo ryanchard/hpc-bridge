@@ -58,27 +58,26 @@ def test_node_need_is_derived_for_every_block_bringing_scenario():
     assert k.get("HPCB_KNOB_SERIAL") == "1"  # holds every node: never alongside another cell
 
 
-def _gate(mod, idle_seq, warm_seq=None):
+def _gate(mod, idle_seq, monkeypatch, warm_seq=None):
     clock = {"t": 1000.0}
     seq = iter(idle_seq)
-    monkeypatch_targets = {}
-    mod._idle_nodes = lambda: next(seq)
+    monkeypatch.setattr(mod, "_idle_nodes", lambda: next(seq))
     wseq = iter(warm_seq or [])
-    mod._warm_block_running = lambda user: next(wseq, False)
-    mod.time.monotonic = lambda: clock["t"]
+    monkeypatch.setattr(mod, "_warm_block_running", lambda user: next(wseq, False))
+    monkeypatch.setattr(mod.time, "monotonic", lambda: clock["t"])
 
     async def fake_sleep(s):
         clock["t"] += s
 
-    mod.asyncio.sleep = fake_sleep
-    return mod.NodeGate(clock=lambda: clock["t"]), clock, monkeypatch_targets
+    monkeypatch.setattr(mod.asyncio, "sleep", fake_sleep)  # restored after the test (a bare assignment leaked into others)
+    return mod.NodeGate(clock=lambda: clock["t"]), clock
 
 
-def test_gate_counts_in_flight_launches_against_the_idle_nodes():
+def test_gate_counts_in_flight_launches_against_the_idle_nodes(monkeypatch):
     # two idle nodes, three cells arriving within the claim window: the third must WAIT (it used to launch —
     # every cell read "2 idle" and one starved PENDING for its whole run, the 2026-09-03 starvation)
     mod = _run_suite()
-    gate, clock, _ = _gate(mod, [2, 2, 2, 2, 3])
+    gate, clock = _gate(mod, [2, 2, 2, 2, 3], monkeypatch)
 
     async def go():
         halt = asyncio.Event()
@@ -92,32 +91,32 @@ def test_gate_counts_in_flight_launches_against_the_idle_nodes():
     asyncio.run(go())
 
 
-def test_gate_need_of_three_admits_only_when_all_are_free():
+def test_gate_need_of_three_admits_only_when_all_are_free(monkeypatch):
     mod = _run_suite()
-    gate, _clock, _ = _gate(mod, [2, 2, 3])
+    gate, _clock = _gate(mod, [2, 2, 3], monkeypatch)
 
     async def go():
         assert await gate.admit("sat", 3, None, asyncio.Event(), 3600) == 3
     asyncio.run(go())
 
 
-def test_gate_warm_block_satisfies_a_mep_cell_without_an_idle_node():
+def test_gate_warm_block_satisfies_a_mep_cell_without_an_idle_node(monkeypatch):
     mod = _run_suite()
-    gate, _clock, _ = _gate(mod, [0], warm_seq=[True])
+    gate, _clock = _gate(mod, [0], monkeypatch, warm_seq=[True])
 
     async def go():
         assert await gate.admit("mep", 1, "glabs", asyncio.Event(), 3600) == -1  # unguarded: reusing the warm block
     asyncio.run(go())
 
 
-def test_gate_gives_up_after_max_wait_and_launches_unguarded_on_probe_failure():
+def test_gate_gives_up_after_max_wait_and_launches_unguarded_on_probe_failure(monkeypatch):
     mod = _run_suite()
-    gate, _clock, _ = _gate(mod, [0] * 10)
+    gate, _clock = _gate(mod, [0] * 10, monkeypatch)
 
     async def go():
         assert await gate.admit("x", 1, None, asyncio.Event(), 120) is None
     asyncio.run(go())
-    gate2, _c2, _ = _gate(mod, [None])
+    gate2, _c2 = _gate(mod, [None], monkeypatch)
 
     async def go2():
         assert await gate2.admit("y", 1, None, asyncio.Event(), 3600) == -1
@@ -158,3 +157,59 @@ def test_cell_env_strips_stray_knobs_but_keeps_credentials(monkeypatch):
     assert "HPCB_NO_SKILL" not in env and "HPCB_EFFORT" not in env
     assert env["HPCB_TEST_GLOBUS_DB"] == "/x/storage.db" and env["HPCB_NODE_PARTITION"] == "main"
     assert env["HPCB_TEST_SSH_USER"] == "hpcbridge-test-03" and env["HPCB_RUNID"] == "123-4"
+
+
+def test_cancelled_cell_is_terminated_and_leaves_the_list_only_once_it_exited(monkeypatch, tmp_path):
+    # live 2026-09-05: Ctrl-C emptied `inflight` via the cell's finally BEFORE _emergency_cleanup ran, and the jail
+    # container ran on for 3 minutes; nothing was cleaned up. Now the cell is SIGTERMed (docker proxies it in) and
+    # waited for; only a cell that does not finish stays listed for the suite's run-scoped cleanup.
+    mod = _run_suite()
+    events = []
+
+    class _Proc:
+        def __init__(self, exits_in_time):
+            self._exits = exits_in_time
+
+        async def communicate(self):
+            await asyncio.sleep(3600)  # the cell "runs" until cancelled
+
+        def terminate(self):
+            events.append("terminate")
+
+        async def wait(self):
+            if self._exits:
+                return 0
+            await asyncio.sleep(3600)
+            return 1
+
+    async def drive(exits_in_time):
+        inflight = {}
+        proc = _Proc(exits_in_time)
+
+        async def fake_exec(*a, **k):
+            return proc
+
+        monkeypatch.setattr(mod.asyncio, "create_subprocess_exec", fake_exec)
+        monkeypatch.setattr(mod, "CELL_STOP_GRACE_S", 0.05)
+        claims = type("C", (), {"claim_any": lambda self, pool: "hpcbridge-test-07", "release": lambda self, u: None,
+                                "busy": lambda self, pool: []})()
+        sem = asyncio.Semaphore(1)
+        stagger = mod.Stagger(0)
+        task = asyncio.create_task(mod._run_job("happy_path", "m", None, None, None, claims, sem, stagger,
+                                                asyncio.Event(), inflight))
+        await asyncio.sleep(0.01)
+        assert len(inflight) == 1  # listed while running
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        return inflight
+
+    left = asyncio.run(drive(exits_in_time=True))
+    assert events == ["terminate"] and left == {}  # tore itself down in time: nothing for the suite to clean
+    events.clear()
+    left = asyncio.run(drive(exits_in_time=False))
+    assert events == ["terminate"] and len(left) == 1  # did not finish: stays listed for _emergency_cleanup
+    (user, name) = next(iter(left.values()))
+    assert user == "hpcbridge-test-07" and name.startswith("hpc-bridge-globus1-")
