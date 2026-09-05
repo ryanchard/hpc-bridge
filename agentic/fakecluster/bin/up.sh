@@ -23,6 +23,9 @@ export HPCB_FAKE_KEY_PUB="$KEY.pub"   # compose bind-mounts this into the login 
 if [ -n "${PROFILE_CATALOG_CMD:-}" ] && [ "$HPCB_MEP_GLOBUS_DB" = /dev/null ]; then
   echo "ERROR: profile '$PROFILE' runs facility MEPs and needs the owner's Globus storage.db: set HPCB_MEP_GLOBUS_DB or HPCB_TEST_GLOBUS_DB in agentic/.env" >&2; exit 1
 fi
+if [ -n "${PROFILE_CATALOG_CMD:-}" ] && [ -z "${HPCB_MEP_EMAIL:-}" ]; then
+  echo "ERROR: profile '$PROFILE' registers multi-user endpoints with Globus, which need a REAL contact address: set HPCB_MEP_EMAIL=you@example.org in agentic/.env" >&2; exit 1
+fi
 
 cd "$HERE"
 echo "fake cluster: profile '$PROFILE' ($PROFILE_NODES compute nodes; login: $PROFILE_LOGIN_HOSTS)${PROFILE_CATALOG_CMD:+; facility MEP (gce $HPCB_MEP_GCE_VERSION)}"

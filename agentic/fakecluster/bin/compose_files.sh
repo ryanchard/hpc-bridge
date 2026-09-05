@@ -30,6 +30,7 @@ if [ -z "${HPCB_MEP_GCE_VERSION:-}" ]; then
   HPCB_MEP_GCE_VERSION="$("$HERE_FC/../../.venv/bin/python" -c 'import importlib.metadata as m; print(m.version("globus-compute-sdk"))' 2>/dev/null || echo 4.16.0)"
 fi
 export HPCB_MEP_GCE_VERSION
+export HPCB_MEP_EMAIL="${HPCB_MEP_EMAIL-}"   # the managers' contact address (required to START them; empty interpolates for down)
 PROFILE_DIR="$HERE_FC/.merged/$PROFILE"
 eval "$(python3 "$HERE_FC/bin/profile.py" build "$PROFILE" "$PROFILE_DIR")" || exit 2
 export HPCB_FAKE_PROFILE="$PROFILE" HPCB_FAKE_PROFILE_DIR="$PROFILE_DIR"
