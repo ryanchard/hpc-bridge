@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -26,10 +27,17 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 SMOKE = REPO / "agentic" / "run_smoke.sh"
 sys.path.insert(0, str(REPO / "agentic" / "harness"))
+from cluster_ops import delete_endpoint_cmd, endpoint_uuid_cmd, scoped_cancel_cmd, uep_dirs_cleanup_cmd  # noqa: E402
 from pool import PoolClaims  # noqa: E402  (cross-process pool-user claims — see pool.py)
 
 POOL = [f"hpcbridge-test-{i:02d}" for i in range(10)]
 DEFAULT_MODEL = "claude-opus-5"
+# A gated cell's Slurm block is not submitted until 115–196 s into the run (09-03 endpoint logs), so a node it
+# will take still reads `idle` for that long. Launches within this window count against the idle count.
+NODE_CLAIM_S = 300.0
+# Knobs that must NOT leak from the operator's shell into every cell (a persisted HPCB_NO_SKILL ablated a
+# baseline cell; HPCB_EFFORT relabelled a whole matrix — review 2026-09-05). These prefixes are the exceptions.
+_CELL_ENV_KEEP_PREFIXES = ("HPCB_TEST_", "HPCB_POOL_", "HPCB_NODE_")
 
 
 class Stagger:
@@ -50,10 +58,21 @@ class Stagger:
             await asyncio.sleep(delay)
 
 
+def _git_describe() -> str:
+    """What the image is built from — `git describe --always --dirty`, so a bundle can pin the code it ran
+    (the launch-time HEAD can move under a long suite: one 09-03 image was recorded under two SHAs)."""
+    try:
+        return subprocess.run(["git", "-C", str(REPO), "describe", "--always", "--dirty", "--abbrev=12"],
+                              capture_output=True, text=True, timeout=20).stdout.strip() or "unknown"
+    except Exception:  # noqa: BLE001 - no git: still runnable
+        return "unknown"
+
+
 async def _build_once() -> bool:
     print("building the jail image once (parallel jobs reuse it)…", flush=True)
     proc = await asyncio.create_subprocess_exec(
         "docker", "build", "--provenance=false", "-t", "hpc-bridge-agentic",
+        "--build-arg", f"GIT_DESCRIBE={_git_describe()}",
         "-f", str(REPO / "agentic" / "Dockerfile"), str(REPO),
         stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
     )
@@ -87,51 +106,106 @@ def _cooldown_s(scenario: str) -> int:
     return int(_knobs(scenario).get("HPCB_KNOB_COOLDOWN_S", "0") or 0)
 
 
-def _needs_node(scenario: str) -> bool:
-    """NEEDS_COMPUTE_NODE scenarios bring up a real block: launched only when the partition has an idle node."""
-    return _knobs(scenario).get("HPCB_KNOB_NEEDS_NODE") == "1"
+def _needs_nodes(scenario: str) -> int:
+    """Idle nodes a cell needs at launch (HPCB_KNOB_NEEDS_NODE, derived by scenario_knobs.py from the scenario's
+    NEEDS_COMPUTE_NODE or its `compute_ran` grader). 0 = launches ungated."""
+    try:
+        return int(_knobs(scenario).get("HPCB_KNOB_NEEDS_NODE", "0") or 0)
+    except ValueError:
+        return 0
+
+
+def _warm_block_user(scenario: str) -> str | None:
+    """WARM_BLOCK_USER: a facility MEP's block runs as its mapped user; while one is RUNNING the cell reuses it."""
+    return _knobs(scenario).get("HPCB_KNOB_WARM_BLOCK_USER") or None
+
+
+def _probe_ssh(remote: str) -> str | None:
+    """One command on the cluster over the operator's own ssh alias (HPCB_NODE_PROBE_SSH, default `globus1`).
+    None when ssh itself failed."""
+    host = os.environ.get("HPCB_NODE_PROBE_SSH", "globus1")
+    try:
+        r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20", host, remote],
+                           capture_output=True, text=True, timeout=60)
+    except Exception:  # noqa: BLE001 - a transport failure just means "unknown"
+        return None
+    return r.stdout if r.returncode == 0 else None
 
 
 def _idle_nodes() -> int | None:
-    """Idle nodes on the cluster partition, probed over the operator's own ssh alias (HPCB_NODE_PROBE_SSH,
-    default `globus1`; partition HPCB_NODE_PARTITION, default `main`). None = the probe itself failed."""
-    import subprocess
-    host = os.environ.get("HPCB_NODE_PROBE_SSH", "globus1")
+    """Idle nodes on the cluster partition (HPCB_NODE_PARTITION, default `main`). None = the probe failed OR
+    answered something that is not a count (a misnamed partition, stdout noise) — both read as "unknown", never
+    as 0 (which used to make the gate wait an hour for nothing and then SKIP the cell as "0 idle")."""
     part = os.environ.get("HPCB_NODE_PARTITION", "main")
-    try:
-        r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20", host,
-                            f"sinfo -h -p {part} -t idle -o %D"], capture_output=True, text=True, timeout=60)
-    except Exception:  # noqa: BLE001 - a transport failure just means "unknown"
+    out = _probe_ssh(f"sinfo -h -p {part} -t idle -o %D")
+    if out is None:
         return None
-    if r.returncode != 0:
-        return None
-    out = r.stdout.strip()
-    return int(out) if out.isdigit() else 0
+    out = out.strip()
+    if not out:
+        return 0  # sinfo prints nothing when no node is in the state
+    return int(out) if out.isdigit() else None
 
 
-async def _await_idle_node(label: str, halt: asyncio.Event, max_wait_s: int) -> int | None:
-    """Wait until the partition has an idle node. Returns the idle count (>=1), -1 when the probe is
-    unavailable (launch unguarded rather than never), or None when `max_wait_s` passed with none idle.
-    Why: a cell whose block sits PENDING (Resources) for its whole run grades as `compute_ran` FAILED —
-    an environment fact dressed as agent behaviour. Waiting turns that into data worth having."""
-    t0 = time.monotonic()
-    last_note = -600.0
-    while not halt.is_set():
-        idle = await asyncio.to_thread(_idle_nodes)
-        if idle is None:
-            print(f"⚠ nodes  {label}: node probe unavailable (ssh/sinfo) — launching unguarded", flush=True)
-            return -1
-        if idle >= 1:
-            return idle
-        elapsed = time.monotonic() - t0
-        if elapsed >= max_wait_s:
-            return None
-        if elapsed - last_note >= 600:
-            print(f"⏳ nodes  {label}: 0 idle nodes on the partition — waiting ({int(elapsed)}s of {max_wait_s}s)",
-                  flush=True)
-            last_note = elapsed
-        await asyncio.sleep(60)
-    return None
+def _warm_block_running(user: str) -> bool | None:
+    """Is a block of `user` RUNNING on the cluster (a facility MEP's warm block)? None when the probe failed."""
+    out = _probe_ssh(f"squeue -u {user} -h -t R -o %j")
+    if out is None:
+        return None
+    return bool(out.strip())
+
+
+class NodeGate:
+    """Admits a compute cell only when the partition can take its block RIGHT NOW: idle nodes minus the blocks
+    that cells launched in the last NODE_CLAIM_S will still submit (in-flight accounting) must cover the need.
+
+    Replaces the exactly-one-idle special case: with two idle nodes and --concurrency 3, three cells used to
+    read "2 idle" within seconds and all launch — one starved PENDING for its whole run (the 2026-09-03
+    starvation the operator hand-serialised around). A WARM_BLOCK_USER whose block is running satisfies the
+    need outright (the MEP pair reuses that block). Probe failure ⇒ launch unguarded (never never-launch)."""
+
+    def __init__(self, clock=time.monotonic) -> None:
+        self._launches: list[float] = []
+        self._lock = asyncio.Lock()
+        self._clock = clock
+
+    def _recent(self) -> int:
+        now = self._clock()
+        self._launches = [t for t in self._launches if now - t < NODE_CLAIM_S]
+        return len(self._launches)
+
+    async def admit(self, label: str, need: int, warm_user: str | None, halt: asyncio.Event,
+                    max_wait_s: int) -> int | None:
+        """Block until admitted. Returns the idle count seen (>= need), -1 when unguarded (probe failed or a warm
+        block satisfied the need), or None when `max_wait_s` passed without capacity."""
+        t0 = time.monotonic()
+        last_note = -600.0
+        while not halt.is_set():
+            async with self._lock:  # probe + decision + claim are one step, so two cells can't take one node
+                if warm_user:
+                    warm = await asyncio.to_thread(_warm_block_running, warm_user)
+                    if warm:
+                        print(f"🖥 nodes  {label}: {warm_user}'s block is running — reusing it, no idle node needed",
+                              flush=True)
+                        return -1
+                idle = await asyncio.to_thread(_idle_nodes)
+                if idle is None:
+                    print(f"⚠ nodes  {label}: node probe unavailable (ssh/sinfo) — launching unguarded", flush=True)
+                    return -1
+                free = idle - self._recent()
+                if free >= need:
+                    self._launches.append(self._clock())
+                    print(f"🖥 nodes  {label}: {idle} idle, {self._recent() - 1} claimed by recent launches, "
+                          f"need {need} — launching", flush=True)
+                    return idle
+            elapsed = time.monotonic() - t0
+            if elapsed >= max_wait_s:
+                return None
+            if elapsed - last_note >= 600:
+                print(f"⏳ nodes  {label}: {idle} idle minus {self._recent()} claimed < {need} needed — waiting "
+                      f"({int(elapsed)}s of {max_wait_s}s)", flush=True)
+                last_note = elapsed
+            await asyncio.sleep(60)
+        return None
 
 
 def _short_model(m: str) -> str:
@@ -143,7 +217,38 @@ def _cell(model: str, effort: str | None) -> str:
     return f"{model} @ {effort or 'default'}"
 
 
-async def _run_job(scenario, model, effort, persona, ablate, claims, sem, stagger, halt) -> dict:
+def _cell_env(user: str, runid: str) -> dict[str, str]:
+    """The environment a cell's run_smoke.sh gets: the operator's shell MINUS stray HPCB_* knobs (kept: HPCB_TEST_*
+    credentials, HPCB_POOL_*, HPCB_NODE_*), plus this cell's values. run_suite mints HPCB_RUNID so it can clean up
+    a cell it has to abandon (see _emergency_cleanup)."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("HPCB_") or k.startswith(_CELL_ENV_KEEP_PREFIXES)}
+    env.update(HPCB_TEST_SSH_USER=user, HPCB_SKIP_BUILD="1", HPCB_RUNID=runid)
+    return env
+
+
+def _emergency_cleanup(inflight: dict[str, tuple[str, str]]) -> None:
+    """Best-effort, run-scoped cleanup for cells this suite abandons (SIGINT, a crash): as each cell's pool user,
+    stop+delete ITS endpoint by name and cancel ITS `uep.<eid>` blocks — the same commands run.py's teardown
+    uses, never user-wide. A `docker stop`'d jail never reaches run.py's own teardown (review 2026-09-05)."""
+    if not inflight:
+        return
+    key = os.environ.get("HPCB_TEST_SSH_KEY", str(Path.home() / ".ssh" / "hpcbridge-test"))
+    host = os.environ.get("HPC_BRIDGE_SSH_HOST", "globus1.cs.uchicago.edu")
+    for runid, (user, name) in list(inflight.items()):
+        print(f"🧹 cleanup {user}: endpoint {name} + its blocks (abandoned cell {runid})", flush=True)
+        base = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20", "-i", key, "-o", "IdentitiesOnly=yes",
+                f"{user}@{host}"]
+        try:
+            eid = subprocess.run(base + [endpoint_uuid_cmd(name)], capture_output=True, text=True, timeout=60).stdout.strip()
+            eids = [eid] if eid else []
+            cmd = f"{delete_endpoint_cmd(name)}; {scoped_cancel_cmd('slurm', eids)}; {uep_dirs_cleanup_cmd(eids)}"
+            r = subprocess.run(base + [cmd], capture_output=True, text=True, timeout=120)
+            print(f"   {r.stdout.strip()[:160] or ('rc=' + str(r.returncode))}", flush=True)
+        except Exception as exc:  # noqa: BLE001 - cleanup must not raise during shutdown
+            print(f"   cleanup failed: {type(exc).__name__}: {exc}", flush=True)
+
+
+async def _run_job(scenario, model, effort, persona, ablate, claims, sem, stagger, halt, inflight=None) -> dict:
     # A concurrency slot (this invocation) + an EXCLUSIVE claim on a pool user (across every harness
     # process on this host — two invocations must never share one: the other's teardown would cancel
     # this run's blocks). If another invocation holds the whole pool, wait rather than collide.
@@ -170,18 +275,26 @@ async def _run_job(scenario, model, effort, persona, ablate, claims, sem, stagge
                     "result": "SKIPPED (rate-limit halt)", "output": ""}
         await stagger.wait()
         print(f"▶ start  {label}", flush=True)
-        env = dict(os.environ, HPCB_TEST_SSH_USER=user, HPCB_SKIP_BUILD="1", HPCB_MODEL=model)
+        runid = f"{int(time.time())}-{os.getpid()}-{abs(hash((scenario, model, effort, persona, ablate, user, time.monotonic()))) % 100000}"
+        env = _cell_env(user, runid)
+        env["HPCB_MODEL"] = model
         if effort:
             env["HPCB_EFFORT"] = effort
         if persona:
             env["HPCB_PERSONA"] = persona
         if ablate == "skill":
             env["HPCB_NO_SKILL"] = "1"
+        if inflight is not None:
+            inflight[runid] = (user, f"hpc-bridge-globus1-{runid}")  # what run_smoke.sh names this cell's endpoint
         proc = await asyncio.create_subprocess_exec(
             "bash", str(SMOKE), scenario,
             env=env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
         )
-        out, _ = await proc.communicate()
+        try:
+            out, _ = await proc.communicate()
+        finally:
+            if inflight is not None:
+                inflight.pop(runid, None)  # the cell ran to its own teardown (or is being cleaned up by the caller)
         text = out.decode(errors="replace")
         ok = proc.returncode == 0
         if proc.returncode == 3:  # RATE_LIMITED (run.py) — stop launching new jobs
@@ -236,20 +349,23 @@ async def _main(args) -> int:
               + ", ".join(f"{s}{f' (+{cooldowns[s]}s cooldown)' if cooldowns[s] else ''}" for s in sorted(serial_locks)),
               flush=True)
 
-    # NEEDS_COMPUTE_NODE scenarios launch only when the partition has an idle node; with exactly one idle
-    # node the gate stays held for the whole cell so a second cell can't queue behind the same node.
-    node_scenarios = {s for s in scenarios if _needs_node(s)} if args.node_wait_s > 0 else set()
-    node_lock = asyncio.Lock()
+    # Compute cells launch only when the partition can take their block: idle nodes minus what cells launched
+    # in the last NODE_CLAIM_S will still submit (NodeGate). The need is per scenario (declared or derived).
+    needs = {s: _needs_nodes(s) for s in scenarios} if args.node_wait_s > 0 else {}
+    node_scenarios = {s for s, n in needs.items() if n > 0}
+    warm_users = {s: _warm_block_user(s) for s in node_scenarios}
+    gate = NodeGate()
+    inflight: dict[str, tuple[str, str]] = {}
     if node_scenarios:
-        print("compute-node scenarios (launch only when a node is idle; wait up to "
-              f"{args.node_wait_s}s): " + ", ".join(sorted(node_scenarios)), flush=True)
+        print("compute-node scenarios (launch only when the partition has capacity; wait up to "
+              f"{args.node_wait_s}s): " + ", ".join(f"{s} (needs {needs[s]}{', or ' + warm_users[s] + chr(39) + 's warm block' if warm_users.get(s) else ''})" for s in sorted(node_scenarios)), flush=True)
 
     async def serial_or_plain(s, m, e, pe, ab):
         lock = serial_locks.get(s)
         if lock is None:
-            return await _run_job(s, m, e, pe, ab, claims, sem, stagger, halt)
+            return await _run_job(s, m, e, pe, ab, claims, sem, stagger, halt, inflight)
         async with lock:
-            r = await _run_job(s, m, e, pe, ab, claims, sem, stagger, halt)
+            r = await _run_job(s, m, e, pe, ab, claims, sem, stagger, halt, inflight)
             remaining[s] -= 1
             if cooldowns.get(s) and remaining[s] > 0 and not halt.is_set():  # the last cell needs no cooldown
                 print(f"⏲ cooldown {s}: {cooldowns[s]}s before its next cell (fail2ban findtime)", flush=True)
@@ -260,26 +376,20 @@ async def _main(args) -> int:
         if s not in node_scenarios:
             return await serial_or_plain(s, m, e, pe, ab)
         label = f"{s} · {_short_model(m)}/{e or 'default'}"
-        await node_lock.acquire()
-        held = True
-        try:
-            idle = await _await_idle_node(label, halt, args.node_wait_s)
-            if idle is None:
-                print(f"⏭ skip   {label} — no idle compute node within {args.node_wait_s}s", flush=True)
-                return {"scenario": s, "model": m, "effort": e, "persona": pe, "ablate": ab, "user": None,
-                        "ok": False, "skipped": True,
-                        "result": f"SKIPPED (no idle compute node within {args.node_wait_s}s)", "output": ""}
-            print(f"🖥 nodes  {label}: {idle if idle >= 0 else '?'} idle at launch", flush=True)
-            if idle != 1:  # unknown or plenty: don't serialise the rest behind this cell
-                node_lock.release()
-                held = False
-            return await serial_or_plain(s, m, e, pe, ab)
-        finally:
-            if held:
-                node_lock.release()
+        idle = await gate.admit(label, needs[s], warm_users.get(s), halt, args.node_wait_s)
+        if idle is None:
+            print(f"⏭ skip   {label} — no capacity for {needs[s]} node(s) within {args.node_wait_s}s", flush=True)
+            return {"scenario": s, "model": m, "effort": e, "persona": pe, "ablate": ab, "user": None,
+                    "ok": False, "skipped": True,
+                    "result": f"SKIPPED (no idle compute node within {args.node_wait_s}s)", "output": ""}
+        return await serial_or_plain(s, m, e, pe, ab)
 
     try:
         results = await asyncio.gather(*[gated(s, m, e, pe, ab) for s, m, e, pe, ab in jobs])
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        print("\n⛔ interrupted — cleaning up the cells still in flight", flush=True)
+        _emergency_cleanup(inflight)
+        raise
     finally:
         claims.release_all()
 

@@ -17,6 +17,7 @@ import importlib
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -216,6 +217,32 @@ def _run_endpoint_ids(res) -> list[str]:
     return out
 
 
+def _cleanup(scen) -> None:
+    """Scenario-declared CLEANUP commands (the mirror of SETUP), run as the test user AFTER postchecks and
+    the run-scoped teardown, whatever the outcome — for the world state a scenario itself created (saturation's
+    sleepers), which the run-scoped teardown deliberately never touches. Best-effort."""
+    for c in getattr(scen, "CLEANUP", []):
+        rc, out = _ssh_run(c, timeout=120)
+        print(f"cleanup: {'ok' if rc == 0 else f'rc={rc}'} — {out.strip()[:160]}", file=sys.stderr, flush=True)
+
+
+def _build_info() -> str:
+    """What the jail image was built from (`git describe --always --dirty`, stamped at build time), else unknown."""
+    try:
+        return (REPO_ROOT / "BUILD_INFO").read_text().strip() or "unknown"
+    except OSError:
+        return "unknown"
+
+
+def _sdk_version() -> str | None:
+    try:
+        from importlib.metadata import version
+
+        return version("claude-agent-sdk")
+    except Exception:  # noqa: BLE001 - not installed (hermetic host): fine
+        return None
+
+
 def _teardown(scen, res=None) -> str:
     """Tear down THIS RUN's endpoint and blocks — and nothing else the pool user owns — unless the
     scenario keeps state for a reuse chain (TEARDOWN != 'delete'). Runs AFTER postchecks so cleanup
@@ -314,7 +341,15 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
         "no_globus_db": bool(getattr(scen, "NO_GLOBUS_DB", False)),
         "globus_db_secret": getattr(scen, "GLOBUS_DB_SECRET", None),
         "postcheck_delay_s": getattr(scen, "POSTCHECK_DELAY_S", 10),
+        "cleanup": list(getattr(scen, "CLEANUP", [])),
+        # Code provenance (review 2026-09-05, 2.3): `build` pins what this image was built from; `git_sha` is the
+        # host's HEAD when the cell was LAUNCHED (kept as `host_head` too, so drift between the two is visible).
+        "build": _build_info(),
+        "image_id": os.environ.get("HPCB_IMAGE_ID", "unknown"),
         "git_sha": os.environ.get("HPCB_GIT_SHA", "unknown"),
+        "host_head": os.environ.get("HPCB_GIT_SHA", "unknown"),
+        "sdk_version": _sdk_version(),
+        "human_sim_model": None,  # filled once the run has a HumanSim (interactive runs)
         "pool_user": os.environ.get("HPC_BRIDGE_SSH_USER", "hpcbridge-test"),
     }
     runs_dir = Path(os.environ.get("HPCB_RUNS_DIR", str(REPO_ROOT / "agentic" / "runs")))
@@ -322,11 +357,15 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
     rc = 1
     res = None
     all_results: list[Result] = []
+    gating: set[str] = set()
+    failed: list[str] = []
+    result_label = "CRASHED"  # replaced below; a bundle written from an exception path says so
     try:
         _seed_facility_cache(scen)
         if not _setup(scen):
             print("RESULT: SETUP FAILED — scenario not run (world precondition unmet)")
             rc = 2
+            result_label = "SETUP FAILED"
             return rc
         if phases:
             res = await _run_chain(phases, scen, model=model, effort=effort,
@@ -351,24 +390,36 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
                 if x.note:
                     print(f"  human note:  {x.note}")
 
+        config["human_sim_model"] = getattr(res, "human_sim_model", None)
+
         print("\n=== INVARIANTS ===")
         # Universal trace invariants + the scenario's own bespoke graders (EXTRA_INVARIANTS).
         results = check_all(res.trace)
         results += [fn(res.trace) for fn in getattr(scen, "EXTRA_INVARIANTS", [])]
-        # agent_engaged always gates: a do-nothing run must never grade OK (vacuous pass).
-        critical = set(getattr(scen, "EXPECT_OK", [r.name for r in results])) | {"agent_engaged"}
-        failed = []
+        # Harness-side observations as ROWS, so a bundle explains a failure by itself (review 2026-09-05, 2.5/3.3):
+        # the completion gate (an errored/cut-off agent run can't pass on vacuous invariants) and the human-sim's
+        # prose follow-ups (a run that ended because the agent kept asking in prose is not a clean pass).
+        completed = res.final is not None and not getattr(res.final, "is_error", False)
+        results.append(Result("run_completed", completed,
+                              "ok" if completed else "the agent run errored or never returned a result: "
+                              + str(getattr(res.final, "result", "") or "")[:160]))
+        if persona:
+            n = getattr(res, "prose_followups", 0)
+            capped = getattr(res, "followups_capped", False)
+            results.append(Result("harness:prose_followups", not capped,
+                                  f"{n} prose question(s) answered by the human-sim"
+                                  + ("; the run ENDED at the cap — the agent kept asking in prose" if capped else "")))
+        # agent_engaged + run_completed always gate: a do-nothing or truncated run must never grade OK.
+        critical = set(getattr(scen, "EXPECT_OK", [r.name for r in results])) | {"agent_engaged", "run_completed"}
+        if persona:
+            critical.add("harness:prose_followups")
+        gating = critical
         for r in results:
             tag = "PASS" if r.ok else "FAIL"
             gate = " *critical*" if r.name in critical else ""
             print(f"  [{tag}] {r.name}{gate}: {r.detail}")
             if not r.ok and r.name in critical:
                 failed.append(r.name)
-
-        # Completion gate: an errored/cut-off agent run can't pass on vacuous invariants.
-        if res.final is None or getattr(res.final, "is_error", False):
-            print("  [FAIL] run_completed *critical*: the agent run errored or never returned a result")
-            failed.append("run_completed")
 
         # World postchecks — AFTER the agent, BEFORE teardown (cleanup must not mask
         # failures). The settle delay lets async releases land; long_job stretches it past
@@ -379,6 +430,7 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
         world = _postchecks(scen)
         for r in world:
             print(f"  [{'PASS' if r.ok else 'FAIL'}] {r.name} *critical*: {r.detail}")
+            gating.add(r.name)
             if not r.ok:
                 failed.append(r.name)  # all world postchecks gate — they are deliberate
         all_results = results + world
@@ -392,16 +444,22 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
             getattr(res.final, "api_error_status", None) == 429
             or "session limit" in str(getattr(res.final, "result", "")).lower()
         )
+        all_results.append(Result("rate_limited", not rate_limited,
+                                  "the run hit the session/rate limit (not graded)" if rate_limited else "ok"))
         if rate_limited:
             rc = 3
+            result_label = "RATE_LIMITED"
             print("RESULT: RATE_LIMITED — session/rate limit; run not graded, suite should halt")
         elif failed:
+            result_label = "FAILED"
             print(f"RESULT: FAILED — critical checks broke: {failed}")
         else:
+            result_label = "OK"
             print("RESULT: OK")
             rc = 0
     finally:
         endpoint_logs = _teardown(scen, res)
+        _cleanup(scen)
         # Provenance is written LAST and unconditionally — a crashed run still leaves its
         # evidence (partial messages, whatever grading completed, the resolved config).
         rec = write_run_record(
@@ -412,6 +470,9 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
             grading=all_results,
             final=(res.final if res else None),
             rc=rc,
+            gating=sorted(gating),
+            failed=failed,
+            result=result_label,
         )
         if rec is not None and endpoint_logs:
             # The evidence a post-mortem needs (manager + UEP logs, block stdout/stderr) — deleted on
@@ -438,6 +499,11 @@ def main() -> None:
     ap.add_argument("--no-skill", action="store_true",
                     help="ablation: withhold SKILL.md from the system prompt (measure the guidance's value)")
     args = ap.parse_args()
+
+    def _term(signum, _frame):  # `docker stop` / entrypoint.sh: end the run so `finally` tears down + writes the bundle
+        raise KeyboardInterrupt(f"signal {signum}")
+
+    signal.signal(signal.SIGTERM, _term)
     sys.exit(asyncio.run(_run(args.scenario, args.model, args.effort, args.persona, args.no_skill)))
 
 

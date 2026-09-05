@@ -11,8 +11,8 @@ while true; do
   docker ps --filter ancestor=hpc-bridge-agentic --format '  {{.ID}}  up {{.RunningFor}}  {{.Command}}' 2>/dev/null | sed 's/ ago//' || echo "  (docker not running)"
   echo; echo "== newest run bundles (agentic/runs) =="
   for d in $(ls -td "$REPO"/agentic/runs/*/ 2>/dev/null | head -8); do
-    r=$(grep -h -m1 '^RESULT:' "$d/transcript.md" 2>/dev/null || grep -h -o '"result": *"[^"]*"' "$d/record.json" 2>/dev/null | head -1)
-    printf '  %-45s %s\n' "$(basename "$d")" "${r:-(running / no result yet)}"
+    r=$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print(f"{r.get(\"result\") or \"?\"}  rc={r.get(\"rc\")}  failed={r.get(\"failed\") or []}")' "$d/record.json" 2>/dev/null)
+    printf '  %-45s %s\n' "$(basename "$d")" "${r:-(running / no record yet)}"
   done
   echo; echo "== log: ${LOG:-none} =="
   [ -n "$LOG" ] && [ -f "$LOG" ] && tail -n 18 "$LOG" | cut -c1-160

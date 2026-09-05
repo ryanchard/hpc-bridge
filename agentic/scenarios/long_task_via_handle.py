@@ -97,4 +97,5 @@ EXPECT_OK = [
 ]
 
 POSTCHECK_DELAY_S = 10
+NEEDS_COMPUTE_NODE = True   # brings up a billed block (no compute_ran grader to derive it from) — run_suite gates it
 TEARDOWN = "delete"

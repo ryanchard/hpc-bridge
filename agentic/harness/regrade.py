@@ -25,7 +25,10 @@ from invariants import check_all  # noqa: E402
 from trace_adapter import trace_from_bundle  # noqa: E402
 
 
-def regrade(runs_dir: Path) -> int:
+def regrade(runs_dir: Path, *, strict: bool = False) -> int:
+    """Replay every bundle. `strict`: exit 1 when any bundle would now grade FAIL (a CI guard over a golden
+    corpus). The completion gate is re-derived from the persisted `rc`/`final` — a bundle with rc=1 and every
+    trace row PASS used to re-grade as OK (review 2026-09-05, 2.5)."""
     bundles = flips = now_failing = 0
     for d in sorted(runs_dir.iterdir()):
         if not (d / "record.json").exists() or not (d / "messages.jsonl").exists():
@@ -46,6 +49,12 @@ def regrade(runs_dir: Path) -> int:
             critical |= set(getattr(scen, "EXPECT_OK", []))
         except ModuleNotFoundError:
             pass
+        # the completion gate, from what the bundle recorded (not from the trace)
+        fin = rec.get("final") or {}
+        completed = rec.get("rc") != 3 and fin.get("is_error") is False
+        from invariants import Result
+        results.append(Result("run_completed", completed, "ok" if completed else f"rc={rec.get('rc')} is_error={fin.get('is_error')}"))
+        critical.add("run_completed")
         new = {r.name: r for r in results}
 
         changed = [(n, old[n], new[n].ok) for n in old if n in new and old[n] != new[n].ok]
@@ -67,9 +76,9 @@ def regrade(runs_dir: Path) -> int:
             print(f"        new critical FAIL {r.name} — {r.detail[:110]}")
     print(f"\n{bundles} bundles re-graded · {flips} per-invariant verdict flips · "
           f"{now_failing} would now grade FAIL")
-    return 0
+    return 1 if (strict and now_failing) else 0
 
 
 if __name__ == "__main__":
-    sys.exit(regrade(Path(sys.argv[1]) if len(sys.argv) > 1
-                     else _HERE.parents[0] / "runs"))
+    argv = [a for a in sys.argv[1:] if a != "--strict"]
+    sys.exit(regrade(Path(argv[0]) if argv else _HERE.parents[0] / "runs", strict="--strict" in sys.argv))

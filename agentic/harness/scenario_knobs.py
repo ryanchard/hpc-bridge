@@ -5,7 +5,10 @@
     HPCB_KNOB_GLOBUS_DB_SECRET=HPCB_TEST_GLOBUS_DB_NOACCOUNT   # GLOBUS_DB_SECRET -> mount THAT env var's path instead
     HPCB_KNOB_SERIAL=1                             # SERIAL = True -> shares a facility-side identity; run one at a time
     HPCB_KNOB_COOLDOWN_S=660                       # COOLDOWN_S -> run_suite waits this long after each cell (fail2ban findtime)
-    HPCB_KNOB_NEEDS_NODE=1                         # NEEDS_COMPUTE_NODE = True -> run_suite launches only when a node is idle
+    HPCB_KNOB_NEEDS_NODE=<n>                       # nodes the cell occupies: NEEDS_COMPUTE_NODE (True=1, an int, False=0),
+                                                   #   else DERIVED: 1 when `compute_ran` is among EXTRA_INVARIANTS
+    HPCB_KNOB_WARM_BLOCK_USER=glabs                # WARM_BLOCK_USER -> a running block of that user satisfies the need
+                                                   #   (a facility MEP's warm block is what the cell reuses)
 
 Everything else a scenario declares (EXTRA_ENV, SEED_FACILITY_CACHE, …) is applied INSIDE the container
 by run.py. Scenario modules import only `invariants` (pure), so this is importable on the host."""
@@ -44,9 +47,29 @@ def main(argv: list[str]) -> int:
     cooldown = int(getattr(mod, "COOLDOWN_S", 0) or 0)
     if cooldown > 0:
         print(f"HPCB_KNOB_COOLDOWN_S={cooldown}")
-    if getattr(mod, "NEEDS_COMPUTE_NODE", False):
-        print("HPCB_KNOB_NEEDS_NODE=1")
+    n = needs_nodes(mod)
+    if n > 0:
+        print(f"HPCB_KNOB_NEEDS_NODE={n}")
+    warm = getattr(mod, "WARM_BLOCK_USER", None)
+    if warm:
+        print(f"HPCB_KNOB_WARM_BLOCK_USER={shlex.quote(str(warm))}")
     return 0
+
+
+def needs_nodes(mod) -> int:
+    """How many idle compute nodes a cell of this scenario needs at launch. Explicit `NEEDS_COMPUTE_NODE`
+    wins (True -> 1, an int -> that many, False -> 0 even if the scenario grades compute); otherwise DERIVED:
+    a scenario that gates on `compute_ran` brings up a block. Review 2026-09-05: six of eight block-bringing
+    scenarios had never declared the knob and ran ungated (the 09-03 node starvation)."""
+    explicit = getattr(mod, "NEEDS_COMPUTE_NODE", None)
+    if explicit is not None:
+        if explicit is True:
+            return 1
+        if explicit is False:
+            return 0
+        return max(0, int(explicit))
+    names = {getattr(f, "__name__", "") for f in getattr(mod, "EXTRA_INVARIANTS", [])}
+    return 1 if "compute_ran" in names else 0
 
 
 if __name__ == "__main__":

@@ -65,4 +65,5 @@ POSTCHECKS = [
     },
 ]
 
-TEARDOWN = "delete"   # also scancels the sim job afterwards — hygiene for the next run
+NEEDS_COMPUTE_NODE = True   # brings up a billed block (no compute_ran grader to derive it from) — run_suite gates it
+TEARDOWN = "delete"   # the endpoint + its uep-marked blocks; the agent's own sbatch job is NOT cancelled (it self-terminates)

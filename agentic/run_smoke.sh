@@ -27,6 +27,8 @@ if [ -f "$ENV_FILE" ]; then
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in ''|\#*) continue ;; esac
     k="${line%%=*}"
+    # per-cell knobs are run_suite's to set: a persisted HPCB_NO_SKILL/HPCB_EFFORT/... must never fill a cell
+    case "$k" in HPCB_MODEL|HPCB_EFFORT|HPCB_PERSONA|HPCB_NO_SKILL|HPCB_RUNID) continue ;; esac
     if [ -z "${!k+x}" ]; then export "$line"; fi
   done < "$ENV_FILE"
 fi
@@ -60,23 +62,28 @@ if [ -n "${HPCB_KNOB_NO_GLOBUS_DB:-}" ]; then
   GLOBUS_DB=""
   echo "globus store: NONE — the scenario runs logged out (expects needs_login)"
 fi
-RUNID="$(date +%s)-$$"
+RUNID="${HPCB_RUNID:-$(date +%s)-$$}"   # run_suite mints it (so it can clean up an abandoned cell); solo runs mint their own
 USER_DIR="/home/agent/run/$RUNID"   # agent-writable (the entrypoint mkdir's it + stages the db)
 RUNS_HOST="$REPO_ROOT/agentic/runs" # per-run provenance bundles land here (gitignored)
 mkdir -p "$RUNS_HOST"
-GIT_SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+GIT_SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"          # the HOST's head at launch
+GIT_DESCRIBE="$(git -C "$REPO_ROOT" describe --always --dirty --abbrev=12 2>/dev/null || echo unknown)"  # what the image is built from
 
 [ -f "$KEY" ] || { echo "missing scoped test key: $KEY  (generate one + register its .pub on globus1)"; exit 1; }
 
 if [ -z "${HPCB_SKIP_BUILD:-}" ]; then   # the suite runner builds once, then sets this
   echo "building jail image (hpc-bridge-agentic)…"
-  docker build --provenance=false -t hpc-bridge-agentic -f "$REPO_ROOT/agentic/Dockerfile" "$REPO_ROOT" >/dev/null
+  docker build --provenance=false -t hpc-bridge-agentic --build-arg "GIT_DESCRIBE=$GIT_DESCRIBE" \
+    -f "$REPO_ROOT/agentic/Dockerfile" "$REPO_ROOT" >/dev/null
 fi
+IMAGE_ID="$(docker image inspect -f '{{.Id}}' hpc-bridge-agentic 2>/dev/null || echo unknown)"   # pins the code the cell ran
 
 ARGS=(
   --rm
+  --stop-timeout 120                  # `docker stop`: give run.py's teardown (SIGTERM -> its finally) time to finish
   "${AUTH_ARGS[@]}"
   -e HPCB_RUNID="$RUNID"
+  -e HPCB_IMAGE_ID="$IMAGE_ID"
   -e HPC_BRIDGE_SSH_USER="$SSH_USER"
   -e HPC_BRIDGE_SSH_KEY=/run/secrets/test_key
   -e HPC_BRIDGE_SSH_HOST=globus1.cs.uchicago.edu   # FQDN — the container has no ~/.ssh/config alias

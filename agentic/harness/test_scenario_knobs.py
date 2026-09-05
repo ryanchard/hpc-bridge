@@ -41,29 +41,106 @@ def _run_suite():
     return mod
 
 
-def _drive(mod, probes: list[int | None], max_wait_s: int, monkeypatch):
-    seq = iter(probes)
-    clock = {"t": 0.0}
-    monkeypatch.setattr(mod, "_idle_nodes", lambda: next(seq))
-    monkeypatch.setattr(mod.time, "monotonic", lambda: clock["t"])
+# ---- node need is DERIVED, and the gate does in-flight accounting (review 2026-09-05, 2.2) ----------------------
+
+def test_node_need_is_derived_for_every_block_bringing_scenario():
+    # explicit True -> 1; derived from a `compute_ran` gate -> 1; explicit int -> that many; MEP pair name a warm user
+    for s, need in (("happy_path", "1"), ("gated_provision", "1"), ("spend_gate_enforced", "1"),
+                    ("mep_compute_only", "1"), ("stranger_mep_walk", "1"), ("long_task_via_handle", "1"),
+                    ("idle_release_kill", "1"), ("long_job_30m", "1"), ("saturation", "3")):
+        rc, k = _knobs(s)
+        assert rc == 0 and k.get("HPCB_KNOB_NEEDS_NODE") == need, (s, k)
+    for s in ("mep_compute_only", "stranger_mep_walk"):
+        assert _knobs(s)[1].get("HPCB_KNOB_WARM_BLOCK_USER") == "glabs", s
+    for s in ("zero_config_list", "needs_login_paste", "registry_over_cache", "spend_refusal", "session_persistence"):
+        assert "HPCB_KNOB_NEEDS_NODE" not in _knobs(s)[1], s  # no block, no gate
+    rc, k = _knobs("saturation")
+    assert k.get("HPCB_KNOB_SERIAL") == "1"  # holds every node: never alongside another cell
+
+
+def _gate(mod, idle_seq, warm_seq=None):
+    clock = {"t": 1000.0}
+    seq = iter(idle_seq)
+    monkeypatch_targets = {}
+    mod._idle_nodes = lambda: next(seq)
+    wseq = iter(warm_seq or [])
+    mod._warm_block_running = lambda user: next(wseq, False)
+    mod.time.monotonic = lambda: clock["t"]
 
     async def fake_sleep(s):
         clock["t"] += s
 
-    monkeypatch.setattr(mod.asyncio, "sleep", fake_sleep)
-    return asyncio.run(mod._await_idle_node("cell", asyncio.Event(), max_wait_s))
+    mod.asyncio.sleep = fake_sleep
+    return mod.NodeGate(clock=lambda: clock["t"]), clock, monkeypatch_targets
 
 
-def test_gate_waits_until_a_node_is_idle(monkeypatch):
+def test_gate_counts_in_flight_launches_against_the_idle_nodes():
+    # two idle nodes, three cells arriving within the claim window: the third must WAIT (it used to launch —
+    # every cell read "2 idle" and one starved PENDING for its whole run, the 2026-09-03 starvation)
     mod = _run_suite()
-    assert _drive(mod, [0, 0, 2], 3600, monkeypatch) == 2
+    gate, clock, _ = _gate(mod, [2, 2, 2, 2, 3])
+
+    async def go():
+        halt = asyncio.Event()
+        a = await gate.admit("a", 1, None, halt, 3600)
+        b = await gate.admit("b", 1, None, halt, 3600)
+        assert (a, b) == (2, 2)
+        # third cell: 2 idle - 2 recent launches = 0 free -> waits (fake sleep advances the clock) until the
+        # window expires or the probe shows more; the 5th probe says 3 idle -> admitted
+        c = await gate.admit("c", 1, None, halt, 3600)
+        assert c == 3 and clock["t"] > 1000.0
+    asyncio.run(go())
 
 
-def test_gate_gives_up_after_max_wait(monkeypatch):
+def test_gate_need_of_three_admits_only_when_all_are_free():
     mod = _run_suite()
-    assert _drive(mod, [0] * 10, 120, monkeypatch) is None
+    gate, _clock, _ = _gate(mod, [2, 2, 3])
+
+    async def go():
+        assert await gate.admit("sat", 3, None, asyncio.Event(), 3600) == 3
+    asyncio.run(go())
 
 
-def test_gate_launches_unguarded_when_probe_fails(monkeypatch):
+def test_gate_warm_block_satisfies_a_mep_cell_without_an_idle_node():
     mod = _run_suite()
-    assert _drive(mod, [None], 3600, monkeypatch) == -1
+    gate, _clock, _ = _gate(mod, [0], warm_seq=[True])
+
+    async def go():
+        assert await gate.admit("mep", 1, "glabs", asyncio.Event(), 3600) == -1  # unguarded: reusing the warm block
+    asyncio.run(go())
+
+
+def test_gate_gives_up_after_max_wait_and_launches_unguarded_on_probe_failure():
+    mod = _run_suite()
+    gate, _clock, _ = _gate(mod, [0] * 10)
+
+    async def go():
+        assert await gate.admit("x", 1, None, asyncio.Event(), 120) is None
+    asyncio.run(go())
+    gate2, _c2, _ = _gate(mod, [None])
+
+    async def go2():
+        assert await gate2.admit("y", 1, None, asyncio.Event(), 3600) == -1
+    asyncio.run(go2())
+
+
+def test_idle_probe_treats_a_non_count_as_unknown_not_zero(monkeypatch):
+    mod = _run_suite()
+    monkeypatch.setattr(mod, "_probe_ssh", lambda remote: "sinfo: error: Invalid partition name")
+    assert mod._idle_nodes() is None  # was 0 -> an hour of waiting then a "0 idle" SKIP
+    monkeypatch.setattr(mod, "_probe_ssh", lambda remote: "")
+    assert mod._idle_nodes() == 0
+    monkeypatch.setattr(mod, "_probe_ssh", lambda remote: "2\n")
+    assert mod._idle_nodes() == 2
+
+
+def test_cell_env_strips_stray_knobs_but_keeps_credentials(monkeypatch):
+    mod = _run_suite()
+    monkeypatch.setenv("HPCB_NO_SKILL", "1")        # a persisted ablation must not leak into a baseline cell
+    monkeypatch.setenv("HPCB_EFFORT", "max")
+    monkeypatch.setenv("HPCB_TEST_GLOBUS_DB", "/x/storage.db")
+    monkeypatch.setenv("HPCB_NODE_PARTITION", "main")
+    env = mod._cell_env("hpcbridge-test-03", "123-4")
+    assert "HPCB_NO_SKILL" not in env and "HPCB_EFFORT" not in env
+    assert env["HPCB_TEST_GLOBUS_DB"] == "/x/storage.db" and env["HPCB_NODE_PARTITION"] == "main"
+    assert env["HPCB_TEST_SSH_USER"] == "hpcbridge-test-03" and env["HPCB_RUNID"] == "123-4"

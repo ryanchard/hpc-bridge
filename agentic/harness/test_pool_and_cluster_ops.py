@@ -101,3 +101,17 @@ def test_harness_cancel_matches_the_products_marker_scoping():
             assert f"uep.{eid}" in cmd
             assert not re.search(r"(scancel|qdel)\s+-u\b", cmd)   # never user-wide
             assert ("scancel $ids" in cmd) if scheduler == "slurm" else ("qdel $ids" in cmd)
+
+
+def test_run_scoped_cancel_never_matches_the_saturation_sleepers():
+    # saturation's SETUP submits `hpcb-sat` sleepers; the run-scoped cancel keys on `uep.<eid>` markers only, so it
+    # must not (and does not) reclaim them — the scenario declares its own CLEANUP for that (review 2026-09-05, 2.1)
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scenarios"))
+    import saturation
+
+    cmd = scoped_cancel_cmd("slurm", [EID])
+    assert "hpcb-sat" not in cmd and "-n hpcb-sat" not in cmd  # (the `[ -n "$ids" ]` test is a shell -n, fine)
+    assert any("hpcb-sat" in c and "scancel" in c for c in saturation.CLEANUP)
+    assert saturation.SERIAL is True and saturation.NEEDS_COMPUTE_NODE == 3

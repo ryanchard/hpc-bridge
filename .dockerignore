@@ -8,5 +8,6 @@
 **/.env
 *.pub
 agentic/**/sdkcheck
+agentic/runs
 docs/hpc-bridge-vault/Demos
 .DS_Store
