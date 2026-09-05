@@ -227,3 +227,28 @@ def test_cell_env_keeps_the_target_selection(monkeypatch):
     monkeypatch.setenv("HPCB_FAKE_SSH_PORT", "2222")
     env = mod._cell_env("hpcbridge-test-00", "1-2")
     assert env["HPCB_TARGET"] == "fake" and env["HPCB_FAKE_SSH_PORT"] == "2222"
+
+
+def test_idle_probe_uses_the_targets_default_partition(monkeypatch):
+    mod = _run_suite()
+    seen = []
+
+    def fake_probe(remote):
+        seen.append(remote)
+        return "idle\n"
+
+    monkeypatch.setattr(mod, "_probe_ssh", fake_probe)
+    monkeypatch.delenv("HPCB_NODE_PARTITION", raising=False)
+    monkeypatch.setattr(mod, "_TARGET", mod.targets.Target(name="fake", ssh_host="login", nodes=3, endpoint_prefix="x", default_key="k",
+                                                            docker_network=None, probe_argv=("ssh",), cleanup_host="h", cleanup_ssh_opts=(),
+                                                            profile="site", capabilities={"default_partition": "compute"}))
+    assert mod._idle_nodes() == 1 and seen == ["sinfo -h -p compute -N -o %t"]  # site has no `main`
+
+
+def test_suite_reads_shell_quoted_knob_values_as_data():
+    # scenario_knobs.py shell-quotes JSON/CSV values for run_smoke.sh's eval; run_suite must unquote them (the first
+    # site-profile suite crashed on json.loads("'{...}'") — 2026-09-05)
+    mod = _run_suite()
+    assert mod._requires("login_pin_teardown") == {"login_nodes": 2}
+    assert mod._allowed_targets("login_pin_teardown") == {"fake"}
+    assert mod._requires("happy_path") == {}

@@ -115,6 +115,23 @@ Two ways to reach the login node:
   (`docker run --network hpcb-fake_default …`) and use `HPC_BRIDGE_SSH_HOST=login` on port 22 — no
   alias, no port mapping. This is how `bin/stretch.sh` does it.
 
+## Profiles — one image, many cluster shapes
+
+A **profile** is a directory under `profiles/<name>/`: `profile.toml` (a manifest whose `[capabilities]` describe the
+cluster in the vocabulary scenarios use), `slurm.conf`, optional `gres.conf`, `job_submit.lua`, a
+`compose.override.yml` overlay (extra nodes, networks, login nodes) and `setup.d/<role>.sh` fixtures run by that
+role's entrypoint (e.g. a fake `mybalance`, QOS/accounts). The profile dir is mounted at `/etc/hpcb/profile` and
+applied at container start, so switching shape is `down.sh --wipe && up.sh --profile <name>` (~20 s once built).
+
+| profile | what it is | for |
+|---|---|---|
+| `default` | 2 nodes, one partition `main`, no enforcement, one login node, one NIC | the spike's cluster; every SSH scenario |
+| `site` | 3 nodes; `debug` (30 min, QOS cap) / `compute` (default) / `gpu` (c3, `hpcb-gpu` only, must request a GPU — `job_submit.lua`); accounting ENFORCED (wrong account rejected); fake `mybalance` on PATH; two NICs; **two login nodes behind the round-robin name `login`** (`login01.hpcb.test`:2222, `login02.hpcb.test`:2223, shared host keys like a real site) | discovery with real choices; the spend gate as a decision; balance parsers end to end; the login-node PIN class |
+
+Scenarios declare what they need — `REQUIRES = {"login_nodes": 2}`, `{"accounting": "enforce"}`, `{"min_nodes": 3}`,
+`{"scheduler": "pbs"}` … — and `run_suite` skips a cell the target/profile cannot satisfy (`targets.meets`). Bundles
+record `config.profile` and `config.capabilities`. Postchecks may say `"on": "each_login"` to run on every login node.
+
 ## Running the agentic harness against it (`--target fake`)
 
 The harness knows two targets (`agentic/harness/targets.py`): `globus1` (default) and `fake`. One preset carries the
@@ -126,6 +143,8 @@ node count (2 — `saturation` sizes its sleepers from it). Scenario prompts nam
 python3 agentic/run_suite.py --target fake --scenarios happy_path,endpoint_reuse --concurrency 3
 #   ^ runs bin/up.sh first (build if needed, wait until schedulable + sshd); --reset-cluster wipes it first;
 #     --no-cluster-up skips that. The node gate probes `sinfo` through the published sshd as a pool user.
+python3 agentic/run_suite.py --target fake --profile site --reset-cluster --scenarios gated_provision,login_pin_teardown
+#   ^ a different cluster shape (see Profiles); switching profiles needs --reset-cluster
 HPCB_TARGET=fake ./agentic/run_smoke.sh spend_refusal          # one cell
 HPCB_TARGET=fake ./agentic/sweep_pool_user.sh hpcbridge-test-00 # hand sweep (rarely needed: --reset-cluster instead)
 ```

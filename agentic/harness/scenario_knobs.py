@@ -58,6 +58,10 @@ def main(argv: list[str]) -> int:
     tg = getattr(mod, "TARGETS", None)
     if tg:
         print(f"HPCB_KNOB_TARGETS={shlex.quote(','.join(tg))}")  # the scenario runs ONLY on these targets (chaos: fake only)
+    req = getattr(mod, "REQUIRES", None)
+    if req:
+        import json
+        print(f"HPCB_KNOB_REQUIRES={shlex.quote(json.dumps(req, sort_keys=True))}")  # cluster capabilities the scenario needs
     return 0
 
 

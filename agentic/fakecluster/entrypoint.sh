@@ -10,6 +10,24 @@ POOL_USERS=(hpcbridge-test $(for i in $(seq -f "%02g" 0 9); do echo "hpcbridge-t
 
 log() { echo "[$ROLE] $*" >&2; }
 
+# --- profile -----------------------------------------------------------------------------------
+# /etc/hpcb/profile is the mounted profiles/<name>/ dir: slurm.conf is required; gres.conf and job_submit.lua are
+# copied when present; setup.d/<role>.sh (sourced, so it sees POOL_USERS) adds the profile's fixtures for this role.
+PROFILE_DIR=/etc/hpcb/profile
+apply_profile() {
+  [ -s "$PROFILE_DIR/slurm.conf" ] || { log "no slurm.conf in $PROFILE_DIR — is the profile dir mounted?"; exit 2; }
+  cp "$PROFILE_DIR/slurm.conf" /etc/slurm/slurm.conf
+  for f in gres.conf job_submit.lua; do
+    [ -s "$PROFILE_DIR/$f" ] && cp "$PROFILE_DIR/$f" "/etc/slurm/$f"
+  done
+  log "profile: $(sed -n 's/^name *= *"\(.*\)"/\1/p' "$PROFILE_DIR/profile.toml" 2>/dev/null || echo unknown)"
+}
+run_setup() {  # run_setup <role>
+  local f="$PROFILE_DIR/setup.d/$1.sh"
+  if [ -s "$f" ]; then log "profile setup: $1.sh"; # shellcheck disable=SC1090
+    source "$f"; fi
+}
+
 wait_tcp() {  # wait_tcp host port [what]
   local host=$1 port=$2 what=${3:-$1:$2}
   log "waiting for $what…"
@@ -36,6 +54,7 @@ munge_key() {
 
 # --- roles -----------------------------------------------------------------------------------
 role_slurmdbd() {
+  apply_profile
   munge_key
   sed "s|@@DBPASS@@|${SLURM_DB_PASS:?SLURM_DB_PASS unset}|" /etc/slurm/slurmdbd.conf.tmpl > /etc/slurm/slurmdbd.conf
   chown slurm:slurm /etc/slurm/slurmdbd.conf && chmod 600 /etc/slurm/slurmdbd.conf
@@ -46,6 +65,7 @@ role_slurmdbd() {
 }
 
 role_slurmctld() {
+  apply_profile
   munge_key
   wait_tcp slurmdbd 6819 "slurmdbd"
   # Register the cluster + a pool account/users in the accounting DB (idempotent; sacctmgr exits
@@ -59,18 +79,22 @@ role_slurmctld() {
   for u in "${POOL_USERS[@]}"; do
     sacctmgr -i add user "$u" account=hpcb >/dev/null 2>&1 || true
   done
+  run_setup slurmctld
   log "starting slurmctld"
   exec slurmctld -D
 }
 
 role_slurmd() {
+  apply_profile
   munge_key
+  run_setup slurmd
   wait_tcp slurmctld 6817 "slurmctld"
   log "starting slurmd ($(hostname))"
   exec slurmd -D
 }
 
 role_login() {
+  apply_profile
   munge_key
   # Homes live on the shared /home volume; create on first boot. The host's freshly generated test
   # public key is bind-mounted at /run/hpcb/authorized_keys and installed for every pool user.
@@ -85,6 +109,7 @@ role_login() {
     fi
   done
   [ -s /run/hpcb/authorized_keys ] || log "WARNING: no /run/hpcb/authorized_keys mounted — nobody can ssh in"
+  run_setup login
   wait_tcp slurmctld 6817 "slurmctld"
   log "starting sshd ($(hostname), $(ip -o -4 addr show scope global | awk '{print $2"="$4}' | tr '\n' ' '))"
   exec /usr/sbin/sshd -D -e

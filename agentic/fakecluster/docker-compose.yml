@@ -17,6 +17,9 @@ x-slurm: &slurm
     SLURM_DB_PASS: ${SLURM_DB_PASS:-slurm-local-dev}   # local throwaway fixture, not a secret (private network, no published port)
   volumes:
     - munge:/etc/munge
+    # the active PROFILE (profiles/<name>/): slurm.conf, optional gres.conf / job_submit.lua / setup.d/<role>.sh —
+    # the entrypoint applies it at start. bin/up.sh sets HPCB_FAKE_PROFILE_DIR from --profile / HPCB_FAKE_PROFILE.
+    - ${HPCB_FAKE_PROFILE_DIR:-./profiles/default}:/etc/hpcb/profile:ro
   restart: unless-stopped
 
 services:
@@ -53,6 +56,7 @@ services:
     volumes:
       - munge:/etc/munge
       - slurmctld-state:/var/spool/slurmctld
+      - ${HPCB_FAKE_PROFILE_DIR:-./profiles/default}:/etc/hpcb/profile:ro
 
   c1:
     <<: *slurm
@@ -62,6 +66,7 @@ services:
     volumes:
       - munge:/etc/munge
       - home:/home
+      - ${HPCB_FAKE_PROFILE_DIR:-./profiles/default}:/etc/hpcb/profile:ro
 
   c2:
     <<: *slurm
@@ -71,6 +76,7 @@ services:
     volumes:
       - munge:/etc/munge
       - home:/home
+      - ${HPCB_FAKE_PROFILE_DIR:-./profiles/default}:/etc/hpcb/profile:ro
 
   login:
     <<: *slurm
@@ -84,6 +90,7 @@ services:
       - home:/home
       # The freshly generated TEST public key (lives outside the repo; bin/up.sh creates it).
       - ${HPCB_FAKE_KEY_PUB:-~/.ssh/hpcb-fake.pub}:/run/hpcb/authorized_keys:ro
+      - ${HPCB_FAKE_PROFILE_DIR:-./profiles/default}:/etc/hpcb/profile:ro
 
 volumes:
   munge:

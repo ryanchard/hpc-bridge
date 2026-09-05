@@ -63,6 +63,9 @@ Every run writes a provenance bundle to `agentic/runs/<runid>-<scenario>/` — s
 Slurm cluster the suite brings up itself (`--reset-cluster` wipes it first). Every SSH scenario runs on either; the
 facility-MEP pair and the one-time-code path need globus1 / a real facility. `harness/targets.py` is the one place a
 target's facts live; prompts say `{ssh_host}`, never a literal host. Fake-cluster endpoints are `hpc-bridge-fake-*`.
+The fake cluster has **profiles** (`--profile default|site`, see `fakecluster/README.md`): scenarios declare the
+cluster they need (`TARGETS`, `REQUIRES = {"login_nodes": 2, "accounting": "enforce", …}`) and the suite skips a cell
+the target cannot satisfy — coverage is a deliberate coupling of scenario to cluster shape, not a cross product.
 
 Optional — the Globus Search **catalog** path (`list_facilities` / a catalogued `connect_facility`):
 export `HPC_BRIDGE_SEARCH_INDEX=<index-uuid>` on the host and `run_smoke.sh` forwards it into the jail
@@ -212,6 +215,9 @@ NEEDS_COMPUTE_NODE = True        # nodes the cell occupies (True=1, an int, Fals
                                  #   minus blocks claimed by launches in the last 300 s cover the need.
 WARM_BLOCK_USER = "glabs"        # optional: a facility MEP's running block (that user's) satisfies the need instead
 SERIAL = True                    # one cell at a time (a shared facility identity, or a cell that holds every node)
+TARGETS = ("fake",)              # optional: only these targets (chaos scenarios kill things)
+REQUIRES = {"login_nodes": 2}    # optional: cluster capabilities needed (matched against the target/profile manifest)
+MIDRUN_HOOKS = [{"after_tool": "poll_task", "nth": 1, "cmd": "…"}]   # optional: chaos — fire on the cluster mid-run
 ```
 Every bundle's `record.json` (schema 2) carries `result` (OK | FAILED | RATE_LIMITED | SETUP FAILED | CRASHED),
 `failed` (the gating checks that broke), `gating` (which checks decided), a `gating` flag per grading row, and
