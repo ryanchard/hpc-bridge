@@ -122,7 +122,6 @@ async def test_list_facilities_returns_summaries(monkeypatch):
 
 
 async def test_list_facilities_summaries_are_agent_safe(monkeypatch):
-    from hpc_bridge import server
 
     monkeypatch.setattr(binding, "make_catalog", lambda: FakeCatalog([fake_entry(id="anvil", facility_key="purdue")])
     )
@@ -313,7 +312,6 @@ def _details(**over):
 def _byo_app(monkeypatch, f):
     # An app whose catalog has only anvil, with the facility build + runner faked so a supplied
     # facility's login shape "warms" and returns MYBALANCE — mirrors the existing connect tests.
-    from hpc_bridge import server
 
     f.workers = 1
     app = AppCtx(facility=FakeFacility(), profile=Profile())
