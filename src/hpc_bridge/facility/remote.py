@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
 
@@ -516,10 +516,14 @@ class RemoteEndpointCLI:
                     raise
             await _sleep(_START_REGISTER_POLL_S)
 
-    async def stop(self, name: str) -> None:
-        # Best-effort + bounded: `stop` can throw a psutil traceback yet still cancel the block, and
-        # a fresh SSH to a loaded login node is slow — don't let it hold teardown hostage.
-        await self._gce("stop", name, timeout=_TEARDOWN_SSH_S)
+    async def stop(self, name: str) -> tuple[int, str]:
+        """`globus-compute-endpoint stop <name>` — returns (rc, stderr). Bounded: a fresh SSH to a loaded
+        login node is slow, don't let it hold teardown hostage. rc 255 is ssh itself failing (no
+        connection / denied) — the caller must treat that as "nothing happened", not "stopped". A
+        non-zero gce rc can still mean the daemon died (a psutil traceback on the way out): the caller
+        re-checks `status`."""
+        rc, out, err = await self._gce("stop", name, timeout=_TEARDOWN_SSH_S)
+        return rc, (err or out).strip()
 
     async def delete(self, name: str) -> bool:
         """`globus-compute-endpoint delete --yes <name>`: remove the endpoint's directory and its web
@@ -570,9 +574,11 @@ class RemoteEndpointCLI:
         except Exception:  # noqa: BLE001 - cleanup must never break teardown
             pass
 
-    async def wipe_storage_db(self) -> None:
-        """Remove the seeded credential from the remote host (best-effort)."""
-        await ssh_exec(self.target, f'rm -f "{self.remote_dir}/storage.db"')
+    async def wipe_storage_db(self) -> bool:
+        """Remove the seeded credential from the remote host. True only when the remote `rm` succeeded —
+        teardown's "token copy removed" is spoken from this, never assumed."""
+        rc, _out, _err = await ssh_exec(self.target, f'rm -f "{self.remote_dir}/storage.db"', timeout=_TEARDOWN_SSH_S)
+        return rc == 0
 
     async def cancel_blocks(self, endpoint_id: str, scheduler: str = "slurm") -> list[str]:
         """Best-effort cancel of THIS endpoint's scheduler blocks; returns the cancelled IDs.
@@ -665,13 +671,14 @@ class RemoteEndpointCLI:
         alias = self.target.host_key_alias or _resolved_hostname(self.target.host)
         self.target = replace(self.target, host=host, host_key_alias=alias)
 
-    async def close(self) -> None:
-        """Close the SSH ControlMaster for this target (best-effort, bounded).
+    async def close(self) -> bool:
+        """Close the SSH ControlMaster for this target (best-effort, bounded). True when a master was
+        there and took the exit request — the teardown notice's "connection closed" is spoken from this.
 
         `ControlPersist` self-reaps an idle master, so this is just a prompt, explicit teardown of
-        the shared connection at endpoint end — not load-bearing. No-op when multiplexing is off."""
+        the shared connection at endpoint end — not load-bearing. False when multiplexing is off."""
         if self.target.control_dir is None:
-            return
+            return False
         try:
             proc = await asyncio.create_subprocess_exec(
                 *self.target.control_argv("exit"),
@@ -679,8 +686,9 @@ class RemoteEndpointCLI:
                 stderr=asyncio.subprocess.DEVNULL,
             )
             await asyncio.wait_for(proc.communicate(), _TEARDOWN_SSH_S)
+            return proc.returncode == 0
         except Exception:  # noqa: BLE001 - no master / already gone / slow sshd: ControlPersist reaps it
-            pass
+            return False
 
 
 _SLURM_TEMPLATE = """\
@@ -966,15 +974,27 @@ class SlurmFacility:
             self.cli.rebind(host)
         return EndpointHandle(endpoint_id=eid, name=name, login_host=host)
 
-    async def teardown(self, endpoint_id: str, *, wipe_credentials: bool = False) -> dict[str, bool]:
+    async def teardown(self, endpoint_id: str, *, wipe_credentials: bool = False) -> dict[str, Any]:
         """Stop the endpoint, cancel its scheduler block(s), DELETE it (directory + registration + its
         `uep.*` dirs) and drop its record — the explicit destroy. Every op runs over SSH, bounded by
         `_TEARDOWN_SSH_S`. `wipe_credentials=True` also removes the remote storage.db — but ONLY if
         hpc-bridge seeded it (`_seeded_by_us`): a token store that was already on the login node (a shared
-        account the facility's own endpoint uses, say) is never ours to delete. Returns what was done so
-        the tool's notice can tell the truth: {"deleted", "credentials_wiped", "ssh_closed"} (all bool)."""
+        account the facility's own endpoint uses, say) is never ours to delete.
+
+        Returns what was MEASURED, so the tool's notice can tell the truth (review 2026-09-05: every word
+        used to come from an intention): {"stopped", "deleted", "credentials_wiped", "ssh_closed",
+        "ssh_failed": bool, "error": str}. If the very first SSH op fails at the transport/auth layer
+        (rc 255 — no connection, or a one-time-code facility whose shared connection expired), NOTHING
+        else is attempted and `ssh_failed` is set: the manager is still running, the record (pin +
+        seeded-flag) is kept so a later teardown can still do the job. The record is dropped only
+        when the delete actually happened."""
         name = self.profile.endpoint_name
-        await self.cli.stop(name)
+        rc, err = await self.cli.stop(name)
+        if rc == 255:  # ssh itself failed: nothing ran on the login node
+            return {"stopped": False, "deleted": False, "credentials_wiped": False, "ssh_closed": False,
+                    "ssh_failed": True, "error": err[:400]}
+        # a non-zero gce rc can be a psutil traceback on the way out with the daemon in fact gone: re-check
+        stopped = rc == 0 or (await self.cli.status(name)) == "configured"
         # `stop` kills the manager, but an ungraceful stop leaves Parsl's block holding the
         # allocation until walltime (no manager left to scale it in). Explicitly cancel this
         # endpoint's blocks so "teardown released the compute" actually holds.
@@ -983,15 +1003,14 @@ class SlurmFacility:
         await self.cli.remove_uep_dirs(endpoint_id)
         wiped = False
         if wipe_credentials and self._seeded_by_us():
-            await self.cli.wipe_storage_db()
-            wiped = True
-        if self.store is not None and self.alias is not None:
+            wiped = await self.cli.wipe_storage_db()
+        if deleted and self.store is not None and self.alias is not None:
             self.store.remove(alias=self.alias, name=name)  # no endpoint, no pin, no seeded-flag to carry
-        await self.cli.close()  # drop the shared SSH master; the endpoint is gone
         # `ssh_closed`: the tool's notice says so, else the agent infers the connection is "still open" (it did,
         # live 2026-09-04) and tells the user something false about what is left on their machine.
-        ssh_closed = getattr(getattr(self.cli, "target", None), "control_dir", None) is not None
-        return {"deleted": deleted, "credentials_wiped": wiped, "ssh_closed": ssh_closed}
+        ssh_closed = bool(await self.cli.close())  # drop the shared SSH master; the endpoint is gone
+        return {"stopped": stopped, "deleted": deleted, "credentials_wiped": wiped, "ssh_closed": ssh_closed,
+                "ssh_failed": False, "error": "" if stopped else err[:400]}
 
     async def login_exec(self, command: str) -> tuple[int, str, str]:
         """Read-only login-node command for discovery — no block, no allocation (delegates

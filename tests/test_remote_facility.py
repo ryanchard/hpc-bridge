@@ -263,6 +263,7 @@ class _FakeRemoteCLI:
 
     async def stop(self, name):
         self.calls.append(("stop", name))
+        return (0, "")
 
     async def clean_uep_pidfiles(self, endpoint_id):
         self.calls.append(("clean_uep_pidfiles", endpoint_id))
@@ -276,6 +277,7 @@ class _FakeRemoteCLI:
 
     async def wipe_storage_db(self):
         self.calls.append(("wipe", "hpc-bridge"))
+        return True
 
     async def delete(self, name):
         self.calls.append(("delete", name))
@@ -293,6 +295,7 @@ class _FakeRemoteCLI:
 
     async def close(self):
         self.calls.append(("close",))
+        return True
 
 
 def _kinds(cli):
@@ -1196,3 +1199,67 @@ async def test_gce_and_start_tolerate_an_empty_env_setup(monkeypatch):
     await cli2.status(LONG_NAME)
     assert any("module load python && globus-compute-endpoint list" in c for c in cmds)
 
+
+# ---- teardown reports what was MEASURED (review 2026-09-05, Fix-now #1) ------------------------------------------
+
+async def test_teardown_aborts_when_ssh_itself_fails_and_keeps_the_record(tmp_path):
+    # A one-time-code facility whose shared connection expired (or any host that refuses our key): `stop`
+    # never ran on the login node. NOTHING else may be attempted, the report must say so, and the record
+    # (pin + seeded-flag) must survive so a later teardown can still wipe the token copy.
+    from hpc_bridge.state import EndpointRecord, LoginNodeStore
+
+    class _Denied(_FakeRemoteCLI):
+        async def stop(self, name):
+            self.calls.append(("stop", name))
+            return (255, "u@login02: Permission denied (gssapi-with-mic,keyboard-interactive,hostbased).")
+
+    cli = _Denied()
+    store = LoginNodeStore(tmp_path / "e.json")
+    store.put(EndpointRecord(endpoint_id="eid-1", login_host="login02", alias="a", user="u", key_path=None,
+                             name="hpc-bridge", provisioned_at="t", seeded_credentials=True))
+    fac = SlurmFacility(_profile(), cli=cli, store=store, alias="a")
+    report = await fac.teardown("eid-1", wipe_credentials=True)
+    assert report["ssh_failed"] and not report["stopped"] and not report["deleted"] and not report["credentials_wiped"]
+    assert "keyboard-interactive" in report["error"]
+    assert _kinds(cli) == ["stop"]  # no delete, no wipe, no close: nothing pretended
+    assert store.get(alias="a", name="hpc-bridge").seeded_credentials is True  # the record stays
+
+
+async def test_teardown_treats_a_gce_stop_error_as_stopped_only_if_the_daemon_is_gone():
+    class _Traceback(_FakeRemoteCLI):
+        async def stop(self, name):
+            self.calls.append(("stop", name))
+            return (1, "Traceback … psutil.NoSuchProcess")
+
+    cli = _Traceback(status="configured")  # the daemon did die on the way out
+    assert (await SlurmFacility(_profile(), cli=cli).teardown("eid-1"))["stopped"] is True
+    cli2 = _Traceback(status="running")  # it did not
+    assert (await SlurmFacility(_profile(), cli=cli2).teardown("eid-1"))["stopped"] is False
+
+
+async def test_teardown_keeps_the_record_when_delete_failed(tmp_path):
+    from hpc_bridge.state import EndpointRecord, LoginNodeStore
+
+    class _NoDelete(_FakeRemoteCLI):
+        async def delete(self, name):
+            self.calls.append(("delete", name))
+            return False
+
+    store = LoginNodeStore(tmp_path / "e.json")
+    store.put(EndpointRecord(endpoint_id="eid-1", login_host="login02", alias="a", user="u", key_path=None,
+                             name="hpc-bridge", provisioned_at="t", seeded_credentials=True))
+    report = await SlurmFacility(_profile(), cli=_NoDelete(), store=store, alias="a").teardown("eid-1")
+    assert report["stopped"] and not report["deleted"]
+    assert store.get(alias="a", name="hpc-bridge") is not None  # the directory is still there: so is our record
+
+
+async def test_teardown_credentials_wiped_is_measured():
+    class _WipeFails(_FakeRemoteCLI):
+        async def wipe_storage_db(self):
+            self.calls.append(("wipe", "hpc-bridge"))
+            return False
+
+    fac = SlurmFacility(_profile(), cli=_WipeFails())
+    fac._seeded_credentials = True
+    report = await fac.teardown("eid-1", wipe_credentials=True)
+    assert report["credentials_wiped"] is False  # rm failed: never claim the token copy is gone

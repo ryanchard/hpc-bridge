@@ -266,6 +266,7 @@ def _bootstrap_parts(tmp_path, monkeypatch, *, remote_db_present):
 
     async def _wipe():
         wiped.append(True)
+        return True
 
     cli.wipe_storage_db = _wipe
     made = tmp_path / "trimmed.db"
@@ -310,6 +311,7 @@ async def test_teardown_in_a_later_session_reads_the_record(tmp_path, monkeypatc
 
     async def _wipe():
         wiped.append(True)
+        return True
 
     cli2.wipe_storage_db = _wipe
     fac2 = SlurmFacility(_profile(), cli=cli2, client_factory=_no_endpoints, store=store, alias="anvil.rcac.purdue.edu")
@@ -442,7 +444,8 @@ async def test_teardown_deletes_the_endpoint_and_its_worker_dirs_and_reports(tmp
     kinds = _kinds(cli)
     assert kinds.index("stop") < kinds.index("delete") and ("delete", "hpc-bridge") in cli.calls
     assert ("remove_uep_dirs", "eid-1") in cli.calls and ("wipe", "hpc-bridge") in cli.calls
-    assert report == {"deleted": True, "credentials_wiped": True, "ssh_closed": False}  # no SSH target on the fake
+    assert report == {"stopped": True, "deleted": True, "credentials_wiped": True, "ssh_closed": True,
+                      "ssh_failed": False, "error": ""}  # every word measured (fake: stop rc 0, wipe ok, close ok)
     assert store.get(alias="a", name="hpc-bridge") is None  # the record goes with the endpoint
 
 

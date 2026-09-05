@@ -36,8 +36,10 @@ password and expires in minutes.
 
 ## What the agent never does
 
-It never asks for a Globus password, an SSH password, or a multi-factor code, and it never types a
-login link into a shell. If an agent ever asks you for a password, do not give it one and report it.
+It never asks for a Globus password or an SSH password, and it never types a login link into a shell.
+The two things it may ask you for are single-use codes: the Globus one-time code above, and, on facilities
+that require it, the current code from your authenticator (next section). If an agent ever asks you for a
+password, do not give it one and report it.
 
 ## Facilities that ask for a one-time code at SSH login
 

@@ -3,6 +3,27 @@
 All notable changes to hpc-bridge. The plugin version lives in `.claude-plugin/plugin.json` (Claude Code updates an
 installed plugin only when that version changes); git tags mark releases.
 
+## 0.1.6 — 2026-09-05 — teardown tells the truth; licensed
+
+### Fixed
+- **Teardown reports only what it measured.** "Stopped", "deleted", "token copy removed" and "connection closed"
+  each come from the remote command's own result. If SSH itself fails (a one-time-code facility whose shared
+  connection expired, an unreachable host), nothing further is attempted, the tool answers `up` with
+  "TEARDOWN FAILED", the endpoint stays bound so a retry can finish, and the record that lets a later teardown
+  remove the token copy is kept. Previously every one of those words was assumed, the record was deleted, and
+  the endpoint was reported down while its manager still ran.
+- **The teardown code gate works for bring-your-own facilities.** It no longer depends on the registry's
+  one-time-code flag: with no shared connection open it probes the login node once; a key that works proceeds,
+  a denial offering a second factor asks for the code, anything else is reported as a failed teardown.
+- The unit tier is hermetic again (#93): thirteen tests had been reaching the live registry.
+
+### Changed
+- **Licensed under Apache-2.0** (LICENSE and `pyproject.toml`; the plugin manifests have no license field). The
+  first public release had no license.
+- Docs that still said the agent never handles a one-time code (login, troubleshooting, bring-your-own) now
+  describe the 0.1.2 behaviour; the Expanse registry description too. The README no longer names a tag that was
+  never cut. The skill's balance re-read no longer points at a tool on a facility without a login shape.
+
 ## 0.1.5 — 2026-09-04 — registry: Anvil is its facility endpoint; Globus Labs is `globus-labs`
 
 ### Changed

@@ -31,9 +31,9 @@ key-based SSH: put the host's `User` and `IdentityFile` in `~/.ssh/config`, or s
 or the facility is down. Nothing was started.
 
 **A request to run an `ssh` command in your own terminal** (the agent calls this pre-authentication).
-The facility needs a password or a multi-factor code, which the agent never handles. Run the command
-it gives you in your own terminal; it opens a session hpc-bridge then shares, and the connect
-continues with no further prompts.
+The facility needs a password, which the agent never handles (a one-time code is different: see above).
+Run the command it gives you in your own terminal; it opens a session hpc-bridge then shares, and the
+connect continues with no further prompts.
 
 **The login link fails when opened**. It is single-use: if the page already said you could return,
 the login has completed and you can just carry on. If it has expired, the agent issues a fresh one.

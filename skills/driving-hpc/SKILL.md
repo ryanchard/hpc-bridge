@@ -49,7 +49,7 @@ A compute block **spends your allocation**, so don't provision blind. Pick a mac
    - Partitions (Slurm): `run_shell("sinfo -h -o '%P|%a|%l|%D|%c|%m|%F'", shape="login")` → `name|avail|timelimit|nodes|cores|mem_MB|A/I/O/T-nodes`. The **I** (idle) in the last field is *live* availability — 0 idle will queue.
    - Accounts/QOS (Slurm): `run_shell("sacctmgr -nP show assoc where user=$USER format=Account,QOS,Partition", shape="login")` — the allocation→partition/QOS mapping behind the balances.
    - Queues (PBS): `run_shell("qstat -Q", shape="login")` for queues; `run_shell("qstat -u $USER", shape="login")` to watch the pilot.
-   - **Re-read balance** (optional): balances came from `connect_facility`; to refresh, `run_shell("mybalance", shape="login")` on Anvil (elsewhere on ACCESS `xdusage -p <project>`).
+   - **Re-read balance** (optional, SSH facilities only — a facility endpoint has no login shape): use the site's balance tool on the login shape, e.g. `run_shell("expanse-client user -r expanse", shape="login")` on Expanse, `mybalance` on Purdue clusters, `xdusage -p <project>` elsewhere on ACCESS. If `connect_facility` returned no allocations, the account is the project id the user was given (see the facility's registry notes).
    - **Recipe, not rule:** if a tool isn't found, adapt (`scontrol show partition` / `qstat -Q`; `module load` first if a binary is missing). A `cold_start` while the login worker warms — just retry.
    - **Gotcha:** partition `timelimit` may read `infinite` because the real cap is per-**QOS** — if walltime matters, also `run_shell("sacctmgr -nP show qos format=Name,MaxWall", shape="login")`.
 

@@ -792,6 +792,109 @@ async def test_finished_teardown_does_not_clear_a_facility_bound_meanwhile(monke
     assert app.state.endpoint_id == "eid-2" and "login" in app.shapes  # the new binding survives
 
 
+def _ssh_fake_facility(teardown_report=None, *, auth_method="ssh-key", torn=None):
+    from hpc_bridge.facility.remote import SshTarget
+
+    target = SshTarget(host="login02.example.edu", user="u", control_dir="/tmp/cm", host_key_alias="login.example.edu")
+
+    class _F(FakeFacility):
+        class cli:  # mirrors RemoteEndpointCLI's attribute shape
+            pass
+
+        async def teardown(self, eid, *, wipe_credentials=False):
+            if torn is not None:
+                torn.append(eid)
+            return teardown_report
+
+    _F.cli.target = target
+    _F.auth_method = auth_method
+    return _F(), target
+
+
+async def _teardown_app(monkeypatch, fac):
+    from hpc_bridge import server
+    from hpc_bridge.models import ShellOutcome
+    from hpc_bridge.server import ShapeRuntime
+
+    app = AppCtx(facility=fac, profile=Profile(), state=EndpointState(endpoint_id="eid-1"))
+    app.machine = "byo-mfa"
+    app.shapes["login"] = ShapeRuntime(user_endpoint_config={"provider_type": "LocalProvider"})
+
+    async def fake_run_shell(a, command, session_id="default", shape="compute"):
+        return ShellOutcome(phase="complete", exit_code=0, stdout="released 0\n", block_state="warm")
+
+    monkeypatch.setattr(server, "_run_shell", fake_run_shell)
+    return app
+
+
+async def test_teardown_ssh_failure_is_reported_as_failed_and_keeps_the_endpoint_bound(monkeypatch):
+    # review 2026-09-05 Fix-now #1: a BYO MFA facility whose shared connection expired used to be reported
+    # "down … token copy removed" from booleans nobody measured, and the record was deleted. Now: the master
+    # is dead, the probe's denial offers a second factor -> the one-time-code handoff, nothing torn down.
+    from hpc_bridge import connect, server
+    from hpc_bridge.server import _teardown_endpoint
+
+    torn = []
+    fac, target = _ssh_fake_facility({"stopped": True, "deleted": True, "credentials_wiped": True,
+                                      "ssh_closed": True, "ssh_failed": False, "error": ""}, torn=torn)
+    app = await _teardown_app(monkeypatch, fac)
+    monkeypatch.setattr(connect, "_master_alive", lambda t: False)
+
+    async def denied(t):
+        return 255, "u@login02.example.edu: Permission denied (gssapi-with-mic,keyboard-interactive,hostbased)."
+
+    monkeypatch.setattr(server, "_probe_login_node", denied)
+    res = await _teardown_endpoint(app)
+    assert torn == [] and res.status == "up" and "STILL RUNNING" in res.notice and "complete_preauth" in res.notice
+    assert app.pending_preauth == ("byo-mfa", target) and app.preauth_resume == "teardown_endpoint()"
+    assert app.state.endpoint_id == "eid-1" and "login" in app.shapes  # nothing cleared
+    # a denial WITHOUT a second factor (key refused / host down) is a plain failed teardown, no code asked
+    app.pending_preauth = None
+
+    async def down(t):
+        return 255, "ssh: connect to host login02.example.edu port 22: Connection timed out"
+
+    monkeypatch.setattr(server, "_probe_login_node", down)
+    res = await _teardown_endpoint(app)
+    assert torn == [] and res.status == "up" and res.notice.startswith("TEARDOWN FAILED") and "CANNOT REACH" in res.notice
+    assert app.pending_preauth is None and app.state.endpoint_id == "eid-1"
+
+    async def ok(t):  # the key works: no gate, teardown proceeds and finishes
+        return 0, ""
+
+    monkeypatch.setattr(server, "_probe_login_node", ok)
+    res = await _teardown_endpoint(app)
+    assert torn == ["eid-1"] and res.status == "down" and "SSH connection to the login node was closed" in res.notice
+
+
+async def test_teardown_report_ssh_failed_from_the_facility_is_honest(monkeypatch):
+    # the gate passed (master alive) but the facility's own stop hit rc 255 anyway (connection died in between)
+    from hpc_bridge import connect
+    from hpc_bridge.server import _teardown_endpoint
+
+    fac, _target = _ssh_fake_facility({"stopped": False, "deleted": False, "credentials_wiped": False,
+                                      "ssh_closed": False, "ssh_failed": True,
+                                      "error": "Permission denied (keyboard-interactive)."})
+    app = await _teardown_app(monkeypatch, fac)
+    monkeypatch.setattr(connect, "_master_alive", lambda t: True)
+    res = await _teardown_endpoint(app)
+    assert res.status == "up" and res.notice.startswith("TEARDOWN FAILED") and "still in place" in res.notice
+    assert app.state.endpoint_id == "eid-1" and "login" in app.shapes  # bound: a retry can finish it
+    assert app.pending_preauth is not None  # the denial offered a second factor -> the handoff is armed
+
+
+async def test_teardown_stop_failure_is_not_reported_as_down(monkeypatch):
+    from hpc_bridge import connect
+    from hpc_bridge.server import _teardown_endpoint
+
+    fac, _t = _ssh_fake_facility({"stopped": False, "deleted": False, "credentials_wiped": False,
+                                  "ssh_closed": True, "ssh_failed": False, "error": "psutil traceback"})
+    app = await _teardown_app(monkeypatch, fac)
+    monkeypatch.setattr(connect, "_master_alive", lambda t: True)
+    res = await _teardown_endpoint(app)
+    assert res.status == "up" and "still reports running" in res.notice and app.state.endpoint_id == "eid-1"
+
+
 async def test_teardown_on_a_key_facility_never_gates(monkeypatch):
     # ssh-key facilities (the default) tear down straight away — no master check, no handoff
     from hpc_bridge import connect, server

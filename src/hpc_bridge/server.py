@@ -679,13 +679,20 @@ async def _finish_teardown(app: AppCtx, eid: str) -> EndpointStatus:
             # the seeded token store leaves with the endpoint (B-03)
             report = await teardown(eid, wipe_credentials=True)
         except Exception as exc:  # noqa: BLE001 - report, don't crash the tool
-            notice = f"block released; manager teardown reported {type(exc).__name__}: {exc}"[:280]
+            return _teardown_failed(app, eid, f"the login-node teardown raised {type(exc).__name__}: {exc}"[:300])
         else:
             if isinstance(report, dict):  # say what actually happened, not what was intended (live 2026-09-04)
+                if report.get("ssh_failed"):
+                    return _teardown_failed(app, eid, report.get("error") or "ssh failed", ssh_denial=True)
+                if not report.get("stopped", True):
+                    return _teardown_failed(
+                        app, eid, "`globus-compute-endpoint stop` failed and the manager still reports running"
+                        + (f": {report.get('error')}" if report.get("error") else ""))
                 deleted = ("manager gce-stopped + deleted" if report.get("deleted") else
-                           "manager gce-stopped, but DELETE FAILED: the endpoint directory remains on the login node")
+                           "manager gce-stopped, but DELETE FAILED: the endpoint directory and its registration "
+                           "remain on the login node (the next connect will re-adopt them)")
                 creds = ("the Globus token copy hpc-bridge placed on the login node removed"
-                         if report.get("credentials_wiped") else "no token store of ours on the login node to remove")
+                         if report.get("credentials_wiped") else "no token store of ours was removed")
                 ssh = ("; the shared SSH connection to the login node was closed too — nothing of this session "
                        "stays open on the user's machine" if report.get("ssh_closed") else "")
                 notice = f"endpoint fully torn down (block released; {deleted}; {creds}{ssh})"
@@ -703,6 +710,45 @@ async def _finish_teardown(app: AppCtx, eid: str) -> EndpointStatus:
     )
 
 
+def _teardown_failed(app: AppCtx, eid: str, why: str, *, ssh_denial: bool = False) -> EndpointStatus:
+    """Teardown did NOT happen: the endpoint stays bound (so a retry can finish the job) and the notice says
+    what is still there. An SSH denial that offers a second factor becomes the one-time-code handoff, so a
+    bring-your-own MFA facility gets the same treatment as a curated one (review 2026-09-05, Fix-now #1)."""
+    from .facility.remote import key_accepted_second_factor_pending
+
+    target = getattr(getattr(app.facility, "cli", None), "target", None)
+    facility = app.machine or "the facility"
+    head = ("TEARDOWN FAILED — nothing was removed: the login-node manager is STILL RUNNING and any token copy "
+            "hpc-bridge placed there is still in place. ")
+    if ssh_denial and target is not None and key_accepted_second_factor_pending(why):
+        app.pending_preauth = (facility, target)
+        app.preauth_resume = "teardown_endpoint()"
+        handoff = _needs_preauth_result(facility, target, otp_ok=True)
+        detail = f"The SSH connection to the login node needs its one-time code again. {handoff.notice} "
+    elif ssh_denial:
+        detail = _explain_provision_error(RuntimeError(why), app.facility) + " "
+    else:
+        detail = why + ". "
+    return EndpointStatus(
+        status="up", block_state="cold", endpoint_id=eid, session_spend=_total_session_spend(app),
+        notice=head + detail + "Then call teardown_endpoint again to finish.",
+    )
+
+
+async def _probe_login_node(target) -> tuple[int, str]:
+    """One cheap BatchMode SSH (`true`) to learn whether the login node will take our key right now.
+    (rc, stderr): 0 = yes; 255 = ssh failed (the stderr names why: a second factor pending, host down, key
+    refused). Used by the teardown gate when no shared connection is open, so the gate rests on EVIDENCE
+    rather than the curated `auth_method` flag — a bring-your-own facility has none."""
+    from .facility.remote import ssh_exec
+
+    try:
+        rc, _out, err = await ssh_exec(target, "true", timeout=20.0)
+    except Exception as exc:  # noqa: BLE001 - timeout / no ssh binary: read as unreachable
+        return 255, f"ssh: connect to host {getattr(target, 'host', '?')}: {type(exc).__name__}: {exc}"
+    return rc, (err or "").strip()
+
+
 async def _teardown_preauth_gate(app: AppCtx, eid: str) -> EndpointStatus | None:
     """Teardown is the one post-bootstrap op that MUST SSH the login node (`gce stop` + delete run there).
     On a one-time-code facility with no shared connection open, ask for the code BEFORE any SSH — the same
@@ -713,10 +759,21 @@ async def _teardown_preauth_gate(app: AppCtx, eid: str) -> EndpointStatus | None
 
     fac = app.facility
     target = getattr(getattr(fac, "cli", None), "target", None)
-    if getattr(fac, "auth_method", None) != "mfa-otp" or target is None:
-        return None
+    if target is None or not getattr(target, "control_dir", None):
+        return None  # no SSH control plane (a MEP), or multiplexing off: nothing to gate on
     if await asyncio.to_thread(_master_alive, target):
-        return None
+        return None  # the shared connection is open: every op below rides it
+    if getattr(fac, "auth_method", None) != "mfa-otp":
+        # Not flagged as a one-time-code facility — but the flag exists only on curated entries. Ask the login
+        # node itself, once: a key that works means proceed; a denial that offers a second factor is the same
+        # handoff; anything else is reported as a failed teardown with the endpoint still bound.
+        rc, err = await _probe_login_node(target)
+        if rc == 0:
+            return None
+        from .facility.remote import key_accepted_second_factor_pending
+
+        if not key_accepted_second_factor_pending(err):
+            return _teardown_failed(app, eid, err or "ssh failed", ssh_denial=True)
     facility = app.machine or "the facility"
     app.pending_preauth = (facility, target)
     app.preauth_resume = "teardown_endpoint()"

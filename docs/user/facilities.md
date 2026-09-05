@@ -52,9 +52,10 @@ one block for as long as you are active plus that timeout, not one block per com
 
 The agent probes the login node over SSH, proposes the facility settings it discovered (scheduler,
 the network interface the endpoint should bind, scratch space, an environment setup line) and asks
-you to confirm or correct them. On a multi-factor facility the probe cannot log in by itself: the
-agent gives you an `ssh` command to run in your own terminal, which opens a session hpc-bridge then
-shares, so you authenticate once. The confirmed configuration is cached locally, and later sessions
+you to confirm or correct them. On a multi-factor facility the probe cannot log in by itself: if the
+facility takes a one-time code, the agent asks you for the current one and opens the shared connection
+with it; if it needs a password, the agent gives you an `ssh` command to run in your own terminal, which
+opens a session hpc-bridge then shares, so you authenticate once. The confirmed configuration is cached locally, and later sessions
 reconnect with no probe and no SSH. For a facility that is in the registry, the registry's entry always
 wins over that local cache, so editing a discovered configuration for Anvil has no effect.
 
