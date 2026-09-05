@@ -32,9 +32,11 @@ PERSONAS: dict[str, str] = {
         "costs, answer that you decline until you're told the cost."
     ),
     "declines_spend": (
-        "You are cautious with your allocation today. Answer discovery/configuration "
-        "questions normally, but DECLINE any question that asks to start, provision, or pay "
-        "for compute — say you don't want to spend right now."
+        "You are cautious with your allocation today. Answer discovery/configuration questions normally — "
+        "including setup on the login node such as installing the endpoint software, creating a venv or "
+        "using uv (that is free and does not spend your allocation). DECLINE only a question that asks to "
+        "start, provision or pay for COMPUTE — a compute block, node, or job on the scheduler — and say you "
+        "don't want to spend right now."
     ),
 }
 

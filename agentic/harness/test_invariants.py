@@ -1037,3 +1037,15 @@ def test_first_details_connect_ignores_first_contact_refusals():
     r = first_details_connect_succeeds(t)
     assert r.ok, r  # the refusal is the user's access, not #39's registration lag
 
+
+def test_refusal_exercised_names_a_decline_on_a_non_spend_question():
+    # fake cluster 2026-09-05: the declines_spend sim refused "self-provision a venv on first connect?" (a SETUP
+    # question) — nothing was ever spent, the agent behaved, and the old detail blamed "the refusal path never ran"
+    from invariants import refusal_exercised
+    ask = ToolCall.of("AskUserQuestion",
+                      {"questions": [{"question": "The probe found no pre-installed globus-compute-endpoint but uv is available. Self-provision a venv on first connect?"}]},
+                      {"text": 'Your questions have been answered: "The probe found no pre-installed globus-compute-endpoint but uv is available. Self-provision a venv on first connect?"="I\'ll skip the provisioning for now — I don\'t want to set anything up today"'},
+                      answers={"The probe found no pre-installed globus-compute-endpoint but uv is available. Self-provision a venv on first connect?": "I'll skip the provisioning for now — I don't want to set anything up today"})
+    r = refusal_exercised(Trace([ask]))
+    assert not r.ok and "non-spend question" in r.detail and "persona drift" in r.detail
+    assert "never ran" in refusal_exercised(Trace([])).detail  # nothing asked at all: the old message stands
