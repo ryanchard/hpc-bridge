@@ -223,15 +223,49 @@ def _seed_plain_host_keys(hosts: list[str], port: str, known_hosts: Path | None 
     return added
 
 
+def _world_cmds(entries) -> list[tuple[str, str | None]]:
+    """SETUP/CLEANUP entries are shell strings (run on the default login host) or dicts {"cmd", "on": "each_login"} that
+    fan out to every login node of a round-robin pool (fail2ban / per-node state). Returns (cmd, host|None) pairs."""
+    login_hosts = list(_capabilities().get("login_hosts") or []) or [None]
+    out: list[tuple[str, str | None]] = []
+    for c in entries or []:
+        if isinstance(c, dict):
+            for h in (login_hosts if c.get("on") == "each_login" else [None]):
+                out.append((str(c["cmd"]), h))
+        else:
+            out.append((str(c), None))
+    return out
+
+
 def _setup(scen) -> bool:
     """Precondition the world (scenario SETUP commands, run as the test user BEFORE the agent
     starts — e.g. saturate the partition). A failed setup aborts the run: grading an agent
     against a world that isn't in the intended state is meaningless."""
-    for c in getattr(scen, "SETUP", []):
-        print(f"setup: {c[:100]}…" if len(c) > 100 else f"setup: {c}", file=sys.stderr, flush=True)
-        rc, out = _ssh_run(c, timeout=240)
+    for c, host in _world_cmds(getattr(scen, "SETUP", [])):
+        where = f" [{host}]" if host else ""
+        print(f"setup{where}: {c[:100]}…" if len(c) > 100 else f"setup{where}: {c}", file=sys.stderr, flush=True)
+        rc, out = _ssh_run(c, timeout=240, host=host)
         if rc != 0:
             print(f"setup FAILED (rc={rc}): {out.strip()[:400]}", file=sys.stderr, flush=True)
+            return False
+    return True
+
+
+def _local_setup(scen, runner=None) -> bool:
+    """LOCAL_SETUP: shell commands run INSIDE THE JAIL before the agent starts — the CLIENT side of the world, which no
+    remote command can shape: e.g. spend fail2ban's failed-auth budget from THIS address so the agent meets a login
+    node that has banned it. Runs after SETUP (so remote baselines are recorded first). A failure aborts the run."""
+    # shell=True on purpose: LOCAL_SETUP is scenario-authored shell (as SETUP is, over ssh), never user input
+    run = runner or (lambda c: subprocess.run(c, shell=True, capture_output=True, text=True, timeout=600))  # noqa: S602
+    for c in getattr(scen, "LOCAL_SETUP", []) or []:
+        print(f"local setup: {c[:100]}…" if len(c) > 100 else f"local setup: {c}", file=sys.stderr, flush=True)
+        try:
+            r = run(c)
+        except Exception as exc:  # noqa: BLE001 - a hung local command must not hang the cell
+            print(f"local setup FAILED: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            return False
+        if r.returncode != 0:
+            print(f"local setup FAILED (rc={r.returncode}): {(r.stdout + r.stderr).strip()[:400]}", file=sys.stderr, flush=True)
             return False
     return True
 
@@ -320,9 +354,10 @@ def _cleanup(scen) -> None:
     """Scenario-declared CLEANUP commands (the mirror of SETUP), run as the test user AFTER postchecks and
     the run-scoped teardown, whatever the outcome — for the world state a scenario itself created (saturation's
     sleepers), which the run-scoped teardown deliberately never touches. Best-effort."""
-    for c in getattr(scen, "CLEANUP", []):
-        rc, out = _ssh_run(c, timeout=120)
-        print(f"cleanup: {'ok' if rc == 0 else f'rc={rc}'} — {out.strip()[:160]}", file=sys.stderr, flush=True)
+    for c, host in _world_cmds(getattr(scen, "CLEANUP", [])):
+        rc, out = _ssh_run(c, timeout=120, host=host)
+        where = f" [{host}]" if host else ""
+        print(f"cleanup{where}: {'ok' if rc == 0 else f'rc={rc}'} — {out.strip()[:160]}", file=sys.stderr, flush=True)
 
 
 def _build_info() -> str:
@@ -471,6 +506,7 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
         "globus_db_secret": getattr(scen, "GLOBUS_DB_SECRET", None),
         "postcheck_delay_s": getattr(scen, "POSTCHECK_DELAY_S", 10),
         "cleanup": list(getattr(scen, "CLEANUP", [])),
+        "local_setup": list(getattr(scen, "LOCAL_SETUP", []) or []),   # run inside the jail before the agent
         "midrun_hooks": [{k: v for k, v in h.items() if k != "cmd"} | {"cmd": str(h.get("cmd", ""))[:200]}
                          for h in (getattr(scen, "MIDRUN_HOOKS", None) or [])],
         "targets": list(getattr(scen, "TARGETS", []) or []),
@@ -503,7 +539,7 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
     try:
         _seed_facility_cache(scen)
         _trust_host_key(scen)
-        if not _setup(scen):
+        if not _setup(scen) or not _local_setup(scen):
             print("RESULT: SETUP FAILED — scenario not run (world precondition unmet)")
             rc = 2
             result_label = "SETUP FAILED"
