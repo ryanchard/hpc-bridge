@@ -34,5 +34,7 @@ export HPCB_MEP_EMAIL="${HPCB_MEP_EMAIL-}"   # the managers' contact address (re
 PROFILE_DIR="$HERE_FC/.merged/$PROFILE"
 eval "$(python3 "$HERE_FC/bin/profile.py" build "$PROFILE" "$PROFILE_DIR")" || exit 2
 export HPCB_FAKE_PROFILE="$PROFILE" HPCB_FAKE_PROFILE_DIR="$PROFILE_DIR"
+export HPCB_FAKE_SSHD_PORT="$PROFILE_HARNESS_SSH_PORT"   # the container port the published ssh port maps to (22; an MFA profile's key-only sshd otherwise)
+export HPCB_TOTP_SECRET="$PROFILE_TOTP_SECRET"          # an MFA profile's fixture secret (enrolled at boot; the human-sim's authenticator)
 COMPOSE=(docker compose -f "$HERE_FC/docker-compose.yml")
 for ov in $PROFILE_OVERLAYS; do COMPOSE+=(-f "$ov"); done

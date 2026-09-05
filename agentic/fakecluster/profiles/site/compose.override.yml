@@ -38,7 +38,7 @@ services:
       SLURM_DB_PASS: ${SLURM_DB_PASS:-slurm-local-dev}
     depends_on: [slurmctld]
     ports:
-      - "${HPCB_FAKE_SSH_PORT2:-2223}:22"
+      - "${HPCB_FAKE_SSH_PORT2:-2223}:${HPCB_FAKE_SSHD_PORT:-22}"
     volumes:
       - munge:/etc/munge
       - home:/home

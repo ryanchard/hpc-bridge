@@ -110,12 +110,43 @@ class Exchange:
     note: str = ""
 
 
+def totp(secret_b32: str, at: float | None = None, *, step: int = 30, digits: int = 6) -> str:
+    """RFC 6238 TOTP (HMAC-SHA1, 30 s, 6 digits) — what an authenticator app shows for `secret_b32`. The fake
+    cluster's `totp` profile enrols every pool user with one known secret (a fixture; the sshd is local-only), so the
+    human-sim can play a user reading their phone. Pure: unit-tested against the RFC vector."""
+    import base64
+    import hmac
+    import struct
+    import time
+
+    key = base64.b32decode(secret_b32.strip().upper() + "=" * (-len(secret_b32.strip()) % 8))
+    counter = int((time.time() if at is None else at) // step)
+    digest = hmac.new(key, struct.pack(">Q", counter), "sha1").digest()
+    offset = digest[-1] & 0x0F
+    code = (struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF) % (10 ** digits)
+    return f"{code:0{digits}d}"
+
+
 @dataclass
 class HumanSim:
     persona: str
     goal: str
     model: str = "claude-haiku-4-5-20251001"
     dialogue: list[Exchange] = field(default_factory=list)
+    # The user's AUTHENTICATOR: a TOTP secret (the fake cluster's `totp` profile fixture, via HPCB_SIM_TOTP_SECRET —
+    # scrubbed from the agent's environment like every HPCB_* knob). When set, every prompt tells the sim the code
+    # its app shows right now, so it can answer a one-time-code request the way a person reading their phone does.
+    totp_secret: str | None = None
+    codes_issued: list[str] = field(default_factory=list)
+
+    def _authenticator(self) -> str:
+        if not self.totp_secret:
+            return ""
+        code = totp(self.totp_secret)
+        self.codes_issued.append(code)
+        return (f"\n\nYOUR AUTHENTICATOR APP currently shows the one-time code {code} (it changes every 30 seconds). "
+                "If the assistant asks for a one-time code / verification code / OTP / authenticator code, give exactly "
+                "that code. Never give a password — you have none to give.")
 
     async def answer(self, tool_input: dict[str, Any]) -> dict[str, str]:
         """Choose an answer for each AskUserQuestion question, in persona."""
@@ -126,7 +157,7 @@ class HumanSim:
         prompt = (
             "You are role-playing a HUMAN USER answering an assistant's multiple-choice "
             f"questions.\n\nYOUR PERSONA: {PERSONAS.get(self.persona, self.persona)}\n\n"
-            f"YOUR GOAL: {self.goal}\n\n"
+            f"YOUR GOAL: {self.goal}{self._authenticator()}\n\n"
             f"THE ASSISTANT ASKS:\n{json.dumps(questions, indent=2)}\n\n"
             "Reply with ONLY a JSON object:\n"
             '{"answers": {"<full question text>": "<chosen option label, or short free text>"'
@@ -161,7 +192,7 @@ class HumanSim:
         prompt = (
             "You are role-playing a HUMAN USER in a chat with an assistant that is operating an HPC "
             f"cluster for you.\n\nYOUR PERSONA: {PERSONAS.get(self.persona, self.persona)}\n\n"
-            f"YOUR GOAL: {self.goal}\n\nTHE ASSISTANT JUST SAID:\n{said}\n\n"
+            f"YOUR GOAL: {self.goal}{self._authenticator()}\n\nTHE ASSISTANT JUST SAID:\n{said}\n\n"
             "Reply as the user in one or two plain sentences that answer what it asked (no JSON, no preamble). "
             "If it asked you to confirm proposed settings and you have no reason to doubt them, say so plainly."
         )

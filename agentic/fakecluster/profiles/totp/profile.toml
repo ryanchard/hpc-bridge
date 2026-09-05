@@ -1,0 +1,18 @@
+# `totp` = the `site` cluster whose login sshd demands a ONE-TIME CODE besides the key — the Expanse/TACC shape the
+# plugin's needs_preauth → complete_preauth path exists for. PAM google-authenticator (keyboard-interactive) on port
+# 22; every pool user is enrolled with ONE fixture secret ([totp] secret — the sshd is local-only, so a known secret
+# is fine) that the harness' human-sim also holds and reads like a phone. A SECOND, key-only sshd on port 2200 is the
+# harness' world channel (setup/postchecks/teardown, the host-side node gate + cleanup via the published port); the
+# agent's ssh still meets the MFA on 22 and must hand the code over in-session.
+name = "totp"
+description = "site + a login sshd that requires key + TOTP code (PAM google-authenticator); key-only harness sshd on :2200"
+base = "site"
+
+[capabilities]
+mfa = "totp"                  # key + one-time code at every new SSH connection (keyboard-interactive)
+harness_ssh_port = 2200       # the harness' key-only sshd; the published host port maps here
+
+[totp]
+# The enrolment secret every pool user shares (base32) — known to the cluster AND the human-sim by design. Generated
+# on first use into this gitignored file (bin/profile.py); a secret-shaped literal here would trip secret scanners.
+secret_file = ".totp-secret"

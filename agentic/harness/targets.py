@@ -55,6 +55,8 @@ class Target:
     # Host-side command printing this cluster's LOCAL CATALOG (seed-format YAML) — a profile with facility MEPs minted
     # per cluster declares it ([catalog] cmd); run_smoke.sh mounts the output into the jail as HPC_BRIDGE_CATALOG_FILE.
     catalog_cmd: str | None = None
+    # MFA profiles: the fixture TOTP secret every pool user is enrolled with ([totp] secret) — handed to the human-sim.
+    totp_secret: str | None = None
 
     def cleanup_argv(self, user: str, key: str) -> list[str]:
         """Host-side ssh as the pool `user` with `key` (the run-scoped cleanup channel)."""
@@ -125,6 +127,7 @@ def get(name: str | None = None) -> Target:
             profile=profile, capabilities=caps,
             admin_argv=("docker", "exec", os.environ.get("HPCB_FAKE_CTLD", "hpcb-fake-slurmctld-1"), "bash", "-lc"),
             catalog_cmd=(man.get("catalog") or {}).get("cmd") or None,
+            totp_secret=(man.get("totp") or {}).get("secret") or None,
         )
     raise SystemExit(f"targets: unknown target {name!r} (globus1 | fake)")
 
@@ -141,7 +144,9 @@ def main(argv: list[str]) -> int:
         print(f"HPCB_T_{k}={v}")
     print(f"HPCB_T_CAPS_JSON={json.dumps(t.capabilities, separators=(',', ':'))!r}")
     print(f"HPCB_T_ADMIN_ARGV={shlex.quote(shlex.join(t.admin_argv)) if t.admin_argv else ''}")  # '' = no admin channel
-    print(f"HPCB_T_CATALOG_CMD={shlex.quote(t.catalog_cmd or '')}")  # '' = the registry is the catalog
+    print(f"HPCB_T_CATALOG_CMD={shlex.quote(t.catalog_cmd) if t.catalog_cmd else ''}")  # empty = the registry is the catalog
+    print(f"HPCB_T_HARNESS_SSH_PORT={t.capabilities.get('harness_ssh_port', 22)}")  # the world channel's sshd port
+    print(f"HPCB_T_TOTP_SECRET={shlex.quote(t.totp_secret) if t.totp_secret else ''}")  # empty = no MFA fixture
     return 0
 
 

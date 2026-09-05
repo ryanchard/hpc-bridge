@@ -253,3 +253,44 @@ def test_postchecks_on_each_login_judge_raw_output_per_host(runner, monkeypatch)
     monkeypatch.setattr(run_mod, "_ssh_run", leaky)
     r = {r.name: r for r in run_mod._postchecks(Scen)}["world:no_proc"]
     assert not r.ok and "[l2] 12345" in r.detail  # the leaking node is named
+
+
+def test_teardown_deregisters_the_runs_records_by_uuid_best_effort():
+    """The service record must go too: `gce delete` on the login node deregisters only while the pool user still holds
+    the credentials; the jail always does. A 404 is 'already gone'; a client that cannot be built never fails the run."""
+    import run as harness_run
+
+    class _Client:
+        def __init__(self):
+            self.deleted = []
+
+        def delete_endpoint(self, eid):
+            if eid == "gone":
+                raise RuntimeError("404 Not Found")
+            if eid == "boom":
+                raise ConnectionError("service down")
+            self.deleted.append(eid)
+
+    c = _Client()
+    out = harness_run._deregister_endpoints(["abcdefgh-1", "gone", "boom"], client_factory=lambda: c)
+    assert c.deleted == ["abcdefgh-1"]
+    assert "abcdefgh deleted" in out and "gone already gone" in out and "boom NOT deleted (ConnectionError)" in out
+    assert harness_run._deregister_endpoints([], client_factory=lambda: c) == "no uuid known — nothing to deregister"
+    assert "could not build" in harness_run._deregister_endpoints(["x"], client_factory=lambda: (_ for _ in ()).throw(ImportError("no sdk")))
+
+
+def test_plain_host_key_entries_are_seeded_from_the_harness_port(tmp_path):
+    """An MFA profile's harness sshd lives on :2200: accept-new wrote `[login]:2200 …`, which the plugin's :22 ssh never
+    matches. The same keys get plain-host lines; duplicates and comments are skipped."""
+    import run as harness_run
+
+    def scan(host, port):
+        return f"# {host}:{port} SSH-2.0\n[{host}]:{port} ssh-ed25519 AAAAkey{host}\n[{host}]:{port} ssh-rsa AAAArsa{host}\n"
+
+    kh = tmp_path / "known_hosts"
+    kh.write_text("[login]:2200 ssh-ed25519 AAAAkeylogin\n")
+    n = harness_run._seed_plain_host_keys(["login", "login01.hpcb.test", "login"], "2200", known_hosts=kh, keyscan=scan)
+    lines = kh.read_text().splitlines()
+    assert n == 4 and "login ssh-ed25519 AAAAkeylogin" in lines and "login01.hpcb.test ssh-rsa AAAArsalogin01.hpcb.test" in lines
+    assert lines[0] == "[login]:2200 ssh-ed25519 AAAAkeylogin"   # the harness' own entry kept
+    assert harness_run._seed_plain_host_keys(["login"], "2200", known_hosts=kh, keyscan=scan) == 0   # idempotent

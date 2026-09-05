@@ -128,6 +128,11 @@ def _ssh_run(remote: str, *, timeout: int = 60, host: str | None = None) -> tupl
            "-o", "StrictHostKeyChecking=accept-new", "-o", "LogLevel=ERROR"]
     if key:
         cmd += ["-i", key, "-o", "IdentitiesOnly=yes"]
+    # A profile whose port-22 sshd demands a second factor (the fake `totp` profile) runs a second, key-only sshd for
+    # the harness' world channel; HPCB_HARNESS_SSH_PORT names it (the agent's ssh still meets the MFA on 22).
+    port = os.environ.get("HPCB_HARNESS_SSH_PORT", "").strip()
+    if port and port != "22":
+        cmd += ["-p", port]
     cmd += [f"{user}@{host}", remote]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -179,7 +184,43 @@ def _trust_host_key(scen) -> bool:
     ok = rc == 0
     print(f"host key: {'trusted via the harness channel' if ok else f'pre-trust ssh failed rc={rc}: {out.strip()[:120]}'}",
           file=sys.stderr, flush=True)
+    port = os.environ.get("HPCB_HARNESS_SSH_PORT", "").strip()
+    if ok and port and port != "22":
+        # The harness channel runs on another port (an MFA profile's key-only sshd), so accept-new recorded the key as
+        # `[host]:port` — useless to the plugin, whose ssh goes to :22 and looks the plain host name up (live 2026-09-06:
+        # UNKNOWN HOST KEY on the first connect). Same daemon host keys on both ports: seed the plain names too.
+        hosts = [os.environ.get("HPC_BRIDGE_SSH_HOST", "")] + list(_capabilities().get("login_hosts") or [])
+        n = _seed_plain_host_keys([h for h in hosts if h], port)
+        print(f"host key: {n} plain-name entr(y/ies) seeded from the :{port} keys (the plugin connects on :22)", file=sys.stderr, flush=True)
     return ok
+
+
+def _seed_plain_host_keys(hosts: list[str], port: str, known_hosts: Path | None = None, keyscan=None) -> int:
+    """Append `<host> <type> <key>` known_hosts lines for each of `hosts`, taken from `ssh-keyscan -p <port>` (which
+    prints them as `[host]:port …`). Returns the number of lines added (existing lines are kept, duplicates skipped)."""
+    kh = known_hosts or (Path.home() / ".ssh" / "known_hosts")
+    kh.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    have = set(kh.read_text().splitlines()) if kh.is_file() else set()
+    added = 0
+    for host in dict.fromkeys(hosts):  # de-duplicated, order kept
+        if keyscan is not None:
+            text = keyscan(host, port)
+        else:
+            try:
+                text = subprocess.run(["ssh-keyscan", "-T", "10", "-p", port, host], capture_output=True, text=True, timeout=30).stdout
+            except Exception:  # noqa: BLE001 - best-effort: the accept-new entry still serves the harness itself
+                text = ""
+        for line in text.splitlines():
+            parts = line.split(None, 1)
+            if len(parts) != 2 or line.startswith("#"):
+                continue
+            plain = f"{host} {parts[1]}"
+            if plain not in have:
+                have.add(plain)
+                added += 1
+                with kh.open("a") as fh:
+                    fh.write(plain + "\n")
+    return added
 
 
 def _setup(scen) -> bool:
@@ -332,7 +373,31 @@ def _teardown(scen, res=None) -> str:
     rc, out = _ssh_run(f"{delete}; {scoped_cancel_cmd(scheduler, eids)}; {uep_dirs_cleanup_cmd(eids)}", timeout=90)
     tag = "ok" if rc == 0 else f"rc={rc}"
     print(f"teardown: {tag} — {out.strip().replace(chr(10), ' ')[:200]}", file=sys.stderr, flush=True)
+    print(f"teardown: registrations — {_deregister_endpoints(eids)}", file=sys.stderr, flush=True)
     return logs
+
+
+def _deregister_endpoints(eids: list[str], client_factory=None) -> str:
+    """Delete this run's endpoint RECORDS from the Globus Compute service by uuid, from here (the jail holds the
+    identity's tokens + the SDK). `gce delete` on the login node only deregisters when the pool user's copy of the
+    credentials is still there — after the product's own teardown wiped them (or when the delete itself failed
+    silently behind `>/dev/null`) the record stayed, and `hpc-bridge-fake-<runid>` entries accumulated in the owner's
+    console (found 2026-09-06: four of them). Best-effort; a 404 means it is already gone."""
+    if not eids:
+        return "no uuid known — nothing to deregister"
+    try:
+        client = client_factory() if client_factory else __import__("globus_compute_sdk").Client()
+    except Exception as exc:  # noqa: BLE001 - no SDK/tokens here: say so, never fail the run
+        return f"could not build a Globus Compute client ({type(exc).__name__}) — records left for the sweep"
+    done: list[str] = []
+    for eid in eids:
+        try:
+            client.delete_endpoint(eid)
+            done.append(f"{eid[:8]} deleted")
+        except Exception as exc:  # noqa: BLE001 - 404 (already gone) or a transient service error
+            msg = str(exc)
+            done.append(f"{eid[:8]} already gone" if "404" in msg or "not found" in msg.lower() else f"{eid[:8]} NOT deleted ({type(exc).__name__})")
+    return "; ".join(done)
 
 
 def _resolve_scenario(name: str) -> str:
@@ -407,6 +472,7 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
         "admin_setup": list(getattr(scen, "ADMIN_SETUP", []) or []),      # applied by run_smoke.sh via the admin channel
         "admin_cleanup": list(getattr(scen, "ADMIN_CLEANUP", []) or []),
         "catalog_file": bool(os.environ.get("HPC_BRIDGE_CATALOG_FILE")),   # a per-cluster local catalog stood in for the registry
+        "harness_ssh_port": os.environ.get("HPCB_HARNESS_SSH_PORT") or None,  # the world channel's sshd (MFA profiles)
         "profile": os.environ.get("HPCB_FAKE_PROFILE") or None,
         "capabilities": _capabilities(),
         # Code provenance (review 2026-09-05, 2.3): `build` pins what this image was built from; `git_sha` is the

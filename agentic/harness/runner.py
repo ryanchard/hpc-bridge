@@ -61,6 +61,10 @@ MAX_PROSE_FOLLOWUPS = 3
 # the server also inherits the jail's environment (run_smoke.sh has relied on that for GLOBUS_COMPUTE_USER_DIR
 # and HPC_BRIDGE_ENDPOINT_NAME since the first harness commit). Naming them here makes the dependency visible
 # and recorded (review 2026-09-05): what the server gets is inherited-plus-overridden, not this allowlist.
+# The human-sim's authenticator secret (fake `totp` profile). Read at IMPORT — before _scrubbed_agent_env strips every
+# HPCB_* knob for the agent's lifetime — and handed to HumanSim only; the MCP server's env never carries it.
+_SIM_TOTP_SECRET = os.environ.get("HPCB_SIM_TOTP_SECRET") or None
+
 _OPTIONAL_ENV = ("HPC_BRIDGE_SSH_HOST", "HPC_BRIDGE_MACHINE", "HPC_BRIDGE_SEARCH_INDEX", "HPC_BRIDGE_CATALOG_FILE",
                  "HPC_BRIDGE_ENDPOINT_NAME", "GLOBUS_COMPUTE_USER_DIR", "HPC_BRIDGE_STATE_DIR")
 # Harness plumbing the AGENT under test has no business seeing: the CLI inherits this process's env and hands it
@@ -275,7 +279,7 @@ async def run_scenario(
     human: HumanSim | None = None
     injected_answers: dict[str, dict[str, str]] = {}  # tool_use_id -> answers (structural record)
     if interactive:
-        human = HumanSim(persona=persona, goal=user_goal)
+        human = HumanSim(persona=persona, goal=user_goal, totp_secret=_SIM_TOTP_SECRET)
 
         async def _gatekeeper(tool_name: str, tool_input: dict, ctx: Any):
             if tool_name == "AskUserQuestion":
