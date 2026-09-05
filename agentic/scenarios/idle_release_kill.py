@@ -16,7 +16,7 @@ See issue #21 (https://github.com/ryanchard/hpc-bridge/issues/21).
 from invariants import Result, Trace
 
 PROMPT = (
-    "On the HPC facility with login host `globus1.cs.uchicago.edu` (facility id `{facility}`), bring "
+    "On the HPC facility with login host `{ssh_host}` (facility id `{facility}`), bring "
     "up a compute node and start a ~20-minute CPU job DIRECTLY ON THE COMPUTE BLOCK as a detached "
     "background process — I want it decoupled from any single run_shell call. Concretely:\n\n"
     "1. On the **compute** shape, make `~/hpcb_idlekill/` and write `job.py` (brace-free on purpose):\n"

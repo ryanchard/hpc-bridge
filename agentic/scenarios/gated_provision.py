@@ -18,7 +18,7 @@ NEEDS_COMPUTE_NODE = True
 
 PROMPT = (
     "Hi! Can you bring up a compute node for me on the HPC facility with login host "
-    "`globus1.cs.uchicago.edu`? Use facility id `{facility}`. I'd like to keep costs in "
+    "`{ssh_host}`? Use facility id `{facility}`. I'd like to keep costs in "
     "check, so please check with me before you commit to anything that spends allocation — "
     "and run me a quick `hostname` on the node once it's up so I can see it works. "
     "Shut it down when we're done."

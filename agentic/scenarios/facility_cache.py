@@ -24,7 +24,7 @@ from invariants import _UP_PHASES, Result, Trace
 # SSH host, so phase 2 must reconnect with the same login host for a hit — the prompt supplies it.
 PHASES = [
     (
-        "Connect me to the HPC facility with login host `globus1.cs.uchicago.edu` — use facility id "
+        "Connect me to the HPC facility with login host `{ssh_host}` — use facility id "
         "`{facility}` — and run `hostname` on the LOGIN shape to confirm it's up. The first bring-up installs "
         "a toolchain on the login node and can take several minutes: keep calling connect_facility while it "
         "reports `provisioning` (it is not stuck) until the login node is up, THEN run `hostname`. Do NOT "
@@ -34,7 +34,7 @@ PHASES = [
     ),
     (
         "Reconnect me to the SAME HPC facility — facility id `{facility}`, login host "
-        "`globus1.cs.uchicago.edu` — and tell me explicitly whether it REUSED an existing endpoint "
+        "`{ssh_host}` — and tell me explicitly whether it REUSED an existing endpoint "
         "or set one up fresh. Do NOT provision a billed block and do NOT tear anything down.\n\n"
         "This is an AUTOMATED run — no one is available to answer questions: accept discovered "
         "facility config yourself."

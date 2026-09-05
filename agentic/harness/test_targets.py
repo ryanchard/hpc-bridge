@@ -1,0 +1,59 @@
+"""Hermetic: the target presets (globus1 | fake) and the prompt token substitution."""
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+
+import targets  # noqa: E402
+
+
+def test_presets_carry_every_target_fact_together(monkeypatch):
+    monkeypatch.delenv("HPCB_TARGET", raising=False)
+    g = targets.get()
+    assert g.name == "globus1" and g.ssh_host == "globus1.cs.uchicago.edu" and g.nodes == 3
+    assert g.endpoint_prefix == "hpc-bridge-globus1" and g.docker_network is None
+    assert g.probe_argv[-1] == "globus1" and g.cleanup_argv("hpcbridge-test-03", "/k")[-1] == "hpcbridge-test-03@globus1.cs.uchicago.edu"
+    monkeypatch.setenv("HPCB_FAKE_SSH_PORT", "2299")
+    f = targets.get("fake")
+    assert f.ssh_host == "login" and f.nodes == 2 and f.endpoint_prefix == "hpc-bridge-fake"
+    assert f.docker_network == "hpcb-fake_default" and f.default_key.endswith("/.ssh/hpcb-fake")
+    assert "2299" in f.probe_argv and f.probe_argv[-1] == "hpcbridge-test-00@localhost"
+    argv = f.cleanup_argv("hpcbridge-test-01", "/k")
+    assert argv[-1] == "hpcbridge-test-01@localhost" and "-p" in argv and "UserKnownHostsFile=/dev/null" in argv
+    monkeypatch.setenv("HPCB_TARGET", "fake")
+    assert targets.get().name == "fake"  # the env selects it
+    with pytest.raises(SystemExit):
+        targets.get("moon")
+
+
+def test_fill_prompt_substitutes_both_tokens_literally():
+    p = "Connect to `{ssh_host}` as `{facility}`; a code block with {other} braces stays: f'{x}'"
+    out = targets.fill_prompt(p, facility="fake-1-2", ssh_host="login")
+    assert out == "Connect to `login` as `fake-1-2`; a code block with {other} braces stays: f'{x}'"
+
+
+def test_cli_prints_shell_assignments_for_run_smoke():
+    r = subprocess.run([sys.executable, str(HERE / "targets.py"), "fake"], capture_output=True, text=True, timeout=30)
+    kv = dict(ln.split("=", 1) for ln in r.stdout.splitlines() if "=" in ln)
+    assert r.returncode == 0 and kv["HPCB_T_SSH_HOST"] == "login" and kv["HPCB_T_NETWORK"] == "hpcb-fake_default"
+    assert kv["HPCB_T_EP_PREFIX"] == "hpc-bridge-fake" and kv["HPCB_T_NODES"] == "2"
+    bad = subprocess.run([sys.executable, str(HERE / "targets.py"), "moon"], capture_output=True, text=True, timeout=30)
+    assert bad.returncode != 0
+
+
+def test_every_ssh_scenario_names_the_login_host_by_token():
+    # a literal globus1 host in a PROMPT/PHASES/USER_GOAL would silently send a fake-target run to the lab cluster
+    import importlib
+    sys.path.insert(0, str(HERE.parent / "scenarios"))
+    for p in sorted((HERE.parent / "scenarios").glob("*.py")):
+        if p.stem.startswith("_"):
+            continue
+        mod = importlib.import_module(p.stem)
+        texts = [getattr(mod, "PROMPT", ""), getattr(mod, "USER_GOAL", ""), *(getattr(mod, "PHASES", []) or [])]
+        assert not any("globus1.cs.uchicago.edu" in t for t in texts), p.stem

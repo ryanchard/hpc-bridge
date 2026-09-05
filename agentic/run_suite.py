@@ -27,10 +27,13 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 SMOKE = REPO / "agentic" / "run_smoke.sh"
 sys.path.insert(0, str(REPO / "agentic" / "harness"))
+import targets  # noqa: E402  (the cluster a run targets: globus1 | fake)
 from cluster_ops import delete_endpoint_cmd, endpoint_uuid_cmd, scoped_cancel_cmd, uep_dirs_cleanup_cmd  # noqa: E402
 from pool import PoolClaims  # noqa: E402  (cross-process pool-user claims — see pool.py)
 
 POOL = [f"hpcbridge-test-{i:02d}" for i in range(10)]
+_TARGET = targets.get()  # replaced by --target in _main; module-level so the probe/cleanup helpers can read it
+FAKE_BIN = REPO / "agentic" / "fakecluster" / "bin"
 DEFAULT_MODEL = "claude-opus-5"
 # A gated cell's Slurm block is not submitted until 115–196 s into the run (09-03 endpoint logs), so a node it
 # will take still reads `idle` for that long. Launches within this window count against the idle count.
@@ -39,7 +42,7 @@ NODE_CLAIM_S = 300.0
 CELL_STOP_GRACE_S = 150.0
 # Knobs that must NOT leak from the operator's shell into every cell (a persisted HPCB_NO_SKILL ablated a
 # baseline cell; HPCB_EFFORT relabelled a whole matrix — review 2026-09-05). These prefixes are the exceptions.
-_CELL_ENV_KEEP_PREFIXES = ("HPCB_TEST_", "HPCB_POOL_", "HPCB_NODE_")
+_CELL_ENV_KEEP_PREFIXES = ("HPCB_TEST_", "HPCB_POOL_", "HPCB_NODE_", "HPCB_FAKE_", "HPCB_TARGET")
 
 
 class Stagger:
@@ -123,12 +126,10 @@ def _warm_block_user(scenario: str) -> str | None:
 
 
 def _probe_ssh(remote: str) -> str | None:
-    """One command on the cluster over the operator's own ssh alias (HPCB_NODE_PROBE_SSH, default `globus1`).
-    None when ssh itself failed."""
-    host = os.environ.get("HPCB_NODE_PROBE_SSH", "globus1")
+    """One command on the target cluster, from the host (globus1: the operator's ssh alias; fake: the login
+    container's published sshd as a pool user). None when ssh itself failed."""
     try:
-        r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20", host, remote],
-                           capture_output=True, text=True, timeout=60)
+        r = subprocess.run([*_TARGET.probe_argv, remote], capture_output=True, text=True, timeout=60)
     except Exception:  # noqa: BLE001 - a transport failure just means "unknown"
         return None
     return r.stdout if r.returncode == 0 else None
@@ -252,12 +253,10 @@ def _emergency_cleanup(inflight: dict[str, tuple[str, str]]) -> None:
     uses, never user-wide. A `docker stop`'d jail never reaches run.py's own teardown (review 2026-09-05)."""
     if not inflight:
         return
-    key = os.environ.get("HPCB_TEST_SSH_KEY", str(Path.home() / ".ssh" / "hpcbridge-test"))
-    host = os.environ.get("HPC_BRIDGE_SSH_HOST", "globus1.cs.uchicago.edu")
+    key = os.environ.get("HPCB_TEST_SSH_KEY", _TARGET.default_key)
     for runid, (user, name) in list(inflight.items()):
         print(f"🧹 cleanup {user}: endpoint {name} + its blocks (abandoned cell {runid})", flush=True)
-        base = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20", "-i", key, "-o", "IdentitiesOnly=yes",
-                f"{user}@{host}"]
+        base = _TARGET.cleanup_argv(user, key)
         try:
             eid = subprocess.run(base + [endpoint_uuid_cmd(name)], capture_output=True, text=True, timeout=60).stdout.strip()
             eids = [eid] if eid else []
@@ -305,7 +304,7 @@ async def _run_job(scenario, model, effort, persona, ablate, claims, sem, stagge
         if ablate == "skill":
             env["HPCB_NO_SKILL"] = "1"
         if inflight is not None:
-            inflight[runid] = (user, f"hpc-bridge-globus1-{runid}")  # what run_smoke.sh names this cell's endpoint
+            inflight[runid] = (user, f"{_TARGET.endpoint_prefix}-{runid}")  # what run_smoke.sh names this cell's endpoint
         proc = await asyncio.create_subprocess_exec(
             "bash", str(SMOKE), scenario,
             env=env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
@@ -343,7 +342,26 @@ async def _run_job(scenario, model, effort, persona, ablate, claims, sem, stagge
         sem.release()
 
 
+async def _fake_cluster_up(reset: bool) -> bool:
+    """Bring the fake cluster up (build if needed, wait until schedulable + sshd answers) before the first cell;
+    `reset` wipes it first — a wiped cluster has no stale endpoints, worker dirs or processes, so no pool sweeps."""
+    if reset:
+        print("fake cluster: wiping (down.sh --wipe)…", flush=True)
+        r = await asyncio.create_subprocess_exec(str(FAKE_BIN / "down.sh"), "--wipe")
+        await r.wait()
+    print("fake cluster: up.sh (build if needed, then wait until schedulable)…", flush=True)
+    proc = await asyncio.create_subprocess_exec(str(FAKE_BIN / "up.sh"), stdout=asyncio.subprocess.PIPE,
+                                                stderr=asyncio.subprocess.STDOUT)
+    out, _ = await proc.communicate()
+    tail = out.decode(errors="replace").strip().splitlines()[-3:]
+    print("fake cluster: " + " | ".join(ln.strip() for ln in tail), flush=True)
+    return proc.returncode == 0
+
+
 async def _main(args) -> int:
+    global _TARGET
+    os.environ["HPCB_TARGET"] = args.target  # every cell, knob probe and helper reads the same target
+    _TARGET = targets.get(args.target)
     scenarios = [s.strip() for s in args.scenarios.split(",") if s.strip()]
     models = [m.strip() for m in args.models.split(",") if m.strip()]
     efforts = [e.strip() for e in args.efforts.split(",") if e.strip()] or [None]
@@ -355,9 +373,13 @@ async def _main(args) -> int:
     print(f"suite: {len(jobs)} jobs "
           f"({len(scenarios)} scenario × {len(models)} model × {len(efforts)} effort × "
           f"{len(personas)} persona × {len(ablations)} ablation × {args.repeat}) | "
-          f"≤{slots} parallel | {args.stagger}s stagger",
+          f"≤{slots} parallel | {args.stagger}s stagger | target {_TARGET.name} ({_TARGET.ssh_host}, "
+          f"{_TARGET.nodes} nodes)",
           flush=True)
 
+    if _TARGET.name == "fake" and not args.no_cluster_up and not await _fake_cluster_up(args.reset_cluster):
+        print("fake cluster did not come up — see agentic/fakecluster/README.md", file=sys.stderr)
+        return 2
     if not args.no_build and not await _build_once():
         return 2
 
@@ -470,6 +492,10 @@ def main() -> None:
     # also opens a teardown connection, and a shared office NAT / CI runner shares the budget.
     ap.add_argument("--stagger", type=float, default=2.0, help="seconds between launches (rate-limit guard)")
     ap.add_argument("--no-build", action="store_true", help="skip the one-time image build")
+    ap.add_argument("--target", default=os.environ.get("HPCB_TARGET", targets.DEFAULT_TARGET), choices=["globus1", "fake"],
+                    help="the cluster to run against: globus1 (the lab cluster) or fake (agentic/fakecluster, local compose Slurm)")
+    ap.add_argument("--no-cluster-up", action="store_true", help="fake: do not run fakecluster/bin/up.sh first")
+    ap.add_argument("--reset-cluster", action="store_true", help="fake: wipe the cluster (down.sh --wipe) before up")
     ap.add_argument("--node-wait-s", type=int, default=3600,
                     help="NEEDS_COMPUTE_NODE scenarios: wait up to this long for an idle node before skipping the "
                          "cell (0 = launch regardless). Probe: ssh $HPCB_NODE_PROBE_SSH sinfo -p $HPCB_NODE_PARTITION")

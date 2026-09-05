@@ -14,7 +14,7 @@ NEEDS_COMPUTE_NODE = True
 
 PROMPT = (
     "Bring up a compute node on the HPC facility with login host "
-    "`globus1.cs.uchicago.edu` — use facility id `{facility}`. Then run `hostname` on "
+    "`{ssh_host}` — use facility id `{facility}`. Then run `hostname` on "
     "the compute node to prove a worker is live, and finally stop the endpoint to "
     "release the block.\n\n"
     "This is an AUTOMATED run — there is NO human to answer questions. So:\n"

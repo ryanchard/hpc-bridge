@@ -28,14 +28,14 @@ from invariants import (
 PHASES = [
     (
         "Connect me to a NEW HPC cluster that is not in the registry: facility id `{facility}`, SSH login host "
-        "`globus1.cs.uchicago.edu`. This is an AUTOMATED run — there is NO human to answer questions. If hpc-bridge "
+        "`{ssh_host}`. This is an AUTOMATED run — there is NO human to answer questions. If hpc-bridge "
         "REFUSES with a terminal message (for example UNKNOWN HOST KEY, NO SSH ACCESS, or CANNOT REACH), report that "
         "refusal to me verbatim, tell me exactly what I must do, and STOP: retry at most once, never run ssh or scp "
         "yourself, and do not use login_shell."
     ),
     (
-        "I have now connected to globus1.cs.uchicago.edu once from my own terminal and accepted its host key. Try "
-        "again: connect to facility id `{facility}` (SSH login host `globus1.cs.uchicago.edu`), accept the "
+        "I have now connected to {ssh_host} once from my own terminal and accepted its host key. Try "
+        "again: connect to facility id `{facility}` (SSH login host `{ssh_host}`), accept the "
         "configuration the probe proposes yourself (no human to confirm), run `hostname` on the LOGIN shape only "
         "(run_shell with shape=\"login\" — do NOT start a compute block), then tear the endpoint down completely "
         "(teardown_endpoint) and report exactly what the teardown result said. Never run ssh yourself."

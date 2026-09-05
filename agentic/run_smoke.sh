@@ -46,7 +46,11 @@ else
   echo "ERROR: set CLAUDE_CODE_OAUTH_TOKEN ('claude setup-token', needs Pro/Max) or ANTHROPIC_API_KEY"; exit 1
 fi
 
-KEY="${HPCB_TEST_SSH_KEY:-$HOME/.ssh/hpcbridge-test}"
+# The cluster this run targets (harness/targets.py): globus1 (default) or fake (agentic/fakecluster). One preset
+# carries the jail-side ssh host, the docker network, the pool key default and the endpoint-name prefix together.
+TARGET="${HPCB_TARGET:-globus1}"
+eval "$(python3 "$REPO_ROOT/agentic/harness/targets.py" "$TARGET")" || { echo "ERROR: unknown HPCB_TARGET '$TARGET'"; exit 1; }
+KEY="${HPCB_TEST_SSH_KEY:-$HPCB_T_KEY_DEFAULT}"
 SSH_USER="${HPCB_TEST_SSH_USER:-hpcbridge-test}"
 GLOBUS_DB="${HPCB_TEST_GLOBUS_DB:-}"
 # Per-scenario HOST knobs (read from the scenario module): run with NO Globus store (a logged-out
@@ -69,7 +73,7 @@ mkdir -p "$RUNS_HOST"
 GIT_SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"          # the HOST's head at launch
 GIT_DESCRIBE="$(git -C "$REPO_ROOT" describe --always --dirty --abbrev=12 2>/dev/null || echo unknown)"  # what the image is built from
 
-[ -f "$KEY" ] || { echo "missing scoped test key: $KEY  (generate one + register its .pub on globus1)"; exit 1; }
+[ -f "$KEY" ] || { echo "missing scoped test key: $KEY  (globus1: generate one + register its .pub; fake: agentic/fakecluster/bin/up.sh creates it)"; exit 1; }
 
 if [ -z "${HPCB_SKIP_BUILD:-}" ]; then   # the suite runner builds once, then sets this
   echo "building jail image (hpc-bridge-agentic)…"
@@ -86,8 +90,10 @@ ARGS=(
   -e HPCB_IMAGE_ID="$IMAGE_ID"
   -e HPC_BRIDGE_SSH_USER="$SSH_USER"
   -e HPC_BRIDGE_SSH_KEY=/run/secrets/test_key
-  -e HPC_BRIDGE_SSH_HOST=globus1.cs.uchicago.edu   # FQDN — the container has no ~/.ssh/config alias
-  -e HPC_BRIDGE_ENDPOINT_NAME="hpc-bridge-globus1-$RUNID"   # per-run isolation: runs share ONE Globus identity, so a unique NAME keeps their registrations distinct (product default, unset, = ssh-host key)
+  -e HPC_BRIDGE_SSH_HOST="$HPCB_T_SSH_HOST"        # the login host as the JAIL reaches it (globus1 FQDN; `login` on the fake cluster's network)
+  -e HPC_BRIDGE_ENDPOINT_NAME="$HPCB_T_EP_PREFIX-$RUNID"   # per-run isolation: runs share ONE Globus identity, so a unique NAME keeps their registrations distinct; the prefix names the TARGET
+  -e HPCB_TARGET="$TARGET"
+  -e HPCB_TARGET_NODES="$HPCB_T_NODES"
   -e HPC_BRIDGE_USER_DIR="$USER_DIR"
   -e GLOBUS_COMPUTE_USER_DIR="$USER_DIR"   # so the MCP process's Globus SDK finds the mounted db
   -e HPCB_RUNS_DIR=/work/hpc-bridge/agentic/runs
@@ -95,6 +101,9 @@ ARGS=(
   -v "$RUNS_HOST":/work/hpc-bridge/agentic/runs   # provenance bundles survive the --rm container
   -v "$KEY":/run/secrets/test_key:ro
 )
+if [ -n "$HPCB_T_NETWORK" ]; then
+  ARGS+=( --network "$HPCB_T_NETWORK" )   # the fake cluster's compose network: the jail reaches `login:22` directly
+fi
 if [ -n "$GLOBUS_DB" ]; then
   ARGS+=( -v "$GLOBUS_DB":/run/secrets/storage.db:ro )   # staged read-only; entrypoint copies to a writable owned path
 elif [ -z "${HPCB_KNOB_NO_GLOBUS_DB:-}" ]; then
@@ -114,5 +123,5 @@ RUN_ARGS=("$SCENARIO")
 [ -n "${HPCB_EFFORT:-}" ]  && RUN_ARGS+=(--effort "$HPCB_EFFORT")    # pin a reasoning level (low..max)
 [ -n "${HPCB_PERSONA:-}" ] && RUN_ARGS+=(--persona "$HPCB_PERSONA")  # interactive: simulated-human persona
 [ -n "${HPCB_NO_SKILL:-}" ] && RUN_ARGS+=(--no-skill)                # ablation: withhold SKILL.md
-echo "running '$SCENARIO'${HPCB_MODEL:+ model=$HPCB_MODEL}${HPCB_EFFORT:+ effort=$HPCB_EFFORT}${HPCB_PERSONA:+ persona=$HPCB_PERSONA}${HPCB_NO_SKILL:+ ABLATED:skill}  (user $SSH_USER, facility globus1-$RUNID)…"
+echo "running '$SCENARIO'${HPCB_MODEL:+ model=$HPCB_MODEL}${HPCB_EFFORT:+ effort=$HPCB_EFFORT}${HPCB_PERSONA:+ persona=$HPCB_PERSONA}${HPCB_NO_SKILL:+ ABLATED:skill}  (target $TARGET, user $SSH_USER, facility $TARGET-$RUNID)…"
 docker run "${ARGS[@]}" hpc-bridge-agentic "${RUN_ARGS[@]}"

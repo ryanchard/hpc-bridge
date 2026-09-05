@@ -24,7 +24,7 @@ from invariants import _UP_PHASES, Result, Trace
 # phase 1's still-online manager. Sharing {facility} keeps them one session facility across the restart.
 PHASES = [
     (
-        "Connect me to the HPC facility with login host `globus1.cs.uchicago.edu` — use facility "
+        "Connect me to the HPC facility with login host `{ssh_host}` — use facility "
         "id `{facility}` — and run `hostname` on the LOGIN shape to confirm it's up. Do NOT "
         "provision any billed compute block, and do NOT tear anything down.\n\n"
         "This is an AUTOMATED run — no one is available to answer questions: accept discovered "
@@ -32,7 +32,7 @@ PHASES = [
     ),
     (
         "Reconnect me to the SAME HPC facility — facility id `{facility}`, login host "
-        "`globus1.cs.uchicago.edu` — and tell me explicitly whether the existing endpoint was "
+        "`{ssh_host}` — and tell me explicitly whether the existing endpoint was "
         "REUSED or a brand-new one was set up. Do NOT provision a billed block and do NOT tear "
         "anything down.\n\n"
         "This is an AUTOMATED run — no one is available to answer questions: accept discovered "

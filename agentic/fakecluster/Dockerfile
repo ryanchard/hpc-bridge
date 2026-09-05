@@ -36,13 +36,13 @@ COPY sshd_config /etc/ssh/sshd_config.d/00-hpcb-fake.conf
 RUN ssh-keygen -A
 
 # The test-user pool the agentic harness expects: hpcbridge-test (run_smoke.sh's default) and
-# hpcbridge-test-00..02 (run_suite.py's pool). Fixed uids so they match across containers. `-M`: the
+# hpcbridge-test-00..09 (run_suite.py's pool — the same ten names as on globus1). Fixed uids so they match across containers. `-M`: the
 # home dirs live on the shared /home volume and are created by the login entrypoint. `-p '*'`
 # UNLOCKS the account for pubkey login without setting a password (a fresh useradd leaves `!` in
 # shadow, which sshd treats as locked when UsePAM is off).
 RUN groupadd -g 2000 hpcb \
     && useradd -M -u 1999 -g hpcb -s /bin/bash -p '*' hpcbridge-test \
-    && for i in 00 01 02; do \
+    && for i in $(seq -f "%02g" 0 9); do \
          useradd -M -u 20$i -g hpcb -s /bin/bash -p '*' "hpcbridge-test-$i"; \
        done
 

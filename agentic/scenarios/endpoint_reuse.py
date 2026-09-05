@@ -24,7 +24,7 @@ Login-shape only (no billed block): cheap (~3 min) and fast.
 from invariants import _UP_PHASES, Result, Trace
 
 PROMPT = (
-    "Connect me to the HPC facility with login host `globus1.cs.uchicago.edu` — use "
+    "Connect me to the HPC facility with login host `{ssh_host}` — use "
     "facility id `{facility}` — and run `hostname` on the LOGIN shape (do not provision "
     "any billed compute block). Then, to test reconnection, connect to the SAME facility "
     "id a second time and tell me explicitly whether the existing endpoint was REUSED or "

@@ -15,7 +15,7 @@ _DIR = "hpcb_sess_dir"            # the cd'd directory (the grader looks for "/h
 _MARK = "hpcb-mark-7f3a"          # the exported value (HB_MARK)
 
 PROMPT = (
-    "On the HPC facility with login host `globus1.cs.uchicago.edu` — facility id `{facility}` — "
+    "On the HPC facility with login host `{ssh_host}` — facility id `{facility}` — "
     "I want to check that the session shell keeps state between calls. Use the LOGIN shape only "
     "(`shape='login'` on every run_shell / reset_session call); do NOT provision any billed compute "
     "block and do NOT tear anything down. Steps:\n\n"
