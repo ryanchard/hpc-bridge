@@ -406,6 +406,7 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
         "requires": dict(getattr(scen, "REQUIRES", {}) or {}),
         "admin_setup": list(getattr(scen, "ADMIN_SETUP", []) or []),      # applied by run_smoke.sh via the admin channel
         "admin_cleanup": list(getattr(scen, "ADMIN_CLEANUP", []) or []),
+        "catalog_file": bool(os.environ.get("HPC_BRIDGE_CATALOG_FILE")),   # a per-cluster local catalog stood in for the registry
         "profile": os.environ.get("HPCB_FAKE_PROFILE") or None,
         "capabilities": _capabilities(),
         # Code provenance (review 2026-09-05, 2.3): `build` pins what this image was built from; `git_sha` is the

@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Sourced by up.sh / down.sh / wait-for-cluster.sh: resolve the active PROFILE and the compose -f set.
 #   --profile <name> on the command line, else $HPCB_FAKE_PROFILE, else `default`.
-# Sets: PROFILE, PROFILE_DIR, HPCB_FAKE_PROFILE_DIR (for compose), COMPOSE (array: docker compose -f … [-f overlay]),
-# and reads the profile's node count / login hosts for the readiness wait (python3 tomllib — 3.11+).
+# A profile may LAYER on another (`base = "site"` in its profile.toml): bin/profile.py materialises the merged dir
+# under .merged/<name>/ (gitignored) — THAT is what compose mounts as /etc/hpcb/profile — and lists every
+# compose.override.yml in the chain (base first) for `-f`.
+# Sets: PROFILE, PROFILE_DIR (the merged dir), HPCB_FAKE_PROFILE_DIR (for compose), COMPOSE (array), PROFILE_NODES,
+# PROFILE_LOGIN_HOSTS, PROFILE_CATALOG_CMD (a host command printing this cluster's local catalog, or empty).
 HERE_FC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROFILE="${HPCB_FAKE_PROFILE:-default}"
 ARGS_LEFT=()
@@ -13,11 +16,8 @@ while [ $# -gt 0 ]; do
     *) ARGS_LEFT+=("$1"); shift ;;
   esac
 done
-PROFILE_DIR="$HERE_FC/profiles/$PROFILE"
-[ -s "$PROFILE_DIR/profile.toml" ] || { echo "unknown fake-cluster profile '$PROFILE' (have: $(ls "$HERE_FC/profiles" | tr '\n' ' '))" >&2; exit 2; }
+PROFILE_DIR="$HERE_FC/.merged/$PROFILE"
+eval "$(python3 "$HERE_FC/bin/profile.py" build "$PROFILE" "$PROFILE_DIR")" || exit 2
 export HPCB_FAKE_PROFILE="$PROFILE" HPCB_FAKE_PROFILE_DIR="$PROFILE_DIR"
 COMPOSE=(docker compose -f "$HERE_FC/docker-compose.yml")
-[ -s "$PROFILE_DIR/compose.override.yml" ] && COMPOSE+=(-f "$PROFILE_DIR/compose.override.yml")
-_cap() { python3 -c 'import sys,tomllib; d=tomllib.load(open(sys.argv[1],"rb"))["capabilities"]; v=d[sys.argv[2]]; print(" ".join(map(str,v)) if isinstance(v,list) else v)' "$PROFILE_DIR/profile.toml" "$1"; }
-PROFILE_NODES="$(_cap nodes)"
-PROFILE_LOGIN_HOSTS="$(_cap login_hosts)"
+for ov in $PROFILE_OVERLAYS; do COMPOSE+=(-f "$ov"); done

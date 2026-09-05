@@ -61,7 +61,7 @@ MAX_PROSE_FOLLOWUPS = 3
 # the server also inherits the jail's environment (run_smoke.sh has relied on that for GLOBUS_COMPUTE_USER_DIR
 # and HPC_BRIDGE_ENDPOINT_NAME since the first harness commit). Naming them here makes the dependency visible
 # and recorded (review 2026-09-05): what the server gets is inherited-plus-overridden, not this allowlist.
-_OPTIONAL_ENV = ("HPC_BRIDGE_SSH_HOST", "HPC_BRIDGE_MACHINE", "HPC_BRIDGE_SEARCH_INDEX",
+_OPTIONAL_ENV = ("HPC_BRIDGE_SSH_HOST", "HPC_BRIDGE_MACHINE", "HPC_BRIDGE_SEARCH_INDEX", "HPC_BRIDGE_CATALOG_FILE",
                  "HPC_BRIDGE_ENDPOINT_NAME", "GLOBUS_COMPUTE_USER_DIR", "HPC_BRIDGE_STATE_DIR")
 # Harness plumbing the AGENT under test has no business seeing: the CLI inherits this process's env and hands it
 # to the agent's Bash, so these are removed from os.environ for the client's lifetime (the SDK layers

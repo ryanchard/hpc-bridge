@@ -91,3 +91,26 @@ def test_search_client_never_lets_the_compute_client_version_check(monkeypatch):
     monkeypatch.setattr(globus_compute_sdk, "Client", _Client)
     server._make_search_client()
     assert seen.get("do_version_check") is False
+
+
+def test_make_catalog_local_file_seam_replaces_the_registry(monkeypatch, tmp_path):
+    # HPC_BRIDGE_CATALOG_FILE (dev/test): a seed-format YAML stands in for the registry — the fake cluster's
+    # per-cluster MEP UUIDs live here, never in the public index. Nothing reaches Globus Search.
+    from hpc_bridge.catalog.bundled import BundledCatalog
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path))
+    monkeypatch.setenv("HPC_BRIDGE_SEARCH_INDEX", "would-be-ignored")
+    f = tmp_path / "catalog.yaml"
+    f.write_text(
+        "- id: fake-mep\n  facility_key: fake\n  facility: fake\n  description: d\n  display_name: Fake MEP\n"
+        "  compute_mep_uuid: 11111111-2222-3333-4444-555555555555\n  ssh_host: null\n  account_required: true\n"
+        "  compute: {scheduler: slurm, interface: eth0, env_setup: 'true', scratch_root: '$HOME/.hpc-bridge'}\n"
+        "  defaults: {partition: compute, init_blocks: 1}\n  provenance: session\n  last_validated: 2026-09-05\n"
+    )
+    monkeypatch.setenv("HPC_BRIDGE_CATALOG_FILE", str(f))
+    monkeypatch.setattr(binding, "_make_search_client", lambda: (_ for _ in ()).throw(AssertionError("Search must not be touched")))
+    cat = server.make_catalog()
+    assert isinstance(cat, BundledCatalog)
+    import asyncio
+    e = asyncio.run(cat.get("fake-mep"))
+    assert e is not None and e.compute_mep_uuid == "11111111-2222-3333-4444-555555555555" and e.summary().access == "mep"
+    monkeypatch.delenv("HPC_BRIDGE_CATALOG_FILE")

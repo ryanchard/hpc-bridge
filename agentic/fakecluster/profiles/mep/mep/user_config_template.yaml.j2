@@ -1,0 +1,29 @@
+# The MEP's per-user endpoint template (Jinja, rendered by the manager per submission against the CLIENT's
+# user_endpoint_config). Mirrors globus1's: always SlurmProvider (compute:false / LocalProvider is refused by the
+# schema, so there is no free login shape); `x | default(y | tojson)` because client strings arrive already
+# JSON-quoted by the manager while a literal default here does not. The worker_init default pins the endpoint
+# version UNCONDITIONALLY (@@VER@@ = the manager's), with the JAIL's python (3.11) so dill'd tasks deserialise.
+engine:
+  type: GlobusComputeEngine
+  run_in_sandbox: true
+  max_workers_per_node: {{ max_workers_per_node | default(2) }}
+  address:
+    type: address_by_interface
+    ifname: {{ interface | default("eth0" | tojson) }}
+  job_status_kwargs:
+    max_idletime: 180.0
+    strategy_period: 15
+  provider:
+    type: SlurmProvider
+    partition: {{ partition | default("compute" | tojson) }}
+{% if (account | default("")) not in ("", '""') %}
+    account: {{ account }}
+{% endif %}
+    walltime: {{ walltime | default("00:30:00" | tojson) }}
+    nodes_per_block: {{ nodes_per_block | default(1) }}
+    worker_init: {{ worker_init | default("[ -d $HOME/hpc-bridge/gce-venv ] || uv venv -q --python 3.11 $HOME/hpc-bridge/gce-venv; . $HOME/hpc-bridge/gce-venv/bin/activate; uv pip install -q globus-compute-endpoint==@@VER@@" | tojson) }}
+    launcher:
+      type: SrunLauncher
+    init_blocks: {{ init_blocks | default(0) }}
+    min_blocks: 0
+    max_blocks: {{ max_blocks | default(1) }}

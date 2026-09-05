@@ -1,0 +1,20 @@
+# `mep` overlay (on top of site's): the MEP manager state + owner login in login01, and the version/identity knobs.
+services:
+  login:
+    environment:
+      HPCB_MEP_IDENTITY: ${HPCB_MEP_IDENTITY:-gusellerm@uchicago.edu}
+      HPCB_MEP_GCE_VERSION: ${HPCB_MEP_GCE_VERSION:-4.16.0}
+      HPCB_MEP_EMAIL: ${HPCB_MEP_EMAIL:-hpcb-fake-mep@example.com}
+    volumes:
+      - mep-state:/root/.globus_compute
+      # the MEP OWNER's Globus login (a storage.db) — staged read-only, copied into the state volume once.
+      # Long syntax: a `${VAR:?message}` inside the short `src:dst:mode` form is split on the message's colons.
+      - type: bind
+        source: ${HPCB_MEP_GLOBUS_DB:?HPCB_MEP_GLOBUS_DB unset - set it or HPCB_TEST_GLOBUS_DB in agentic/.env}
+        target: /run/hpcb/mep-storage.db
+        read_only: true
+  login02:
+    environment:
+      HPCB_MEP_GCE_VERSION: ${HPCB_MEP_GCE_VERSION:-4.16.0}
+volumes:
+  mep-state:

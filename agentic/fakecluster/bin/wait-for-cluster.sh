@@ -9,7 +9,8 @@ KEY="${HPCB_FAKE_KEY:-$HOME/.ssh/hpcb-fake}"
 PORT="${HPCB_FAKE_SSH_PORT:-2222}"
 PORT2="${HPCB_FAKE_SSH_PORT2:-2223}"
 USER_="${HPCB_FAKE_USER:-hpcbridge-test-00}"
-DEADLINE=$(( $(date +%s) + 180 ))
+DEADLINE=$(( $(date +%s) + ${HPCB_FAKE_WAIT_S:-180} ))
+[ -n "${PROFILE_CATALOG_CMD:-}" ] && DEADLINE=$(( DEADLINE + 240 ))   # a MEP profile installs + registers two managers
 cd "$HERE"
 
 say() { echo "wait-for-cluster: $*"; }
@@ -47,5 +48,13 @@ if [ "$(echo "$PROFILE_LOGIN_HOSTS" | wc -w | tr -d ' ')" -ge 2 ]; then
     sleep 2
   done
   say "ssh OK: $("${SSH2[@]}" 'echo "$(whoami)@$(hostname -f)"')  (round-robin name: login)"
+fi
+if [ -n "${PROFILE_CATALOG_CMD:-}" ]; then
+  say "waiting for the facility MEP(s) to register (catalog: $PROFILE_CATALOG_CMD)…"
+  until out="$(eval "$PROFILE_CATALOG_CMD" 2>/dev/null)" && [ -n "$out" ]; do
+    [ "$(left)" -gt 0 ] || { say "TIMEOUT — MEP logs:"; "${COMPOSE[@]}" exec -T login sh -c 'tail -n 30 /var/log/hpcb-mep-*.log' || true; exit 1; }
+    sleep 3
+  done
+  say "MEP catalog: $(echo "$out" | grep -E '^- id:|compute_mep_uuid' | tr -s ' \n' ' ')"
 fi
 say "READY"

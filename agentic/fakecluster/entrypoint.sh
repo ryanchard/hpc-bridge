@@ -22,10 +22,12 @@ apply_profile() {
   done
   log "profile: $(sed -n 's/^name *= *"\(.*\)"/\1/p' "$PROFILE_DIR/profile.toml" 2>/dev/null || echo unknown)"
 }
-run_setup() {  # run_setup <role>
-  local f="$PROFILE_DIR/setup.d/$1.sh"
-  if [ -s "$f" ]; then log "profile setup: $1.sh"; # shellcheck disable=SC1090
-    source "$f"; fi
+run_setup() {  # run_setup <role> — setup.d/<role>.sh, then setup.d/<role>-*.sh (a layered profile's additions), sorted
+  local f
+  for f in "$PROFILE_DIR/setup.d/$1.sh" $(ls "$PROFILE_DIR/setup.d/$1"-*.sh 2>/dev/null | sort); do
+    if [ -s "$f" ]; then log "profile setup: $(basename "$f")"; # shellcheck disable=SC1090
+      source "$f"; fi
+  done
 }
 
 wait_tcp() {  # wait_tcp host port [what]

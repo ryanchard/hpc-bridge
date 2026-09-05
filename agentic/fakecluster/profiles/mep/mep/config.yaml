@@ -1,0 +1,8 @@
+# Manager (multi-user endpoint) config — globus-compute-endpoint 4.x: NO `multi_user` key; running as root is what
+# makes it a MEP (ManagerEndpointConfig accepts: public, user_config_template_path, user_config_schema_path,
+# identity_mapping_config_path, audit_log_path, pam, mu_child_ep_grace_period_s, email). @@KIND@@ = strict | open.
+display_name: hpc-bridge fake cluster MEP (@@KIND@@ schema)
+# 4.16 refuses to start a multi-user endpoint without a contact address ("Multi-user endpoints require a contact email")
+email: @@EMAIL@@
+identity_mapping_config_path: /root/.globus_compute/hpcb-mep-@@KIND@@/identity_mapping.json
+amqp_port: 443

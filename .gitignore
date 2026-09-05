@@ -32,3 +32,5 @@ agentic/.env
 
 # Per-run agentic provenance bundles (transcripts, message streams) — artifacts, not source
 agentic/runs/
+# Materialised (merged) fake-cluster profile dirs — built by bin/profile.py from profiles/
+agentic/fakecluster/.merged/
