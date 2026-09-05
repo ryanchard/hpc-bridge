@@ -36,3 +36,19 @@ def test_ingest_rejects_a_malformed_seed(tmp_path):
     bad.write_text("- id: x\n")
     with pytest.raises(Exception):  # noqa: B017 - any ingest error is the point of the test
         ingest(index_id="idx", seed_path=bad, client=_FakeIngestClient())
+
+
+def test_delete_subjects_calls_the_index_per_subject():
+    from hpc_bridge.catalog.ingest import delete_subjects
+
+    class _C:
+        def __init__(self):
+            self.deleted = []
+
+        def delete_subject(self, index_id, subject):
+            self.deleted.append((index_id, subject))
+
+    c = _C()
+    # an id rename / a retired entry: ingest upserts by subject, so the OLD subjects must be removed explicitly
+    assert delete_subjects("idx", ["globus:globus1", "purdue:anvil-mep"], c) == 2
+    assert c.deleted == [("idx", "globus:globus1"), ("idx", "purdue:anvil-mep")]

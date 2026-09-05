@@ -3,6 +3,16 @@
 All notable changes to hpc-bridge. The plugin version lives in `.claude-plugin/plugin.json` (Claude Code updates an
 installed plugin only when that version changes); git tags mark releases.
 
+## 0.1.5 — 2026-09-04 — registry: Anvil is its facility endpoint; Globus Labs is `globus-labs`
+
+### Changed
+- **Anvil is reached through its facility-run multi-user endpoint only.** The SSH-bootstrap entry left the
+  registry (the registry encourages facility endpoints over SSH); plain `anvil` is now the endpoint entry and
+  the `anvil-mep` id is retired. Anvil over SSH still works as a bring-your-own cluster.
+- **The Globus Labs cluster is `globus-labs`** in the registry, not `globus1` (that is the machine's hostname).
+  Say "connect me to globus-labs"; the old id no longer resolves.
+- The install guide's SSH example is Expanse; the catalog tool can delete index subjects (`--delete-subject`).
+
 ## 0.1.4 — 2026-09-04 — teardown no longer holds the tool call
 
 ### Fixed

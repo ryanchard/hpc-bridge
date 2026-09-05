@@ -29,14 +29,26 @@ def ingest(index_id: str, seed_path: str | Path, client) -> int:
     return len(gmeta)
 
 
+def delete_subjects(index_id: str, subjects: list[str], client) -> int:
+    """Remove entries by subject (`<facility_key>:<id>`) — an id rename or a retired entry (ingest is an upsert
+    by subject, so the old subject would otherwise stay listed). Returns the number of delete calls made."""
+    for subject in subjects:
+        client.delete_subject(index_id, subject)
+    return len(subjects)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="hpc-bridge-catalog",
-        description="Validate seed YAML and ingest to a Globus Search index.",
+        description="Validate seed YAML and ingest to a Globus Search index; optionally delete subjects.",
     )
     parser.add_argument("index_id", help="target Globus Search index UUID")
-    parser.add_argument("seed_path", help="seed .yaml file or directory")
+    parser.add_argument("seed_path", nargs="?", help="seed .yaml file or directory (omit to only delete)")
+    parser.add_argument("--delete-subject", action="append", default=[], metavar="FACILITY_KEY:ID",
+                        help="remove this subject from the index (repeatable); runs BEFORE the ingest")
     args = parser.parse_args(argv)
+    if not args.seed_path and not args.delete_subject:
+        parser.error("give a seed_path, --delete-subject, or both")
 
     from globus_compute_sdk import Client
     from globus_sdk import SearchClient
@@ -53,8 +65,13 @@ def main(argv: list[str] | None = None) -> int:
     app.add_scope_requirements({SearchScopes.resource_server: SearchScopes.all})
     if app.login_required():
         app.login()
-    n = ingest(index_id=args.index_id, seed_path=args.seed_path, client=client)
-    print(f"ingested {n} entr{'y' if n == 1 else 'ies'} to {args.index_id}", file=sys.stderr)
+    if args.delete_subject:
+        d = delete_subjects(args.index_id, args.delete_subject, client)
+        print(f"deleted {d} subject{'' if d == 1 else 's'} from {args.index_id}: {', '.join(args.delete_subject)}",
+              file=sys.stderr)
+    if args.seed_path:
+        n = ingest(index_id=args.index_id, seed_path=args.seed_path, client=client)
+        print(f"ingested {n} entr{'y' if n == 1 else 'ies'} to {args.index_id}", file=sys.stderr)
     return 0
 
 

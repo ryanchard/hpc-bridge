@@ -30,19 +30,19 @@ cause is `uv` not being found.
 - **A Globus account.** Log in with the identity your facility knows you by, usually your institutional
   or ACCESS identity; see [Facilities](facilities.md#which-globus-identity-to-use).
 - **Access to the facility you want to use.** Either an account there with your Globus identity mapped
-  to it (a facility-run endpoint, such as `globus1`: nothing to set up on the machine), or an account
-  plus key-based SSH to its login node (an SSH-bootstrap facility, such as Anvil). For SSH, a `Host`
-  block in `~/.ssh/config` is all hpc-bridge reads; it never asks for a password:
+  to it (a facility-run endpoint, such as `anvil`, `delta` or `globus-labs`: nothing to set up on the
+  machine), or an account plus key-based SSH to its login node (an SSH-bootstrap facility, such as Expanse).
+  For SSH, a `Host` block in `~/.ssh/config` is all hpc-bridge reads; it never asks for a password:
 
   ```
-  Host anvil.rcac.purdue.edu
-      User your-anvil-username
+  Host login.expanse.sdsc.edu
+      User your-expanse-username
       IdentityFile ~/.ssh/id_ed25519
   ```
 
   The `Host` pattern must match the login host name hpc-bridge will use: the registry's host for a
-  catalogued facility (`anvil.rcac.purdue.edu` above), or exactly the name you give the agent for your own
-  cluster. A short alias such as `anvil` only works if you also say "connect me to `anvil`".
+  catalogued facility (`login.expanse.sdsc.edu` above), or exactly the name you give the agent for your own
+  cluster. A short alias such as `expanse` only works if you also say "connect me to `expanse`".
 
 Nothing is installed on the facility by you. On an SSH facility the first connect installs Globus
 Compute into your home directory there; on a facility-run endpoint there is nothing to install at all.

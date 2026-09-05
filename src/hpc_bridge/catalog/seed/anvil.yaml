@@ -1,32 +1,7 @@
 # src/hpc_bridge/catalog/seed/anvil.yaml
-# Curated Anvil (Purdue/ACCESS) config — validated 2026-06-03 (worker on compute node a006).
-- id: anvil
-  facility_key: purdue
-  facility: "Purdue / ACCESS"
-  description: "Anvil CPU cluster"
-  display_name: "HPC-Bridge Anvil"
-  aliases: [anvil.rcac.purdue.edu]
-  compute_mep_uuid: null            # no facility MEP wired; personal-endpoint bootstrap path
-  # TODO(curator): replace with Anvil's real Globus Transfer collection UUID before ingest.
-  transfer_endpoint_uuid: "00000000-0000-0000-0000-000000000000"
-  ssh_host: anvil.rcac.purdue.edu
-  auth_method: ssh-key
-  allocation: {command: mybalance, parser: mybalance}
-  compute:
-    scheduler: slurm
-    interface: ib0
-    env_setup: "module load anaconda/2024.02-py311 && source {venv}/bin/activate"
-    scratch_root: "/anvil/scratch/{user}/.hpc-bridge"
-    # amqp_port: 443 -> default
-    endpoint_name: hpc-bridge-anvil   # convention: hpc-bridge-<facility>, never the bare name (collides)
-  defaults:
-    partition: debug
-    walltime: "00:30:00"
-    max_workers_per_node: 2
-    nodes_per_block: 1
-    max_blocks: 1
-  provenance: curated
-  last_validated: 2026-06-03
+# Curated Anvil (Purdue/ACCESS) — reached through its facility-run multi-user endpoint ONLY (decision 2026-09-04:
+# the registry encourages the MEP over SSH; the retired SSH-bootstrap entry lives on as the known-good BYO
+# reference in tests/catalog_fixtures/anvil-ssh.yaml). Anvil over SSH is still possible as bring-your-own.
 
 # Anvil's facility-run MULTI-USER endpoint (deployed; described in Purdue's GlobusWorld 2025 talk, not in the
 # RCAC user docs). Zero SSH: the facility maps the user's ACCESS identity to their x-… account. Its schema is
@@ -34,12 +9,12 @@
 # constraint, exclusive, min/max/init_blocks, nodes_per_block, scheduler_options, resource_specification,
 # worker_init, endpoint_setup, venvs_dir, requirements — everything else is dropped at attach. Its default
 # worker_init installs the worker at the CLIENT's SDK version; we pin the facility's ({gce_version}).
-- id: anvil-mep
+- id: anvil                       # the registry's ONE Anvil entry: the multi-user endpoint (the SSH entry was retired 2026-09-04)
   facility_key: purdue
   facility: "Purdue / ACCESS"
   description: "Anvil via its multi-user endpoint — zero SSH; the Slurm account is your ACCESS project id (e.g. cis250223; -gpu for GPU)"
-  display_name: "HPC-Bridge Anvil (MEP)"
-  aliases: [anvil-mep, anvil-multi-user]
+  display_name: "Purdue Anvil (MEP)"
+  aliases: [anvil-mep, anvil-multi-user, anvil.rcac.purdue.edu]
   compute_mep_uuid: 5aafb4c1-27b2-40d8-a038-a0277611868f
   ssh_host: null
   auth_method: ssh-key

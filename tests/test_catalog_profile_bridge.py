@@ -1,12 +1,17 @@
 """The catalog -> MachineProfile bridge (profile_from_catalog_entry)."""
 import asyncio
+from pathlib import Path
 
 from hpc_bridge.catalog.bundled import BundledCatalog
 from hpc_bridge.facility.remote import profile_from_catalog_entry
 
+# The SSH Anvil entry left the registry 2026-09-04 (Anvil is reached through its multi-user endpoint); the
+# known-good SSH config lives on as a fixture — still the oracle for the catalog -> MachineProfile bridge.
+_ANVIL_SSH = Path(__file__).parent / "catalog_fixtures" / "anvil-ssh.yaml"
+
 
 def _anvil_entry():
-    return asyncio.run(BundledCatalog().get("purdue:anvil"))
+    return asyncio.run(BundledCatalog(_ANVIL_SSH).get("purdue:anvil"))
 
 
 def test_bridge_reconstructs_the_anvil_config():

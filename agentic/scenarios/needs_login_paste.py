@@ -16,10 +16,10 @@ from invariants import (
 )
 
 NO_GLOBUS_DB = True
-FACILITY_ID = "globus1"
+FACILITY_ID = "globus-labs"
 PROMPT = (
-    "Connect me to the HPC facility with id `globus1` — it is catalogued, so use "
-    "connect_facility(facility='globus1') with no ssh_host and no details. This is an AUTOMATED run: "
+    "Connect me to the HPC facility with id `globus-labs` — it is catalogued, so use "
+    "connect_facility(facility='globus-labs') with no ssh_host and no details. This is an AUTOMATED run: "
     "no human is present to complete a browser login or to paste a code, and you must never ask for a "
     "Globus password. If a Globus login turns out to be required, tell me exactly what a person would "
     "need to do (include the link they must open), then STOP and wait — do not invent a code, do not "

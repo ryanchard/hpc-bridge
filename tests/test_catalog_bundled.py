@@ -90,13 +90,16 @@ async def test_bundled_missing_path_is_empty_not_crash(tmp_path):
     assert await c.discover("") == []
 
 
-async def test_default_bundled_catalog_has_anvil():
+async def test_default_bundled_catalog_has_anvil_as_its_multi_user_endpoint():
+    # decision 2026-09-04: ONE Anvil entry, the facility MEP (the registry encourages the MEP over SSH)
     c = BundledCatalog()  # default packaged seed dir
     anvil = await c.get("purdue:anvil")
-    assert anvil is not None
-    assert anvil.compute.interface == "ib0"
-    assert anvil.compute.amqp_port == 443
-    assert anvil.allocation.parser == "mybalance"
+    assert anvil is not None and anvil.id == "anvil"
+    assert anvil.compute_mep_uuid == "5aafb4c1-27b2-40d8-a038-a0277611868f"
+    assert anvil.ssh_host is None and anvil.allocation is None and anvil.account_required is True
+    assert anvil.compute.worker_version == "client"
+    assert (await c.get("anvil-mep")).id == "anvil"  # the retired id still resolves in the bundled loader
+    assert await c.get("purdue:anvil-mep") is None  # but is no entry of its own
 
 
 # --- the real globus1 MEP seed: must keep producing the admin-verified UEC ----------------------
@@ -117,7 +120,9 @@ async def test_globus_cluster_seed_is_a_valid_mep_entry_yielding_the_verified_ue
     [e] = cat.entries()
     assert e.compute_mep_uuid == "da3df250-4013-4d69-942c-eef1568f860c"
     assert e.ssh_host is None and e.allocation is None and e.account_required is False
-    assert (await cat.get("globus-cluster-mep")).id == "globus1"  # alias resolves
+    assert e.id == "globus-labs"  # renamed from `globus1` 2026-09-04: the id names the facility, not a host
+    assert (await cat.get("globus-cluster-mep")).id == "globus-labs"  # alias resolves
+    assert (await cat.get("globus1")).id == "globus-labs"  # the old id, as a bundled-loader alias
     fac = MEPFacility.from_entry(e)
     assert fac.supported_shapes == ("compute",) and fac.scratch_root.startswith("$HOME/")
     uec = {**fac.config_template(Profile())[1], **shape_config("compute")}

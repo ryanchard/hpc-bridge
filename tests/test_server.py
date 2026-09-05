@@ -1,9 +1,15 @@
+from pathlib import Path
+
 from hpc_bridge import binding
 from hpc_bridge.lifecycle import EndpointState
 from hpc_bridge.profile import Profile
 from hpc_bridge.runner import CanaryResult
 from hpc_bridge.server import AppCtx, _ensure_endpoint_up, _run_shell, _shape_runtime, mcp
 from tests.fakes import FakeFacility
+
+# The Anvil SSH entry left the registry 2026-09-04 (Anvil is its multi-user endpoint there); the SSH startup-path
+# tests below keep using the retired entry as a fixture.
+_ANVIL_SSH_SEED = Path(__file__).parent / "catalog_fixtures" / "anvil-ssh.yaml"
 
 
 def _confirm_slurm(app):
@@ -946,7 +952,7 @@ async def test_make_facility_sources_ssh_user_from_config_when_env_absent(monkey
             return None
 
     monkeypatch.setattr(state_mod, "LoginNodeStore", _NoPinStore)
-    monkeypatch.setattr(binding, "make_catalog", lambda: BundledCatalog())
+    monkeypatch.setattr(binding, "make_catalog", lambda: BundledCatalog(_ANVIL_SSH_SEED))
     monkeypatch.setattr(binding, "_ssh_config_user", lambda host: "cfg-user")  # from ~/.ssh/config
     monkeypatch.delenv("HPC_BRIDGE_FACILITY", raising=False)
     monkeypatch.setenv("HPC_BRIDGE_MACHINE", "anvil")
@@ -1013,7 +1019,7 @@ async def test_make_facility_reconnects_to_pinned_login_node(monkeypatch):
             return rec
 
     monkeypatch.setattr(state_mod, "LoginNodeStore", _FakeStore)
-    monkeypatch.setattr(binding, "make_catalog", lambda: BundledCatalog())
+    monkeypatch.setattr(binding, "make_catalog", lambda: BundledCatalog(_ANVIL_SSH_SEED))
     monkeypatch.delenv("HPC_BRIDGE_FACILITY", raising=False)
     monkeypatch.setenv("HPC_BRIDGE_MACHINE", "purdue:anvil")
     monkeypatch.setenv("HPC_BRIDGE_SSH_USER", "x-u")
@@ -1039,7 +1045,7 @@ async def test_make_facility_builds_from_catalog_when_machine_set(monkeypatch):
             return None
 
     monkeypatch.setattr(state_mod, "LoginNodeStore", _NoPinStore)
-    monkeypatch.setattr(binding, "make_catalog", lambda: BundledCatalog())
+    monkeypatch.setattr(binding, "make_catalog", lambda: BundledCatalog(_ANVIL_SSH_SEED))
     monkeypatch.delenv("HPC_BRIDGE_FACILITY", raising=False)
     monkeypatch.setenv("HPC_BRIDGE_MACHINE", "purdue:anvil")
     monkeypatch.setenv("HPC_BRIDGE_SSH_USER", "x-u")
@@ -1062,7 +1068,7 @@ async def test_make_facility_catalog_unknown_machine_errors(monkeypatch):
 
     # Inject the seed loader as the catalog: an unknown machine is a hard "not found", not a
     # silent fallback.
-    monkeypatch.setattr(binding, "make_catalog", lambda: BundledCatalog())
+    monkeypatch.setattr(binding, "make_catalog", lambda: BundledCatalog(_ANVIL_SSH_SEED))
     monkeypatch.setenv("HPC_BRIDGE_MACHINE", "nope:nope")
     with pytest.raises(RuntimeError, match="not found"):
         await make_facility()
