@@ -18,21 +18,11 @@ if [ ! -f "$KEY" ]; then
 fi
 export HPCB_FAKE_KEY_PUB="$KEY.pub"   # compose bind-mounts this into the login node
 
-# Profiles with a facility MEP (profiles/mep) need the MEP OWNER's Globus login and the endpoint version the plugin's
-# SDK runs. agentic/.env (gitignored) already holds the harness' test storage.db path — fill from it when unset.
-ENV_FILE="$HERE/../.env"
-if [ -f "$ENV_FILE" ]; then
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in ''|\#*) continue ;; esac
-    k="${line%%=*}"; [ -z "${!k+x}" ] && export "$line"
-  done < "$ENV_FILE"
+# A MEP profile needs the owner's Globus login (compose_files.sh fills HPCB_MEP_GLOBUS_DB from agentic/.env; /dev/null
+# means none was found — the managers would start without a login, so refuse early here).
+if [ -n "${PROFILE_CATALOG_CMD:-}" ] && [ "$HPCB_MEP_GLOBUS_DB" = /dev/null ]; then
+  echo "ERROR: profile '$PROFILE' runs facility MEPs and needs the owner's Globus storage.db: set HPCB_MEP_GLOBUS_DB or HPCB_TEST_GLOBUS_DB in agentic/.env" >&2; exit 1
 fi
-export HPCB_MEP_GLOBUS_DB="${HPCB_MEP_GLOBUS_DB:-${HPCB_TEST_GLOBUS_DB:-}}"
-if [ -z "${HPCB_MEP_GCE_VERSION:-}" ]; then
-  # the jail installs the repo's locked globus-compute-sdk; the MEP (and its workers) must run that endpoint version
-  HPCB_MEP_GCE_VERSION="$("$HERE/../../.venv/bin/python" -c 'import importlib.metadata as m; print(m.version("globus-compute-sdk"))' 2>/dev/null || echo 4.16.0)"
-fi
-export HPCB_MEP_GCE_VERSION
 
 cd "$HERE"
 echo "fake cluster: profile '$PROFILE' ($PROFILE_NODES compute nodes; login: $PROFILE_LOGIN_HOSTS)${PROFILE_CATALOG_CMD:+; facility MEP (gce $HPCB_MEP_GCE_VERSION)}"

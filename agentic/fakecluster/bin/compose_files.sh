@@ -16,6 +16,20 @@ while [ $# -gt 0 ]; do
     *) ARGS_LEFT+=("$1"); shift ;;
   esac
 done
+# The MEP overlay's compose file needs the MEP owner's Globus login path and the endpoint version to INTERPOLATE at all
+# (up AND down), so every script that composes reads agentic/.env here (unset vars only) and fills the defaults.
+ENV_FILE_FC="$HERE_FC/../.env"
+if [ -f "$ENV_FILE_FC" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|\#*) continue ;; esac
+    k="${line%%=*}"; [ -z "${!k+x}" ] && export "$line"
+  done < "$ENV_FILE_FC"
+fi
+export HPCB_MEP_GLOBUS_DB="${HPCB_MEP_GLOBUS_DB:-${HPCB_TEST_GLOBUS_DB:-/dev/null}}"   # /dev/null lets `down` interpolate without a login
+if [ -z "${HPCB_MEP_GCE_VERSION:-}" ]; then
+  HPCB_MEP_GCE_VERSION="$("$HERE_FC/../../.venv/bin/python" -c 'import importlib.metadata as m; print(m.version("globus-compute-sdk"))' 2>/dev/null || echo 4.16.0)"
+fi
+export HPCB_MEP_GCE_VERSION
 PROFILE_DIR="$HERE_FC/.merged/$PROFILE"
 eval "$(python3 "$HERE_FC/bin/profile.py" build "$PROFILE" "$PROFILE_DIR")" || exit 2
 export HPCB_FAKE_PROFILE="$PROFILE" HPCB_FAKE_PROFILE_DIR="$PROFILE_DIR"
