@@ -44,6 +44,7 @@ PHASES = [
 
 # The user trusts the key from their own terminal (accept-new through the harness channel is that act); and
 # start phase 2 with no token store so the plugin must seed one — "store gone after teardown" is then real.
+TRUST_HOST_KEY = False   # phase 1 needs an EMPTY known_hosts: run.py pre-trusts the key for every other scenario
 INTERPHASE_SETUP = ["rm -f ~/.globus_compute/storage.db; true"]
 INTERPHASE_DELAY_S = 5  # nothing registered in phase 1; no endpoint to settle
 

@@ -151,6 +151,23 @@ def _interphase_setup(scen) -> bool:
     return True
 
 
+def _trust_host_key(scen) -> bool:
+    """Seed the jail's known_hosts with the cluster's key BEFORE the agent starts — the harness' own channel connects
+    once with `accept-new`, exactly what a user's first `ssh host` did on their own machine. Since the host-key
+    boundary (#75) the plugin trusts only what the user's ssh already trusts, so a fresh jail (empty known_hosts)
+    refuses first contact as UNKNOWN HOST KEY — every SSH scenario without a SETUP step failed that way on the
+    first block-tier run after #75 (2026-09-05). `TRUST_HOST_KEY = False` keeps the jail cold: `unknown_host_key`
+    tests that refusal. Returns whether the key is trusted (False also when the ssh failed)."""
+    if not getattr(scen, "TRUST_HOST_KEY", True):
+        print("host key: NOT pre-trusted (scenario tests the unknown-key refusal)", file=sys.stderr, flush=True)
+        return False
+    rc, out = _ssh_run("true", timeout=45)
+    ok = rc == 0
+    print(f"host key: {'trusted via the harness channel' if ok else f'pre-trust ssh failed rc={rc}: {out.strip()[:120]}'}",
+          file=sys.stderr, flush=True)
+    return ok
+
+
 def _setup(scen) -> bool:
     """Precondition the world (scenario SETUP commands, run as the test user BEFORE the agent
     starts — e.g. saturate the partition). A failed setup aborts the run: grading an agent
@@ -336,6 +353,7 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
         "expect_ok": list(getattr(scen, "EXPECT_OK", [])),
         "teardown": getattr(scen, "TEARDOWN", "delete"),
         "setup": list(getattr(scen, "SETUP", [])),
+        "trust_host_key": bool(getattr(scen, "TRUST_HOST_KEY", True)),
         "extra_env": dict(getattr(scen, "EXTRA_ENV", {}) or {}),
         "seed_facility_cache": sorted(getattr(scen, "SEED_FACILITY_CACHE", {}) or {}),
         "no_globus_db": bool(getattr(scen, "NO_GLOBUS_DB", False)),
@@ -362,6 +380,7 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
     result_label = "CRASHED"  # replaced below; a bundle written from an exception path says so
     try:
         _seed_facility_cache(scen)
+        _trust_host_key(scen)
         if not _setup(scen):
             print("RESULT: SETUP FAILED — scenario not run (world precondition unmet)")
             rc = 2
