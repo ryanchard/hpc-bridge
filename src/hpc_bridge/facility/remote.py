@@ -732,6 +732,10 @@ engine:
 {% endif %}
 """
 
+# PBS: `account:` is emitted ONLY when non-empty. parsl's PBSProProvider adds `-A <account>` whenever the value is not
+# None, so an empty string produced a bare `-A` and qsub took the SCRIPT PATH as the account name, then read the script
+# from stdin — an empty "STDIN" job that exited 127, which the pilot probe then reported as "never submitted" (found on
+# the fake OpenPBS cluster, 2026-09-06: every facility we had met before required an account, so it never showed).
 _PBS_TEMPLATE = """\
 engine:
   type: GlobusComputeEngine
@@ -753,7 +757,9 @@ engine:
   provider:
     type: {{ provider_type | default('PBSProProvider') }}
 {% if compute | default(true) %}
+{% if (account | default(@@ACCOUNT@@)) not in ("", '""', none) %}
     account: {{ account | default(@@ACCOUNT@@) }}
+{% endif %}
     queue: {{ partition | default(@@PARTITION@@) }}
     walltime: {{ walltime | default(@@WALLTIME@@) }}
     nodes_per_block: {{ nodes_per_block | default(@@NODES@@) }}

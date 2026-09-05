@@ -66,3 +66,21 @@ def test_targets_reads_the_layered_profile_and_the_catalog_command(monkeypatch):
     out = subprocess.run([sys.executable, str(HERE / "targets.py"), "fake"], capture_output=True, text=True, timeout=60,
                          env={**__import__("os").environ, "HPCB_FAKE_PROFILE": "mep"}).stdout
     assert "HPCB_T_CATALOG_CMD='docker exec hpcb-fake-login-1 /usr/local/bin/hpcb-mep-catalog'" in out
+
+
+def test_pbs_profile_selects_its_own_stack_and_declares_the_scheduler(monkeypatch):
+    m = profile.manifest("pbs")
+    assert m["compose"] == "docker-compose.pbs.yml" and m["capabilities"]["scheduler"] == "pbs" and m["capabilities"]["nodes"] == 2
+    assert m["capabilities"]["partitions"] == ["workq", "debug"] and m["layers"] == ["pbs"]
+    import subprocess as sp
+    out = sp.run([sys.executable, str(FC / "bin" / "profile.py"), "build", "pbs", str(FC / ".merged" / "pbs-test")], capture_output=True, text=True, timeout=60).stdout
+    assert "PROFILE_COMPOSE=docker-compose.pbs.yml" in out and "PROFILE_SCHEDULER=pbs" in out and "PROFILE_NODES=2" in out
+    out = sp.run([sys.executable, str(FC / "bin" / "profile.py"), "build", "site", str(FC / ".merged" / "site-test")], capture_output=True, text=True, timeout=60).stdout
+    assert "PROFILE_COMPOSE=docker-compose.yml" in out and "PROFILE_SCHEDULER=slurm" in out
+    import shutil
+    shutil.rmtree(FC / ".merged" / "pbs-test", ignore_errors=True)
+    shutil.rmtree(FC / ".merged" / "site-test", ignore_errors=True)
+    monkeypatch.setenv("HPCB_FAKE_PROFILE", "pbs")
+    t = targets.get("fake")
+    assert t.capabilities["scheduler"] == "pbs" and t.nodes == 2
+    assert targets.meets({"scheduler": "pbs"}, t.capabilities)[0] and not targets.meets({"scheduler": "pbs"}, targets.load_profile("site")["capabilities"])[0]

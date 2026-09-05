@@ -294,3 +294,19 @@ def test_plain_host_key_entries_are_seeded_from_the_harness_port(tmp_path):
     assert n == 4 and "login ssh-ed25519 AAAAkeylogin" in lines and "login01.hpcb.test ssh-rsa AAAArsalogin01.hpcb.test" in lines
     assert lines[0] == "[login]:2200 ssh-ed25519 AAAAkeylogin"   # the harness' own entry kept
     assert harness_run._seed_plain_host_keys(["login"], "2200", known_hosts=kh, keyscan=scan) == 0   # idempotent
+
+
+def test_world_channel_scheduler_comes_from_the_target_then_the_scenario(monkeypatch):
+    import json
+
+    import run as harness_run
+
+    class Scen:
+        SCHEDULER = "pbs"
+
+    monkeypatch.setenv("HPCB_TARGET_CAPS", json.dumps({"scheduler": "slurm"}))
+    assert harness_run._scheduler(Scen()) == "slurm"                  # the cluster the cell runs on wins
+    monkeypatch.setenv("HPCB_TARGET_CAPS", json.dumps({"nodes": 3}))
+    assert harness_run._scheduler(Scen()) == "pbs"                    # no capability: the scenario's declaration (aurora)
+    assert harness_run._scheduler(object()) == "slurm"                # neither: slurm
+    assert "qstat" in harness_run._universal_postchecks("pbs")[0]["cmd"] and "squeue" in harness_run._universal_postchecks("slurm")[0]["cmd"]

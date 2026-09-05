@@ -1,0 +1,52 @@
+# hpc-bridge fake cluster — the PBS stack (OpenPBS), selected by a profile's `compose = "docker-compose.pbs.yml"`:
+#   pbsserver (server + sched + comm + datastore) ─▶ { c1, c2 (pbs_mom) , login (sshd + PBS clients) }
+# Same project name as the Slurm stack (the jail joins `hpcb-fake_default`); the two never run together.
+name: hpcb-fake
+
+x-pbs: &pbs
+  build:
+    context: .
+    dockerfile: Dockerfile.pbs
+  image: hpcb-fake-pbs:latest
+  platform: linux/arm64
+  environment:
+    PBS_SERVER_HOST: pbsserver
+  volumes:
+    - ${HPCB_FAKE_PROFILE_DIR:-./profiles/pbs}:/etc/hpcb/profile:ro
+  restart: unless-stopped
+
+services:
+  pbsserver:
+    <<: *pbs
+    hostname: pbsserver
+    command: [server]
+  c1:
+    <<: *pbs
+    hostname: c1
+    command: [mom]
+    depends_on: [pbsserver]
+    volumes:
+      - home:/home
+      - ${HPCB_FAKE_PROFILE_DIR:-./profiles/pbs}:/etc/hpcb/profile:ro
+  c2:
+    <<: *pbs
+    hostname: c2
+    command: [mom]
+    depends_on: [pbsserver]
+    volumes:
+      - home:/home
+      - ${HPCB_FAKE_PROFILE_DIR:-./profiles/pbs}:/etc/hpcb/profile:ro
+  login:
+    <<: *pbs
+    hostname: login
+    command: [login]
+    depends_on: [pbsserver]
+    ports:
+      - "${HPCB_FAKE_SSH_PORT:-2222}:${HPCB_FAKE_SSHD_PORT:-22}"
+    volumes:
+      - home:/home
+      - ${HPCB_FAKE_KEY_PUB:-~/.ssh/hpcb-fake.pub}:/run/hpcb/authorized_keys:ro
+      - ${HPCB_FAKE_PROFILE_DIR:-./profiles/pbs}:/etc/hpcb/profile:ro
+
+volumes:
+  home:

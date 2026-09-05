@@ -1,0 +1,25 @@
+# `pbs` = an OpenPBS cluster (the ALCF Polaris/Aurora scheduler family): pbs_server + two moms + a login node, on its
+# own image (Dockerfile.pbs; OpenPBS built from source for arm64) and compose stack (docker-compose.pbs.yml — a profile
+# may name its base compose file). The plugin's PBS path — `qstat -Q` discovery, PBSProProvider blocks
+# (`#PBS -l select=N:ncpus=M`, `-q`, `-A`), `qstat -x -f -F json` polling, the `qstat -f` pilot probe, `qdel` release —
+# had only ever run against Aurora (blocked on allocation): here it runs end to end. Queues: `workq` (default, 2 days)
+# and `debug` (30-min cap); no allocation enforcement (`-A` accepted); nodes report ncpus=4.
+name = "pbs"
+description = "OpenPBS cluster — pbs_server + 2 moms + login; queues workq/debug; the plugin's PBS path end to end"
+compose = "docker-compose.pbs.yml"
+
+[capabilities]
+scheduler = "pbs"
+nodes = 2
+login_nodes = 1
+login_hosts = ["login"]
+partitions = ["workq", "debug"]      # PBS queues (the plugin's "partition" is the queue on PBS)
+default_partition = "workq"
+accounting = "none"
+accounts = ["hpcb"]
+balance_tool = "none"
+nics = 1
+qos = []
+gres = "none"
+module_system = "none"
+mfa = "none"
