@@ -32,7 +32,7 @@ from claude_agent_sdk import (  # type: ignore[import-not-found]
 )
 from human_sim import HumanSim, ends_with_question
 from invariants import Trace, logical_name
-from trace_adapter import build_trace
+from trace_adapter import _result_to_dict, build_trace
 
 # Logical hpc-bridge tool names (see Modules/server.md). Registered under SDK key
 # "endpoint" -> the agent sees them as mcp__endpoint__<tool>.
@@ -80,6 +80,63 @@ class RunResult:
     prose_followups: int = 0          # interactive: prose questions the sim answered (client.query follow-ups)
     followups_capped: bool = False    # the run ended because MAX_PROSE_FOLLOWUPS was hit — the agent kept asking
     human_sim_model: str | None = None  # interactive: which model played the user (bundle provenance)
+    hooks_fired: list[dict] = None    # chaos: the MIDRUN_HOOKS that fired (tool, nth, call index, rc, output)
+
+
+class HookWatcher:
+    """Chaos hooks: a scenario's MIDRUN_HOOKS fire at a chosen point in the agent's tool sequence — after the Nth
+    result of a given tool (optionally only when the call's input matches, e.g. shape="compute", or the result's
+    phase matches) — and run a command on the cluster while the agent is mid-task. The harness had no channel into
+    the world between SETUP and POSTCHECKS, so a dead endpoint under a polled task, a stop that must come back
+    `draining`, or a stop while a task runs could never be provoked on purpose (review 2026-09-05, N6–N8).
+
+    Pure over the message stream: `observe(msg)` returns the hooks due after this message. The runner awaits the
+    executor for each; the fake cluster is where these run (a hook kills things)."""
+
+    def __init__(self, hooks: list[dict] | None) -> None:
+        self.hooks = [dict(h) for h in (hooks or [])]
+        self._uses: dict[str, tuple[str, dict]] = {}   # tool_use_id -> (logical name, input)
+        self._counts: dict[str, int] = {}
+        self._fired: set[int] = set()
+        self.calls = 0                                  # tool_use blocks seen (the trace's call index)
+        self.endpoint_ids: list[str] = []
+
+    def observe(self, msg: Any) -> list[dict]:
+        due: list[dict] = []
+        content = getattr(msg, "content", None)
+        if not isinstance(content, list):
+            return due
+        for b in content:
+            if hasattr(b, "name") and hasattr(b, "input") and hasattr(b, "id"):
+                self._uses[b.id] = (logical_name(getattr(b, "name", "") or ""), dict(getattr(b, "input", {}) or {}))
+                self.calls += 1
+            elif hasattr(b, "tool_use_id"):
+                use = self._uses.get(b.tool_use_id)
+                if use is None:
+                    continue
+                name, inp = use
+                result = _result_to_dict(getattr(b, "content", None)) or {}
+                eid = str(result.get("endpoint_id") or "")
+                if eid and eid not in self.endpoint_ids:
+                    self.endpoint_ids.append(eid)
+                for k, h in enumerate(self.hooks):
+                    if k in self._fired or h.get("after_tool") != name:
+                        continue
+                    want = h.get("when_input") or {}
+                    if any(str(inp.get(kk)) != str(vv) for kk, vv in want.items()):
+                        continue
+                    if h.get("when_phase") and str(result.get("phase")) != str(h["when_phase"]):
+                        continue
+                    self._counts[k] = self._counts.get(k, 0) + 1
+                    if self._counts[k] == int(h.get("nth", 1)):
+                        self._fired.add(k)
+                        due.append({**h, "index": k, "call_index": self.calls - 1, "result": result,
+                                    "endpoint_ids": list(self.endpoint_ids)})
+        return due
+
+    @property
+    def unfired(self) -> list[dict]:
+        return [h for k, h in enumerate(self.hooks) if k not in self._fired]
 
 
 @dataclass
@@ -184,6 +241,8 @@ async def run_scenario(
     max_turns: int = 40,
     max_budget_usd: float = 2.0,
     extra_env: dict[str, str] | None = None,
+    midrun_hooks: list[dict] | None = None,
+    hook_runner=None,
 ) -> RunResult:
     """Run one scripted scenario end-to-end and return the captured Trace + result.
 
@@ -244,6 +303,16 @@ async def run_scenario(
     turn_final: Any = None   # the CURRENT turn's ResultMessage — never a previous turn's (review 2026-09-05, 2.4)
     followups = 0
     capped = False
+    watcher = HookWatcher(midrun_hooks)
+    fired: list[dict] = []
+
+    async def _observe(msg: Any) -> None:
+        for hook in watcher.observe(msg):
+            print(f"  💥 hook: {hook.get('name', hook['after_tool'])} after {hook['after_tool']} #{hook.get('nth', 1)} "
+                  f"(call {hook['call_index']})", file=sys.stderr, flush=True)
+            outcome = await hook_runner(hook) if hook_runner else {"rc": None, "out": "(no hook runner)"}
+            fired.append({"name": hook.get("name", hook["after_tool"]), "after_tool": hook["after_tool"],
+                          "nth": int(hook.get("nth", 1)), "call_index": hook["call_index"], **(outcome or {})})
     try:
         with _scrubbed_agent_env():
             if interactive:
@@ -255,6 +324,7 @@ async def run_scenario(
                         async for msg in client.receive_response():
                             messages.append(msg)
                             _live(msg)
+                            await _observe(msg)
                             kind = type(msg).__name__
                             if kind == "ResultMessage":
                                 turn_final = msg
@@ -283,6 +353,7 @@ async def run_scenario(
                 async for msg in query(prompt=prompt, options=options):
                     messages.append(msg)
                     _live(msg)
+                    await _observe(msg)
                     if type(msg).__name__ == "ResultMessage":
                         final = msg
     except Exception as e:  # noqa: BLE001 — max_turns / budget / transport death mid-stream
@@ -300,4 +371,7 @@ async def run_scenario(
         dialogue=(human.dialogue if human else []),
         prose_followups=followups, followups_capped=capped,
         human_sim_model=(human.model if human else None),
+        hooks_fired=fired + [{"name": h.get("name", h["after_tool"]), "after_tool": h["after_tool"],
+                              "nth": int(h.get("nth", 1)), "call_index": None, "rc": None, "out": "NEVER FIRED"}
+                             for h in watcher.unfired],
     )

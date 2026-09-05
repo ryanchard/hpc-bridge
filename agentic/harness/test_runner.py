@@ -157,3 +157,69 @@ def test_agent_env_is_scrubbed_during_the_run_and_restored_after(runner, monkeyp
     _run(runner, persona=None)
     assert seen == {"HPCB_RUNID": None, "PYTHONPATH": None, "HPC_BRIDGE_SSH_USER": "x"}  # scrubbed while the CLI lives
     assert os.environ["HPCB_RUNID"] == "42-1" and os.environ["PYTHONPATH"].endswith("harness")  # restored after
+
+
+# ---- chaos hooks: the watcher over the message stream --------------------------------------------------------
+
+@dataclass
+class ToolUseBlock:
+    id: str
+    name: str
+    input: dict
+
+
+@dataclass
+class ToolResultBlock:
+    tool_use_id: str
+    content: str
+
+
+@dataclass
+class UserMessage:
+    content: list
+
+
+def test_hook_watcher_fires_after_the_nth_matching_result_once(runner):
+    hooks = [{"name": "kill_manager", "after_tool": "poll_task", "nth": 1, "cmd": "stop {endpoint_name}"},
+             {"name": "kill_login", "after_tool": "run_shell", "when_input": {"shape": "compute"}, "nth": 2, "cmd": "pkill"}]
+    w = runner.HookWatcher(hooks)
+    eid = "da3df250-4013-4d69-942c-eef1568f860c"
+    seq = [
+        (ToolUseBlock("u1", "mcp__endpoint__run_shell", {"shape": "login", "command": "sinfo"}), f'{{"phase":"complete","endpoint_id":"{eid}"}}'),
+        (ToolUseBlock("u2", "mcp__endpoint__run_shell", {"shape": "compute", "command": "hostname"}), '{"phase":"complete"}'),
+        (ToolUseBlock("u3", "mcp__endpoint__run_shell", {"shape": "compute", "command": "hostname"}), '{"phase":"complete"}'),
+        (ToolUseBlock("u4", "mcp__endpoint__poll_task", {"task_id": "t"}), '{"phase":"running","task_id":"t"}'),
+        (ToolUseBlock("u5", "mcp__endpoint__poll_task", {"task_id": "t"}), '{"phase":"failed","notice":"ORPHANED"}'),
+    ]
+    fired = []
+    for use, res in seq:
+        assert w.observe(AssistantMessage([use])) == []          # a tool_use alone fires nothing
+        fired += w.observe(UserMessage([ToolResultBlock(use.id, res)]))
+    names = [(f["name"], f["call_index"]) for f in fired]
+    assert names == [("kill_login", 2), ("kill_manager", 3)]  # login-shape run_shell did not count; poll #2 did not re-fire
+    assert fired[1]["endpoint_ids"] == [eid] and fired[1]["result"]["phase"] == "running"
+    assert w.unfired == []
+    w2 = runner.HookWatcher([{"after_tool": "poll_task", "nth": 1, "when_phase": "failed"}])
+    w2.observe(AssistantMessage([seq[3][0]]))
+    assert w2.observe(UserMessage([ToolResultBlock("u4", seq[3][1])])) == []
+    w2.observe(AssistantMessage([seq[4][0]]))
+    assert len(w2.observe(UserMessage([ToolResultBlock("u5", seq[4][1])]))) == 1
+    assert runner.HookWatcher([{"after_tool": "teardown_endpoint"}]).unfired  # never reached -> reported unfired
+
+
+def test_run_scenario_executes_hooks_and_records_them(runner):
+    use = ToolUseBlock("u1", "mcp__endpoint__poll_task", {"task_id": "t"})
+    _Client.turns = [[AssistantMessage([use]), UserMessage([ToolResultBlock("u1", '{"phase":"running"}')]),
+                      AssistantMessage([TextBlock("done.")]), ResultMessage()]]
+    ran = []
+
+    async def fake_hook(hook):
+        ran.append(hook["name"])
+        return {"rc": 0, "out": "manager-stopped", "cmd": hook["cmd"]}
+
+    r = asyncio.run(runner.run_scenario("go", repo_root=HERE.parents[1], persona="cooperative",
+                                        midrun_hooks=[{"name": "kill_manager", "after_tool": "poll_task", "cmd": "stop {endpoint_name}"},
+                                                      {"name": "never", "after_tool": "teardown_endpoint", "cmd": "x"}],
+                                        hook_runner=fake_hook))
+    assert ran == ["kill_manager"]
+    assert [(h["name"], h["call_index"], h.get("rc")) for h in r.hooks_fired] == [("kill_manager", 0, 0), ("never", None, None)]

@@ -120,6 +120,13 @@ def _needs_nodes(scenario: str) -> int:
         return 0
 
 
+def _allowed_targets(scenario: str) -> set[str] | None:
+    """TARGETS a scenario declares itself runnable on (None = any). A chaos scenario that kills endpoints and blocks
+    says `TARGETS = ("fake",)` — the first declarative coupling of scenario to cluster (2026-09-05)."""
+    raw = _knobs(scenario).get("HPCB_KNOB_TARGETS")
+    return {t.strip() for t in raw.split(",") if t.strip()} if raw else None
+
+
 def _warm_block_user(scenario: str) -> str | None:
     """WARM_BLOCK_USER: a facility MEP's block runs as its mapped user; while one is RUNNING the cell reuses it."""
     return _knobs(scenario).get("HPCB_KNOB_WARM_BLOCK_USER") or None
@@ -363,6 +370,14 @@ async def _main(args) -> int:
     os.environ["HPCB_TARGET"] = args.target  # every cell, knob probe and helper reads the same target
     _TARGET = targets.get(args.target)
     scenarios = [s.strip() for s in args.scenarios.split(",") if s.strip()]
+    for s in list(scenarios):
+        allowed = _allowed_targets(s)
+        if allowed is not None and _TARGET.name not in allowed:
+            print(f"⏭ skip   {s}: declares TARGETS={sorted(allowed)} — not runnable on --target {_TARGET.name}", flush=True)
+            scenarios.remove(s)
+    if not scenarios:
+        print("nothing to run on this target", flush=True)
+        return 2
     models = [m.strip() for m in args.models.split(",") if m.strip()]
     efforts = [e.strip() for e in args.efforts.split(",") if e.strip()] or [None]
     personas = [p.strip() for p in args.personas.split(",") if p.strip()] or [None]
