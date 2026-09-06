@@ -42,7 +42,9 @@ NODE_CLAIM_S = 300.0
 CELL_STOP_GRACE_S = 150.0
 # Knobs that must NOT leak from the operator's shell into every cell (a persisted HPCB_NO_SKILL ablated a
 # baseline cell; HPCB_EFFORT relabelled a whole matrix — review 2026-09-05). These prefixes are the exceptions.
-_CELL_ENV_KEEP_PREFIXES = ("HPCB_TEST_", "HPCB_POOL_", "HPCB_NODE_", "HPCB_FAKE_", "HPCB_TARGET")
+# HPCB_OPERATOR is one: a whole-suite choice (which harness drives — claude|hermes), set once for the invocation
+# and meant to reach every cell, so run a cross-operator comparison as two invocations that differ only in it.
+_CELL_ENV_KEEP_PREFIXES = ("HPCB_TEST_", "HPCB_POOL_", "HPCB_NODE_", "HPCB_FAKE_", "HPCB_TARGET", "HPCB_OPERATOR")
 
 
 class Stagger:
