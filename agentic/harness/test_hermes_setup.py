@@ -48,3 +48,14 @@ def test_build_config_no_clarify_routes_asks_to_prose(monkeypatch):
     assert cfg["platform_toolsets"]["cli"] == ["file", "terminal", "todo"]
     assert "clarify" not in cfg["platform_toolsets"]["cli"]
     assert "tools" not in cfg   # deferral is unchanged; only the ask-tool is removed
+
+
+def test_streaming_default_off_but_on_for_argo_or_knob(monkeypatch):
+    monkeypatch.delenv("HPCB_HERMES_STREAM", raising=False)
+    monkeypatch.setenv("HPCB_ALCF_BASE_URL", "https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1")
+    assert hermes_setup.build_config()["model"]["streaming"] is False          # ALCF: off (unclean SSE)
+    monkeypatch.setenv("HPCB_ALCF_BASE_URL", "http://host.docker.internal:44497/v1")
+    assert hermes_setup.build_config()["model"]["streaming"] is True           # Argo tunnel: on (so spend is metered)
+    monkeypatch.setenv("HPCB_ALCF_BASE_URL", "https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1")
+    monkeypatch.setenv("HPCB_HERMES_STREAM", "1")
+    assert hermes_setup.build_config()["model"]["streaming"] is True           # explicit knob
