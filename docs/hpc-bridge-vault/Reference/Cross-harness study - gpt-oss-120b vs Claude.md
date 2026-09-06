@@ -170,6 +170,16 @@ provisions can't be a clarify artifact — provisioning doesn't depend on the as
 natively, so it never hit the `clarify` path). **A clean re-run of the interactive scenarios with the fix — all
 operators through hermes, apples-to-apples — is required before the interactive gate numbers can be trusted.**
 
+**First clean re-run (gpt-oss-120b, ALCF, with the fix): 2/12** (gated_provision 1/3, spend_refusal 1/3,
+rich_gate 0/3, partition_choice 0/3). The fix demonstrably worked: the **persona was engaged in 11/12 cells**
+(23 human-sim exchanges — 17 answers, 4 declines, **2 genuine operator corrections**), versus the confounded
+baseline where asks were swallowed by `clarify` and the persona rarely spoke. So the confound had suppressed the
+persona and invalidated the gate grading — but gpt-oss's true interactive rate is still low, and the remaining
+failures are genuine: `no_raw_ssh_after_endpoint_up` (5), `compute_ran` (5), `partitions_offered` (5). Net: the
+clarify fix modestly raised the pass count (~1→2) and, more importantly, made the interactive grading valid; the
+open-model ceiling stands. (Devstral/405B interactive re-runs — also ALCF/free — and the Argo frontier control +
+generalization remain to complete the apples-to-apples picture.)
+
 ## Reading
 
 - The ceiling is **reliable multi-step tool USE over a long gated chain**, not hpc-bridge, not the hermes
