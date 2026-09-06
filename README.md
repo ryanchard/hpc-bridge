@@ -15,6 +15,8 @@ Two commands inside Claude Code; the repository is its own plugin marketplace.
 
 Then ask *"What HPC facilities can I use?"* — that first answer needs no login and no configuration.
 
+**Another MCP host?** hpc-bridge is a standard MCP server — point hermes-agent, Claude Desktop, Cursor, or the OpenAI Agents SDK at `uvx --from git+https://github.com/ryanchard/hpc-bridge hpc-bridge`. See **[other MCP hosts](docs/user/other-hosts.md)**.
+
 ## What you bring, what's included
 
 | You bring | Included |
