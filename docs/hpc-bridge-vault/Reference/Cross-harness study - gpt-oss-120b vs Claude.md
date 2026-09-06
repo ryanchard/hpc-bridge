@@ -195,29 +195,32 @@ open 0" — **conflated the operator with the model**: Claude ran via the Claude
 `AskUserQuestion`), the open models via hermes (deferral, `clarify` interception, prose transcript-replay). The
 right apples-to-apples control (all via hermes) shows the *harness*, not the model, drives most of the gap.
 
-And digging into the control's failures surfaced **another grader bug** (independent of clarify):
-`no_raw_ssh_after_endpoint_up` anchors "endpoint up" on `_LIVE_PHASES = {needs_account, warm, needs_confirmation,
-up}`, so a `connect_facility` result of **`needs_account`** (a *refusal* — no access, no block) or
-`needs_confirmation` counts as "up". A run that then does legitimate **pre-block `login_shell` discovery** (sinfo,
-mybalance) — exactly what happens when a persona declines spend, so no block is ever provisioned — is falsely
-flagged as "raw SSH after endpoint up." This inflated failures for the control **and** the open models
-(`no_raw_ssh` appeared 5× in the clean gpt-oss run). Fix (not done here — it's a shared grader in many EXPECT_OK
-lists + the block tier, so it needs its own careful re-validation): `no_raw_ssh` should anchor only on a live
-**compute block** (`ensure_endpoint_up` status `up`/`warm`, or a completed `run_shell shape=compute`), not on
-`connect_facility` gate phases.
+The control's failures turn out to be **genuine operator effects**, not grader artifacts (I first suspected a
+`no_raw_ssh` grader bug — that `connect_facility → needs_account` wrongly counts as "endpoint up" — but on
+inspection the login endpoint really *was* up: the run's own `run_shell(shape=login)` succeeded over AMQP right
+before the flagged `login_shell` calls). So `no_raw_ssh` is working: Claude-**via-hermes** used raw-SSH
+`login_shell` for login-node commands *after* the AMQP channel was proven, where Claude-**via-SDK** used
+`run_shell(shape=login)` and passed. That's a real behaviour difference driven by the operator (hermes prominently
+exposes hpc-bridge's `login_shell` tool), not the model. rich_gate/partition_choice also failed `partitions_offered`
+— the control didn't surface the partition list the way the SDK path did. Both reinforce the same point: the
+operator changes graded behaviour. (The one thing worth revisiting for a *benchmark* is whether `no_raw_ssh` should
+fire on a quick login-node check when only a login channel — no compute block — is up; that's a grader-strictness
+judgement, not a bug, and left as-is.)
 
 **Net validity verdict:** the interactive persona results in this study are **not a valid model comparison** —
-they measure the hermes interactive harness (operator differences + clarify interception [fixed] + `no_raw_ssh`
-mis-anchoring + token-heavy transcript-replay) at least as much as the model. **What still stands:** the
+they measure the hermes interactive harness (operator differences: clarify interception [fixed], `login_shell` vs
+`run_shell` tool choice, `partitions_offered` phrasing, token-heavy transcript-replay) at least as much as the
+model. **What still stands:** the
 *autonomous* results (happy_path etc., each operator's own path), the `compute_ran` *completion* signal (a model
 that never provisions isn't a grader artifact), and the qualitative failure taxonomy. **What to distrust:** the
 interactive pass-rate numbers and any "model A beats model B on the gates" claim drawn from them.
 
-**To make interactive numbers trustworthy** (future work): run every model through the **same** operator; audit
-the graders (`no_raw_ssh` anchor first) against clean traces; and replace the prose transcript-replay with a
-proper interactive driver (ACP, or a direct tool-call loop where the human-sim answers structured asks) — which
-also cuts the input-token cost (a single control model was ~$5 of Argo spend, 1.7M input tokens, because each
-turn re-sends the whole conversation + the guidance resource).
+**To make interactive numbers trustworthy** (future work): run every model through the **same** operator (so the
+comparison is model-vs-model, not operator-vs-operator); decide the deliberate grader-strictness calls for a
+benchmark (e.g. whether `no_raw_ssh` should fire on a login-only check); and replace the prose transcript-replay
+with a proper interactive driver (ACP, or a direct tool-call loop where the human-sim answers structured asks) —
+which also cuts the input-token cost (a single control model was ~$5 of Argo spend, 1.7M input tokens, because
+each turn re-sends the whole conversation + the guidance resource).
 
 ## Reading
 
