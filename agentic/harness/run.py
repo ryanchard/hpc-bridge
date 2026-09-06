@@ -540,7 +540,7 @@ def _resolve_scenario(name: str) -> str:
 
 
 async def _run(scenario: str, model: str, effort: str | None, persona: str | None,
-               no_skill: bool) -> int:
+               no_skill: bool, operator: str = "claude") -> int:
     sys.path.insert(0, str(SCENARIOS_DIR))
     scenario = _resolve_scenario(scenario)
     try:
@@ -567,9 +567,24 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
     persona = persona or getattr(scen, "PERSONA", None)
     user_goal = fill(getattr(scen, "USER_GOAL", ""))
 
+    # Operator dispatch: `hermes` drives the SAME scenario + graders with an ALCF-hosted model (guidance over MCP).
+    # Autonomous-only for now — refuse the combinations it can't drive rather than grade them vacuously.
+    if operator == "hermes":
+        reason = ("interactive personas" if persona else
+                  "cross-restart chains (PHASES)" if phases else
+                  "mid-run chaos hooks" if getattr(scen, "MIDRUN_HOOKS", None) else None)
+        if reason:
+            print(f"RESULT: SKIPPED — the hermes operator does not support {reason} yet")
+            return 2
+        from hermes_runner import run_scenario as _run_scenario
+        model = os.environ.get("HPCB_ALCF_MODEL", "openai/gpt-oss-120b")   # provenance: the model hermes actually used
+    else:
+        _run_scenario = run_scenario
+
     # Resolved-config snapshot for the provenance record (what actually ran, not defaults).
     config = {
         "runid": runid,
+        "operator": operator,
         "scenario": scenario,
         "kind": getattr(scen, "KIND", "regression"),
         "tags": list(getattr(scen, "TAGS", [])),
@@ -637,11 +652,11 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
             res = await _run_chain(phases, scen, model=model, effort=effort,
                                    persona=persona, user_goal=user_goal, no_skill=no_skill)
         else:
-            res = await run_scenario(prompt, repo_root=REPO_ROOT, model=model, effort=effort,
-                                     persona=persona, user_goal=user_goal, ablate_skill=no_skill,
-                                     max_turns=getattr(scen, "MAX_TURNS", 40),
-                                     extra_env=getattr(scen, "EXTRA_ENV", None) or None,
-                                     midrun_hooks=getattr(scen, "MIDRUN_HOOKS", None), hook_runner=_run_hook)
+            res = await _run_scenario(prompt, repo_root=REPO_ROOT, model=model, effort=effort,
+                                      persona=persona, user_goal=user_goal, ablate_skill=no_skill,
+                                      max_turns=getattr(scen, "MAX_TURNS", 40),
+                                      extra_env=getattr(scen, "EXTRA_ENV", None) or None,
+                                      midrun_hooks=getattr(scen, "MIDRUN_HOOKS", None), hook_runner=_run_hook)
 
         print(f"\n=== TRACE: {len(res.trace.calls)} tool calls ===")
         for i, c in enumerate(res.trace.calls):
@@ -789,6 +804,9 @@ def main() -> None:
                          "overrides the scenario's PERSONA")
     ap.add_argument("--no-skill", action="store_true",
                     help="ablation: withhold SKILL.md from the system prompt (measure the guidance's value)")
+    ap.add_argument("--operator", default=os.environ.get("HPCB_OPERATOR") or "claude",
+                    choices=["claude", "hermes"],
+                    help="which agent harness drives hpc-bridge (default: claude; hermes = an ALCF-hosted model)")
     args = ap.parse_args()
     sys.exit(asyncio.run(_main(args)))
 
@@ -811,7 +829,7 @@ async def _main(args) -> int:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, _cancel, sig)
     try:
-        return await _run(args.scenario, args.model, args.effort, args.persona, args.no_skill)
+        return await _run(args.scenario, args.model, args.effort, args.persona, args.no_skill, args.operator)
     except asyncio.CancelledError:
         if state["signalled"]:
             return 130
