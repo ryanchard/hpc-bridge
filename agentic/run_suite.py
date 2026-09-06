@@ -44,7 +44,10 @@ CELL_STOP_GRACE_S = 150.0
 # baseline cell; HPCB_EFFORT relabelled a whole matrix — review 2026-09-05). These prefixes are the exceptions.
 # HPCB_OPERATOR is one: a whole-suite choice (which harness drives — claude|hermes), set once for the invocation
 # and meant to reach every cell, so run a cross-operator comparison as two invocations that differ only in it.
-_CELL_ENV_KEEP_PREFIXES = ("HPCB_TEST_", "HPCB_POOL_", "HPCB_NODE_", "HPCB_FAKE_", "HPCB_TARGET", "HPCB_OPERATOR")
+# HPCB_ALCF_* (the hermes operator's model + base URL) are the same kind of whole-suite choice — kept so a
+# smart-model comparison is another invocation differing only in HPCB_ALCF_MODEL (else run_smoke falls back to .env).
+_CELL_ENV_KEEP_PREFIXES = ("HPCB_TEST_", "HPCB_POOL_", "HPCB_NODE_", "HPCB_FAKE_", "HPCB_TARGET", "HPCB_OPERATOR",
+                           "HPCB_ALCF")
 
 
 class Stagger:
