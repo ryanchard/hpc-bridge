@@ -68,9 +68,20 @@ def build_config(extra_env: dict[str, str] | None = None) -> dict:
             }
         },
     }
-    if os.environ.get("HPCB_HERMES_EAGER_TOOLS"):
+    # HPCB_HERMES_NO_CLARIFY: DROP hermes' `clarify` tool for interactive runs. In `-z` (oneshot) mode hermes
+    # auto-answers clarify with "[oneshot mode: no user available — decide yourself]" — so a model that asks the
+    # user via clarify (the structured way; capable models do) NEVER reaches our persona'd human-sim, and the
+    # spend-gate / refusal graders see no question (a false failure — found when the Claude control "failed"
+    # only spend_follows_question despite provisioning+running+stopping). Without clarify the model asks in PROSE,
+    # which the interactive loop routes to the human-sim and stamps as an AskUserQuestion. So the persona is
+    # actually exercised. (Autonomous runs don't set this — there is no user for clarify to bypass.)
+    eager = bool(os.environ.get("HPCB_HERMES_EAGER_TOOLS"))
+    no_clarify = bool(os.environ.get("HPCB_HERMES_NO_CLARIFY"))
+    if eager or no_clarify:
+        keep = ["file", "terminal", "todo"] if no_clarify else list(_EAGER_KEEP_TOOLSETS)
+        cfg["platform_toolsets"] = {"cli": keep}   # hpc-bridge MCP tools are always available regardless
+    if eager:
         cfg["tools"] = {"tool_search": {"enabled": "off"}}      # expose MCP tools directly (no tool_search gateway)
-        cfg["platform_toolsets"] = {"cli": list(_EAGER_KEEP_TOOLSETS)}   # trim built-in bulk to a light surface
     return cfg
 
 

@@ -140,6 +140,36 @@ the tools are deferred or direct — the failure is the gated-flow discipline it
 doesn't fully exonerate deferral for *Devstral's* describe-loop specifically, but it removes deferral as the
 explanation for the headline gpt-oss result.)
 
+## Follow-up 4 — a VALIDITY FAILURE in the interactive method (and its fix)
+
+Testing other providers via Argonne's **Argo** gateway (argo-proxy → a local OpenAI/Anthropic endpoint; models
+incl. GPT-5.x, Gemini, and Claude) added a proper **control**: Claude driven *through hermes*, so operator and
+path match the open-model runs. The control **failed** — and that exposed a confound in the whole interactive
+method, not a fact about any model:
+
+- hermes' `clarify` tool, in `-z` (oneshot) mode, **auto-answers** questions with *"[oneshot mode: no user
+  available — decide yourself]"*. So a model that asks the user the structured way (via `clarify` — capable
+  models do) **never reaches our persona'd human-sim**, and the spend-gate / refusal graders see no question.
+  The Claude control provisioned, ran, and stopped correctly yet "failed" `spend_follows_question` for exactly
+  this reason.
+- Secondary: `ends_with_question` (the prose-ask detector that routes a turn to the human-sim) missed
+  confirmation-request phrasing ("Before I proceed I need to confirm this with you: …" ending on a config block),
+  so even prose asks could stall the loop short of provisioning.
+
+**Fixes (this study's harness):** for interactive runs, drop hermes' `clarify` toolset so questions come out as
+prose (`HPCB_HERMES_NO_CLARIFY`), and broaden `ends_with_question` to catch confirmation phrasing anywhere in a
+turn. **Re-verified control: `claude-sonnet-5` via hermes via Argo → RESULT: OK** — it now asks
+*"Shall I provision this compute block now?"*, the cooperative sim answers, it provisions/runs/stops, and every
+critical grader (incl. `spend_follows_question`, `compute_ran`) passes; `harness:interaction: answer×3`.
+
+**Consequence for the numbers above:** the interactive **open-model** results (Follow-ups 1–3, and the headline
+0/8) were collected with `clarify` enabled, so their **spend-gate / refusal / choice grading is confounded** —
+the persona was often bypassed. What still holds: the `compute_ran` *completion* failures (a model that never
+provisions can't be a clarify artifact — provisioning doesn't depend on the ask), the autonomous results
+(`happy_path` etc.; no persona), and Claude's own 8/8 (the Claude-SDK operator handles `AskUserQuestion`
+natively, so it never hit the `clarify` path). **A clean re-run of the interactive scenarios with the fix — all
+operators through hermes, apples-to-apples — is required before the interactive gate numbers can be trusted.**
+
 ## Reading
 
 - The ceiling is **reliable multi-step tool USE over a long gated chain**, not hpc-bridge, not the hermes

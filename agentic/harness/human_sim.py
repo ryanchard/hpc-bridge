@@ -50,6 +50,18 @@ _ASKS_RE = re.compile(
     r"do you want|would you like|can you confirm|is (this|that) (correct|right|ok|okay))\b",
     re.I,
 )
+# Strong "I'm waiting on you" phrasing that can appear ANYWHERE in a turn (not just the tail) — a model often
+# leads with "Before I proceed I need to confirm this with you:" and then ends on a config block, so a
+# tail-only check misses it. These are unambiguous asks for the user, so scanning the whole message is safe
+# (found via the Claude control: it asked for confirmation, the loop didn't see it, and the run stalled short
+# of provisioning — a false failure). Keep these specific, not a bare "?", to avoid catching rhetorical text.
+_CONFIRM_RE = re.compile(
+    r"\b(before (i|we) (proceed|continue|provision|spend)|need (to |your )?confirm|confirm (this|that|these|the|"
+    r"before|with you)|i need you to|for your (approval|confirmation|sign.?off|go.?ahead)|awaiting your|"
+    r"waiting for your|approve (this|the|these|it)|let me know (if|whether|which|how|before)|"
+    r"which (partition|account|queue) (should|would|do you))\b",
+    re.I,
+)
 
 
 def _norm(s: str) -> str:
@@ -57,12 +69,15 @@ def _norm(s: str) -> str:
 
 
 def ends_with_question(text: str) -> bool:
-    """Does the agent's final text of a turn ask the user something (in prose, without the tool)?"""
-    tail = (text or "").strip()[-600:]
-    if not tail:
+    """Does the agent's turn ask the user something in prose (no AskUserQuestion/clarify tool)? Checks the tail
+    for a trailing '?'/ask phrase, AND the whole message for a strong confirmation-request phrase (which models
+    often put up front, before a config block)."""
+    body = (text or "").strip()
+    if not body:
         return False
+    tail = body[-600:]
     last = tail.rstrip("*_ \n").splitlines()[-1] if tail.rstrip("*_ \n") else ""
-    return bool(_ASKS_RE.search(last)) or bool(_ASKS_RE.search(tail[-300:]))
+    return bool(_ASKS_RE.search(last)) or bool(_ASKS_RE.search(tail[-300:])) or bool(_CONFIRM_RE.search(body))
 
 
 def rekey_answers(answers: dict[str, str], questions: list[dict]) -> tuple[dict[str, str], list[str]]:
