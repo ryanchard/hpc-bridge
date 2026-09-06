@@ -35,6 +35,15 @@ def search_index() -> str:
     return env("HPC_BRIDGE_SEARCH_INDEX") or PUBLIC_REGISTRY_INDEX
 
 
+def omit_instructions() -> bool:
+    """Suppress the MCP `instructions` guidance pointer. A host that already delivers the driving-hpc guidance by
+    another route sets HPC_BRIDGE_OMIT_INSTRUCTIONS=1 — Claude Code does, in .mcp.json, because it loads the skill —
+    so it gets no pointer (no duplication, no extra tokens). Every other host leaves it unset and gets the pointer,
+    then fetches the full guidance resource on demand (the lazy, Claude-Code-like path)."""
+    v = env("HPC_BRIDGE_OMIT_INSTRUCTIONS")
+    return v is not None and v.strip().lower() not in ("", "0", "false", "no", "off")
+
+
 def catalog_file() -> str | None:
     """A LOCAL catalog (seed-format YAML file or directory) that replaces the registry entirely — a dev/test seam:
     the agentic fake cluster's facility MEPs get fresh UUIDs per cluster and cannot live in the public registry, and a

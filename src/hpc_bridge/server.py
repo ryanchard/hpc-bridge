@@ -5,6 +5,7 @@ import sys
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Literal
 
 from mcp.server.fastmcp import Context, FastMCP
@@ -177,10 +178,52 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppCtx]:
                 rt.runner.close()
 
 
+# --- operational guidance over MCP (cross-harness) --------------------------------------------------------------
+# hpc-bridge's operating guidance lives in the driving-hpc SKILL.md. Claude Code auto-loads it via its skill system;
+# other MCP hosts (hermes-agent, …) have no skill system, so we surface the same guidance over MCP itself:
+#   • a small always-on POINTER in `instructions=` (hosts that surface serverInfo.instructions inject it) telling the
+#     model to read the guidance RESOURCE before consequential actions — the lazy, Claude-Code-like path (a host loads
+#     the full text only when it's relevant), proven on hermes-on-ALCF and Claude Code (2026-09-05);
+#   • the full SKILL.md served VERBATIM as an @mcp.resource (one source, zero drift, paid for only when fetched).
+# Claude Code sets HPC_BRIDGE_OMIT_INSTRUCTIONS=1 in .mcp.json → no pointer for it (it has the skill; no duplication).
+_GUIDANCE_URI = "hpcbridge://guidance/operations"
+_SKILL_PATH = Path(__file__).resolve().parents[2] / "skills" / "driving-hpc" / "SKILL.md"
+_INSTRUCTIONS_POINTER = (
+    "These tools drive real HPC: stand up (or reuse) a Globus Compute endpoint on a login node, then run shell work "
+    "over it. Before you provision a billed compute block, present a spend gate, or handle a Globus/MFA login, READ "
+    f"the resource {_GUIDANCE_URI} and follow it — it carries the operating rules (select → discover → gate → "
+    "provision → wait; compute-only facilities; stop = draining vs down; never detach long jobs). If you cannot read "
+    "the resource, each tool's own description is the fallback."
+)
+
+
+def _guidance_text() -> str:
+    """The full driving-hpc guidance (SKILL.md) served verbatim as an MCP resource, for hosts without a skill system.
+    Resolved from the source tree; when hpc-bridge is published to PyPI, ship SKILL.md as package data and resolve it
+    here too (see the Cross-harness portability note)."""
+    try:
+        return _SKILL_PATH.read_text()
+    except OSError:
+        return ("hpc-bridge operational guidance is unavailable in this installation — rely on each tool's own "
+                "description. (The driving-hpc SKILL.md could not be located.)")
+
+
+def _server_instructions() -> str | None:
+    """The pointer, unless the host opts out (Claude Code, which loads the skill itself)."""
+    return None if config.omit_instructions() else _INSTRUCTIONS_POINTER
+
+
 # Named "endpoint", not "hpc-bridge" (the plugin/CLI name): Claude Code namespaces a plugin's MCP
 # tools as plugin:<plugin>:<server>, so matching names would read the doubled plugin:hpc-bridge:hpc-bridge.
 # Keep in sync with the mcpServers key in .mcp.json — CC namespaces by that key, this name just mirrors it.
-mcp = FastMCP("endpoint", lifespan=lifespan)
+mcp = FastMCP("endpoint", lifespan=lifespan, instructions=_server_instructions())
+
+
+@mcp.resource(_GUIDANCE_URI, name="driving-hpc operational guidance", mime_type="text/markdown")
+def _operations_guidance() -> str:
+    """The full hpc-bridge operating guidance (the driving-hpc skill) — how to select → discover → gate → provision →
+    wait, compute-only facilities, stop semantics, and the long-job rule. Read it before consequential actions."""
+    return _guidance_text()
 
 
 async def _ensure_endpoint_up(
