@@ -7,7 +7,7 @@ This vault has two halves:
 - **Planned (transient)** — designed work and refactors; churns as features land. *(phase 2 — will absorb `docs/design/`.)*
 
 > [!info] Reading order
-> New here? Read **[[Happy path]]** — a first-time user's path (no config → `list_facilities` → Globus login → attach or bootstrap → run → stop) — then the concepts ([[Two-channel architecture]] → [[Standing up the endpoint]] → [[MEP & templated endpoints]] → [[Facility catalog]]). Then the three seams that shape a new user's first minute: [[login]] (the in-terminal Globus login), [[facility-mep]] (zero-SSH facility endpoints), [[discovery]] (an un-indexed facility). Contributing? Read the [[Vault style guide]] first. Where things stand *today*: `HANDOFF.md` at the repo root and [[V1 release]].
+> New here? Read **[[Happy path]]** — a first-time user's path (no config → `list_facilities` → Globus login → attach or bootstrap → run → stop) — then the concepts ([[Two-channel architecture]] → [[Standing up the endpoint]] → [[MEP & templated endpoints]] → [[Facility catalog]]). Then the three seams that shape a new user's first minute: [[login]] (the in-terminal Globus login), [[facility-mep]] (zero-SSH facility endpoints), [[discovery]] (an un-indexed facility). Contributing? Read the [[Vault style guide]] first. Where things stand *today*: `HANDOFF.md` at the repo root and [[V1 release]]. Future direction: [[Cross-harness portability]] (running hpc-bridge beyond Claude Code).
 
 ## Concepts — how it works
 - [[Two-channel architecture]] — SSH control plane vs AMQP hot path (a facility MEP needs no control plane at all)
