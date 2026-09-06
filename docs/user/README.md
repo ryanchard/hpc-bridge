@@ -7,6 +7,7 @@ it spends anything), runs your commands on a node, and releases the block when y
 | Page | Read it when |
 |---|---|
 | [Install](install.md) | you are setting it up: the two commands, prerequisites, updating |
+| [Other MCP hosts](other-hosts.md) | using hpc-bridge outside Claude Code: hermes-agent, Claude Desktop, Cursor, the OpenAI Agents SDK |
 | [Quickstart](quickstart.md) | your first session, step by step, and what to expect |
 | [Facilities](facilities.md) | choosing a machine: what each facility needs from you |
 | [The Globus login](login.md) | the one credential hpc-bridge needs, and why your browser opens |
