@@ -92,22 +92,41 @@ repeat 3 — **0/12**. It fails the same result-based gates as gpt-oss (`compute
 `tool_describe`s the hpc-bridge tools without ever *invoking* one (`agent_engaged` FAIL on 4/12), i.e. it inspects
 the tools instead of using them.
 
-So **"smarter/agentic" did not clear the interactive gates** — the naive "bigger model → better" reading does not
-hold here. The differentiator is Claude's tool-use *reliability* (right calls, right order, follow-through), which
-neither a mid open model nor a 123B agentic model matched via hermes+ALCF.
+**And raw scale — `Meta-Llama-3.1-405B-Instruct` (the biggest model on the endpoint, ~3.3× Devstral): also 0/12.**
+Same result-based failures (`compute_ran` 9, `partitions_offered` 6, `refusal_exercised` 3, `allocations_parsed` 3);
+it engages *more* than Devstral (it provisions — blocks show in accounting) but still fails the gating/discovery
+discipline, and it too has discovery-only runs (`agent_engaged` FAIL on 2/12). Validated: 405B uses the
+`"arguments"` dispatcher form throughout (312 calls, 0 via `"parameters"` — the input-fix doesn't touch it), and
+its `agent_engaged` fails are genuine discovery-only (not empty responses).
+
+So **neither agentic tuning (Devstral) nor raw scale (405B) cleared the interactive gates** — the naive
+"bigger/smarter model → better" reading does not hold here. The differentiator is Claude's tool-use *reliability*
+(right calls, right order, follow-through), which no open model matched via hermes+ALCF regardless of size or
+specialization. (A reasoning model, `arcee-ai/Trinity-Large-Thinking`, would be the sharpest remaining test — it
+was **cold-blocked** this round, staying HTTP 503 for the full 15-min warm window on the busy shared Sophia
+cluster, so it is not yet tested.)
+
+| model | class | interactive |
+|---|---|---|
+| Claude opus-5 | frontier | **8/8** |
+| gpt-oss-120b | mid open | ~1–3 / dozen |
+| Devstral-2-123B | agentic-tuned | 0/12 |
+| Meta-Llama-3.1-405B | biggest | 0/12 |
+| Trinity-Large-Thinking | reasoning | (cold-blocked, untested) |
 
 **Validity note (input-encoding fix).** Devstral invokes tools through hermes' `tool_call` dispatcher nesting args
-under `"parameters"` (gpt-oss uses `"arguments"`); 54 hpc-bridge calls across the Devstral bundles used that form.
-`hermes_trace._unwrap` now reads both keys (with a test). **Re-grading all 12 Devstral bundles with the fixed
+under `"parameters"` (gpt-oss/405B use `"arguments"`); 54 hpc-bridge calls across the Devstral bundles used that
+form. `hermes_trace._unwrap` now reads both keys (with a test). **Re-grading all 12 Devstral bundles with the fixed
 adapter leaves the verdict unchanged: 12/12 still fail ≥1 result-based critical** the input-fix can't affect, so
-0/12 is valid. (gpt-oss uses `"arguments"` throughout, so its numbers are unaffected.)
+0/12 is valid. (gpt-oss and 405B use `"arguments"` throughout, so their numbers are unaffected.)
 
 ## Reading
 
 - The ceiling is **reliable multi-step tool USE over a long gated chain**, not hpc-bridge and not merely model
-  size: gpt-oss stalls after the gate, Devstral loops in tool-discovery — both short of Claude's follow-through.
-  The hermes deferred-tool overhead (a `tool_search`/`tool_describe` round per tool) lengthens every chain and is
-  a plausible common confound worth isolating.
+  size or specialization: gpt-oss stalls after the gate, Devstral loops in tool-discovery, 405B provisions but
+  skips the gate — all short of Claude's follow-through, across a mid model, an agentic-tuned 123B, and the 405B
+  flagship. The hermes deferred-tool overhead (a `tool_search`/`tool_describe` round per tool) lengthens every
+  chain and is a plausible common confound worth isolating.
 - The plugin + guidance-over-MCP are **operator-neutral**: the same server, tools and guidance that give Claude
   8/8 are what the open models run against. The failures are the models', now legible per-mode. Guidance helps a
   weak model *engage*, but does not make it *competent* at the gated flow.
@@ -115,9 +134,10 @@ adapter leaves the verdict unchanged: 12/12 still fail ≥1 result-based critica
 ## Caveats / next
 
 - **n=2–3 per cell** — enough for the stark gap + the modes, not precise rates. Node-skips thinned a few cells.
-- Two open models, one profile (`site`). Worth extending: a warm larger dense model (405B) when the cluster
-  allows (ALCF auto-scales big models down; several were cold-blocked during this study), the deferred-tool
-  overhead isolated (does exposing hpc-bridge tools directly help?), and a "recovered-after-correction" metric —
+- Four open models spanning mid / agentic / flagship-scale, one profile (`site`). Still open: a **reasoning
+  model** (`Trinity-Large-Thinking` — the sharpest remaining test; cold-blocked this round, ALCF auto-scales big
+  models down and it never left HTTP 503 in a 15-min warm window), isolating the deferred-tool overhead (does
+  exposing hpc-bridge tools directly, without `tool_search`, help?), and a "recovered-after-correction" metric —
   no open-model run reached that state (they failed before a correction could land).
 
 Bundles: `agentic/runs/*-{gated_provision,rich_gate,spend_refusal,partition_choice}` (each `record.json` carries
