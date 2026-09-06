@@ -51,7 +51,10 @@ def _unwrap(name: str, args: dict) -> tuple[str, dict]:
     gpt-oss-120b does both across runs. Unwrap the dispatcher so the REAL tool + input reach the Trace; a
     bare tool_call without a nested name (shouldn't happen) passes through unchanged."""
     if name == "tool_call" and isinstance(args, dict) and args.get("name"):
+        # the nested args key varies by model: gpt-oss uses "arguments", Devstral/Mistral uses "parameters"
         inner = args.get("arguments")
+        if inner is None:
+            inner = args.get("parameters")
         if isinstance(inner, str):
             try:
                 inner = json.loads(inner)

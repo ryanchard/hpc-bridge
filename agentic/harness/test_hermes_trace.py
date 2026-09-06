@@ -81,12 +81,19 @@ def test_unwraps_hermes_tool_call_dispatcher(tmp_path):
                                            "arguments": '{"facility":"anvil"}'}))},
         {"role": "tool", "tool_call_id": "d2",
          "content": '<untrusted_tool_result source="x">{"phase":"needs_login"}</untrusted_tool_result>'},
+        # Devstral/Mistral nests the dispatcher args under "parameters", not "arguments"
+        {"role": "assistant", "tool_calls": _call(
+            "d3", "tool_call", json.dumps({"name": "mcp__hpc_bridge__ensure_endpoint_up",
+                                           "parameters": {"shape": "compute", "confirm_spend": True}}))},
+        {"role": "tool", "tool_call_id": "d3",
+         "content": '<untrusted_tool_result source="x">{"status":"up"}</untrusted_tool_result>'},
     ]
     t = trace_from_hermes_db(_make_db(tmp_path, rows))
-    assert [c.name for c in t.calls] == ["tool_search", "list_facilities", "connect_facility"]
+    assert [c.name for c in t.calls] == ["tool_search", "list_facilities", "connect_facility", "ensure_endpoint_up"]
     assert t.calls[1].result == {"id": "anvil"}
     assert t.calls[2].input == {"facility": "anvil"}
     assert t.calls[2].result == {"phase": "needs_login"}
+    assert t.calls[3].input == {"shape": "compute", "confirm_spend": True}   # "parameters" preserved
 
 
 def test_unwraps_dispatcher_result_envelope():
