@@ -46,7 +46,7 @@ markers = ["real_catalog: the test may build the real catalog (the hermetic tier
 [tool.ruff]
 line-length = 120
 target-version = "py311"
-extend-exclude = ["agentic/runs", "agentic/fakecluster", "docs"]
+extend-exclude = ["agentic/runs", "agentic/fakecluster", "docs", "agentic/harness/inference_auth_token.py"]  # last: vendored upstream (MIT), kept unmodified
 
 [tool.ruff.lint]
 # The rule set the code's existing `# noqa` annotations already imply (E/F/I/B/BLE/A); they were

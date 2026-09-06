@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 # Values of these env vars are secrets; names are still recorded (presence is provenance).
-_REDACT = {"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"}
+_REDACT = {"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ALCF_INFERENCE_TOKEN", "OPENAI_API_KEY"}
 
 
 def _jsonable(obj: Any, depth: int = 0) -> Any:
