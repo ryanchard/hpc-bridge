@@ -120,10 +120,31 @@ form. `hermes_trace._unwrap` now reads both keys (with a test). **Re-grading all
 adapter leaves the verdict unchanged: 12/12 still fail ≥1 result-based critical** the input-fix can't affect, so
 0/12 is valid. (gpt-oss and 405B use `"arguments"` throughout, so their numbers are unaffected.)
 
+## Follow-up 3 — isolating the deferred-tool overhead (the hermes confound)
+
+The obvious confound in all the above: hermes defers MCP tools behind a `tool_search`/`tool_describe` gateway
+(every hpc-bridge tool is `mcp-*` → always deferrable), adding a discovery round per tool and — for Devstral — a
+place to loop. Does removing it help? Turning it off (`tools.tool_search.enabled: off` in the hermes config;
+`HPCB_HERMES_EAGER_TOOLS=1` in the harness) exposes the hpc-bridge tools **directly** as functions, on a trimmed
+built-in surface (terminal/file/clarify/todo, so "no deferral" doesn't just swap in a big-context confound).
+
+gpt-oss-120b, tools **direct**, same 4 scenarios × repeat 3: **0/12** — same result-based failures as the deferred
+runs (`compute_ran`, `allocations_parsed`, `partitions_offered`, `refusal_exercised`). Verified the config took
+effect: 9/12 cells made **zero** `tool_search`/`tool_describe` calls (the tools were direct) and still failed
+identically. (A validity catch on the way: the first attempt didn't forward `HPCB_HERMES_EAGER_TOOLS` into the jail
+— `run_smoke.sh` forwards an explicit `-e` allowlist — so those cells silently ran *deferred*; the trace's
+`tool_search` count exposed it, the forwarding was fixed, and the numbers here are from the corrected run.)
+
+**So the deferred-tool overhead is NOT the confound.** gpt-oss stalls after the gate and skips discovery whether
+the tools are deferred or direct — the failure is the gated-flow discipline itself, not tool discovery. (This
+doesn't fully exonerate deferral for *Devstral's* describe-loop specifically, but it removes deferral as the
+explanation for the headline gpt-oss result.)
+
 ## Reading
 
-- The ceiling is **reliable multi-step tool USE over a long gated chain**, not hpc-bridge and not merely model
-  size or specialization: gpt-oss stalls after the gate, Devstral loops in tool-discovery, 405B provisions but
+- The ceiling is **reliable multi-step tool USE over a long gated chain**, not hpc-bridge, not the hermes
+  deferred-tool mechanism (ruled out above), and not merely model size or specialization: gpt-oss stalls after
+  the gate (deferred AND direct), Devstral loops in tool-discovery, 405B provisions but
   skips the gate — all short of Claude's follow-through, across a mid model, an agentic-tuned 123B, and the 405B
   flagship. The hermes deferred-tool overhead (a `tool_search`/`tool_describe` round per tool) lengthens every
   chain and is a plausible common confound worth isolating.
@@ -134,12 +155,14 @@ adapter leaves the verdict unchanged: 12/12 still fail ≥1 result-based critica
 ## Caveats / next
 
 - **n=2–3 per cell** — enough for the stark gap + the modes, not precise rates. Node-skips thinned a few cells.
-- Four open models spanning mid / agentic / flagship-scale, one profile (`site`). Still open: a **reasoning
-  model** (`Trinity-Large-Thinking` — the sharpest remaining test; cold-blocked this round, ALCF auto-scales big
-  models down and it never left HTTP 503 in a 15-min warm window), isolating the deferred-tool overhead (does
-  exposing hpc-bridge tools directly, without `tool_search`, help?), and a "recovered-after-correction" metric —
-  no open-model run reached that state (they failed before a correction could land).
+- Four open models spanning mid / agentic / flagship-scale, one profile (`site`), one inference provider (ALCF).
+  Deferred-tool overhead is ruled out (Follow-up 3). Still open, for stronger external validity: **other
+  inference providers** (OpenRouter/Together/Fireworks/… — many more models, incl. non-Claude frontier ones like
+  GPT-4o / DeepSeek-V3 / Qwen, to see whether the split is *Claude-specific* or *frontier-vs-open*; needs a
+  provider API key); a **reasoning model** (`Trinity-Large-Thinking` — cold-blocked this round, HTTP 503 for a
+  15-min warm window); and a "recovered-after-correction" metric — no open-model run reached that state (they
+  failed before a correction could land).
 
 Bundles: `agentic/runs/*-{gated_provision,rich_gate,spend_refusal,partition_choice}` (each `record.json` carries
 `operator`, `model`, `ablate_skill`, `failed`, and the interaction `kind`s). Sweep logs:
-`agentic/runs/{xharness,ablation,smart}-*-*.log`.
+`agentic/runs/{xharness,ablation,smart,eager}-*-*.log`.
