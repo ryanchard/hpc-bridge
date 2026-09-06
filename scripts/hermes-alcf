@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Launch hermes-agent with a FRESH ALCF inference token in the environment.
+#
+# hermes reads the ALCF (OpenAI-compatible) provider's key from the env var named by `key_env:` in
+# ~/.hermes/config.yaml (we use ALCF_INFERENCE_TOKEN). ALCF access tokens last 24h, so a static value in a
+# config/.env goes stale — this launcher mints a current one from the cached Globus refresh token each run.
+#
+# One-time setup: authenticate once (opens the Globus browser flow), then point hermes' ALCF provider at
+# key_env: ALCF_INFERENCE_TOKEN. After that, just run `hermes-alcf` instead of `hermes`.
+#   uv run --directory <repo> --extra integration python agentic/harness/inference_auth_token.py authenticate
+#
+# The token stays in this process's environment only — never written to a file, the repo, or git.
+set -euo pipefail
+
+# Resolve the repo root from this script's location (scripts/ is in the repo), following a symlink if aliased.
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do src="$(readlink "$src")"; done
+REPO="$(cd "$(dirname "$src")/.." && pwd)"
+
+token="$(uv run --directory "$REPO" --extra integration python \
+  "$REPO/agentic/harness/inference_auth_token.py" get_access_token)" || {
+  echo "hermes-alcf: could not mint an ALCF token. Authenticate once with:" >&2
+  echo "  uv run --directory $REPO --extra integration python agentic/harness/inference_auth_token.py authenticate" >&2
+  exit 1
+}
+export ALCF_INFERENCE_TOKEN="$token"
+exec hermes "$@"
