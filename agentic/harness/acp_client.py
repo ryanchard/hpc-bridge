@@ -53,19 +53,23 @@ def _chunk_text(content: Any) -> str:
     return str(getattr(content, "text", "") or "")
 
 
-def _fmt_call(title: Any, raw_input: Any) -> str:
-    """A compact `tool(args)` line for the live stderr play-by-play — mirrors the Claude-SDK operator's
-    `  → {logical_name}({inp})` (runner.py). Strips MCP/server name prefixes so `hpc-bridge:list_facilities`
-    / `mcp__hpc-bridge__connect` read as the logical tool; truncates args so one call is one readable line."""
-    name = str(title or "?").split(":")[-1].split("__")[-1]
+def _fmt_call(title: Any, kind: Any, raw_input: Any) -> str:
+    """A compact `[kind] name(args)` line for the live stderr play-by-play — the ACP counterpart of the
+    Claude-SDK operator's `  → tool(args)` (runner.py). The ACP `title` is ALREADY the tool name for MCP calls
+    (e.g. `connect_facility`) and a short label for the agent's own file/terminal/search tools, so it is printed
+    VERBATIM (never parsed — an earlier split on ':'/'__' mangled path- and glob-shaped titles); `raw_input`
+    supplies the args; `kind` (read/execute/search/…) gives context for terse titles like `src` or `*.py`."""
+    name = str(title or "?").strip() or "?"
     if isinstance(raw_input, dict):
         args = ", ".join(f"{k}={str(v)[:40]}" for k, v in raw_input.items())
     elif raw_input is None:
         args = ""
     else:
         args = str(raw_input)[:80]
-    s = f"{name}({args})"
-    return s if len(s) <= 160 else s[:157] + "…)"
+    k = str(kind or "").rpartition(".")[2].lower()   # 'ToolKind.READ' -> 'read'; '' stays ''
+    body = f"{name}({args})" if args else name
+    s = f"[{k}] {body}" if k and k != "other" and k != name.lower() else body
+    return s if len(s) <= 160 else s[:159] + "…"
 
 
 class BenchClient(Client):
