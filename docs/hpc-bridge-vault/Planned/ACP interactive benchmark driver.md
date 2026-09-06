@@ -66,6 +66,21 @@ errors. Two options:
 
 ## Status
 
-Design grounded (this doc); not yet built. Next focused effort. The transcript-replay + clarify-disable +
-streaming/metering already in main are the interim; the interactive pass-rate numbers stay provisional until ACP
-lands (Follow-up 5 caveat).
+**BUILT + live-validated (2026-09-06).** Steps 1–3 done: `acp_client.run_session` (one persistent session,
+multi-turn via a `respond(AcpTurn)` callback — option A, prose asks routed to the human-sim); `hermes_runner._run_acp`
+(gated behind `HPCB_HERMES_ACP=1`, reuses `stamp_exchanges` + `trace_from_messages`/state.db); `run_smoke.sh` +
+`run_suite.py` forward `HPCB_HERMES_ACP` and `HPCB_BENCHMARK_MODE`. Trace still comes from **state.db** (step 2's
+update-stream tap deferred — state.db already works and the graders read it unchanged).
+
+**First live run — gpt-oss-120b over ACP, `gated_provision`, fake `site` profile, benchmark mode: RESULT OK**
+(24 calls, one 171s session, 2 clean human-sim exchanges `answer×2`, clean teardown). Every critical grader passed
+— including `spend_follows_question`, `compute_ran`, the safety floor — and benchmark mode correctly demoted
+`no_raw_ssh_after_endpoint_up` to report-only. Note `guidance_fetched: did NOT` — it passed guidance-lighter.
+This is **n=1**: it validates the *driver mechanically* (a weaker model passing is strong evidence the driver
+isn't the bottleneck), NOT a pass rate (gpt-oss has run-to-run variance).
+
+**Go/no-go still open:** the capable-agent control. Cheapest first (free ALCF): 405B over ACP on the interactive
+scenarios. Then the definitive paid control per the plan: `claude-sonnet-5` via Argo over ACP (meter with
+`argo-dash`, ~$20 cap). Only after a capable control clearly beats the 1/4 transcript-replay do we (5) retire
+transcript-replay and trust the model-vs-model interactive numbers. Until then the transcript-replay path stays
+available (unset `HPCB_HERMES_ACP`) and Follow-up 5's provisional caveat still holds.

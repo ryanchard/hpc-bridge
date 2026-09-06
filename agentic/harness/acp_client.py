@@ -120,10 +120,23 @@ def hpc_bridge_mcp(repo_root: str, env: dict[str, str]) -> McpServerStdio:
     )
 
 
-async def run_once(command: str, args: list[str], task: str, *, cwd: str, env: dict[str, str],
-                   mcp_servers: list[McpServerStdio]) -> tuple[Any, AcpCapture]:
-    """Drive one ACP agent through one prompt turn; return (PromptResponse, capture)."""
+@dataclass
+class AcpTurn:
+    """One turn of an ACP session: the operator's closing prose for that turn (used to decide whether it asked
+    the user something), and the running tool-call count at that point (so a human reply can be stamped in order)."""
+    text: str
+    calls_so_far: int
+
+
+async def run_session(command: str, args: list[str], task: str, *, cwd: str, env: dict[str, str],
+                      mcp_servers: list[McpServerStdio], respond=None, max_turns: int = 1) -> tuple[Any, AcpCapture]:
+    """Drive an ACP agent over ONE persistent session, up to ``max_turns`` prompt turns. ``respond`` (async,
+    optional) is the interactive hook: ``respond(AcpTurn) -> str | None`` — return the user's next message to send
+    it as another prompt in the SAME session, or None/"" to stop. This is the clean multi-turn the transcript-replay
+    faked: no per-turn conversation re-send (the agent keeps its context), and ``prompt()`` returning IS the turn
+    boundary (no `ends_with_question` guessing needed to detect turn end — only to decide whether to reply)."""
     client = BenchClient()
+    resp: Any = None
     async with acp.spawn_agent_process(client, command, *args, env=env, cwd=cwd) as (conn, _proc):
         await conn.initialize(
             protocol_version=PROTOCOL_VERSION,
@@ -132,8 +145,24 @@ async def run_once(command: str, args: list[str], task: str, *, cwd: str, env: d
             client_info=Implementation(name="hpc-bridge-bench", version="0.1"),
         )
         sess = await conn.new_session(cwd=cwd, mcp_servers=mcp_servers)
-        resp = await conn.prompt(prompt=[acp.text_block(task)], session_id=sess.session_id)
-        return resp, client.capture
+        prompt_text = task
+        for _turn in range(max(1, max_turns)):
+            seen = len(client.capture.texts)
+            resp = await conn.prompt(prompt=[acp.text_block(prompt_text)], session_id=sess.session_id)
+            if respond is None:
+                break
+            turn_text = " ".join(client.capture.texts[seen:]).strip()
+            reply = await respond(AcpTurn(text=turn_text, calls_so_far=len(client.capture.tool_calls)))
+            if not reply:
+                break
+            prompt_text = reply
+    return resp, client.capture
+
+
+async def run_once(command: str, args: list[str], task: str, *, cwd: str, env: dict[str, str],
+                   mcp_servers: list[McpServerStdio]) -> tuple[Any, AcpCapture]:
+    """Drive one ACP agent through a single prompt turn; return (PromptResponse, capture)."""
+    return await run_session(command, args, task, cwd=cwd, env=env, mcp_servers=mcp_servers, max_turns=1)
 
 
 async def _probe() -> int:
