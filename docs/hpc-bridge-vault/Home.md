@@ -32,6 +32,7 @@ This vault has two halves:
 - [[The MCP tools]] — the agent-facing surface (eleven tools)
 - [[Plugin packaging]] — `.mcp.json` · `plugin.json` · the `driving-hpc` skill · `hpc-connect` · the fresh-user script
 - [[Configuration]] — environment variables
+- [[Using hpc-bridge with hermes-agent]] — drive hpc-bridge from hermes-agent on ALCF (or any model); the user recipe + config gotchas
 - [[MEP facilities survey]] — which real facilities run a Globus Compute MEP: registry candidates, their template keys, the unmapped-identity behaviour (2026-09-03)
 - [[Model sweep 2026-09-03]] — the cheap-tier agentic model sweep (six new-user scenarios × Opus/Sonnet/Haiku): 29/30 on round 2; what the failures actually were
 - [[Model sweep 2026-09-03 block tier]] — the block-tier sweep: stranger's MEP walk 6/6 on all three models; node starvation → the idle-node gate (#69); the human-sim fixes (#70); #39 fires on every SSH bring-up
