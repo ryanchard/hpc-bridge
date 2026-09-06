@@ -96,10 +96,11 @@ class BenchClient(Client):
         elif type(update).__name__ == "ToolCallStart" or kind == "tool_call":
             title = getattr(update, "title", None)
             raw_input = getattr(update, "raw_input", None)
+            call_kind = str(getattr(update, "kind", "") or "")
             self.capture.tool_calls.append({
                 "tool_call_id": getattr(update, "tool_call_id", None),
                 "title": title,
-                "kind": str(getattr(update, "kind", "") or ""),
+                "kind": call_kind,
                 "raw_input": raw_input,
             })
             # Live legibility: stream each operator tool call to stderr, so the hermes/ACP docker log gets the
@@ -107,7 +108,7 @@ class BenchClient(Client):
             # shows only the human-sim's replies — the operator's list_facilities/connect/run_shell steps land
             # only in the post-hoc Trace. Best-effort; logging must never break the run.
             with contextlib.suppress(Exception):
-                print(f"  → {_fmt_call(title, raw_input)}", file=sys.stderr, flush=True)
+                print(f"  → {_fmt_call(title, call_kind, raw_input)}", file=sys.stderr, flush=True)
         elif type(update).__name__ == "ToolCallProgress" or "tool_call_update" in kind:
             tid = getattr(update, "tool_call_id", None)
             if tid is not None and getattr(update, "raw_output", None) is not None:
