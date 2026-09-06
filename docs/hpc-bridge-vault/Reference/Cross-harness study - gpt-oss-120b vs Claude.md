@@ -2,7 +2,17 @@
 
 First quantified comparison of a **weaker open model** against Claude driving hpc-bridge through the
 *interactive* (human-in-the-loop) flows, using the cross-harness operator support ([[Using hpc-bridge with hermes-agent]],
-PRs #133–#135). The plugin and its guidance are identical for both; only the operator changes.
+PRs #133–#135).
+
+> **CORRECTION (2026-09-06, after an independent review).** An earlier version of this doc claimed "the plugin and
+> its guidance are identical for both; only the operator changes." **That is false and was a confound.** The
+> Claude-SDK operator FORCE-FEEDS the full `SKILL.md` (~21KB) into the system prompt every turn
+> (`runner.py:_system_prompt`), while the hermes operator gets only a one-line POINTER to a lazy MCP guidance
+> resource it must choose to fetch — and the runs never logged whether it actually did. So the operators differ in
+> tools, tool-calling surface, AND guidance delivery; the Claude-SDK force-feed is also un-faithful to how real
+> Claude Code loads the skill (`runner.py` admits this). Read every "operator-neutral / identical guidance" claim
+> below as **wrong**; the operator (incl. guidance delivery) is a dominant confound (see Follow-up 5). The
+> interactive model-vs-model numbers measure the harness at least as much as the model.
 
 ## Setup
 
@@ -57,8 +67,10 @@ wrong call*) was the point of the interaction instrumentation, and it held up.
   hpc-bridge: it loses the plot after the discovery/ask phase (stalls, loops, or skips the gate). The hermes
   deferred-tool overhead (a `tool_search`/`tool_describe` round per tool) lengthens every chain and likely
   compounds this.
-- The plugin + guidance-over-MCP are **operator-neutral**: the same server, tools and guidance that give Claude
-  8/8 are what gpt-oss runs against. The failures are the model's, and now legible per-mode.
+- The plugin's *tools* are operator-neutral, but **guidance delivery is NOT** (see the correction up top): the
+  Claude-SDK path force-feeds SKILL.md every turn; hermes gets a lazy MCP pointer. So this bullet's original
+  "same guidance" framing is retracted — the Claude-SDK numbers had a guidance advantage on top of the operator
+  differences.
 
 ## Follow-up 1 — more repeats + the guidance (`--no-skill`) ablation for gpt-oss
 
@@ -232,9 +244,11 @@ each turn re-sends the whole conversation + the guidance resource).
   skips the gate — all short of Claude's follow-through, across a mid model, an agentic-tuned 123B, and the 405B
   flagship. The hermes deferred-tool overhead (a `tool_search`/`tool_describe` round per tool) lengthens every
   chain and is a plausible common confound worth isolating.
-- The plugin + guidance-over-MCP are **operator-neutral**: the same server, tools and guidance that give Claude
-  8/8 are what the open models run against. The failures are the models', now legible per-mode. Guidance helps a
-  weak model *engage*, but does not make it *competent* at the gated flow.
+- The plugin's *tools* are operator-neutral, but **guidance delivery is NOT** (correction up top): Claude-SDK is
+  force-fed SKILL.md, hermes gets a lazy MCP pointer it may not fetch. So the open models ran effectively
+  guidance-lighter than Claude — retract the "same guidance" framing. Guidance helps a weak model *engage* but
+  (from the ablation) does not make it *competent* at the gated flow; that finding stands, the "operator-neutral"
+  framing does not.
 
 ## Caveats / next
 
