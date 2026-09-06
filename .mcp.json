@@ -13,7 +13,8 @@
         "hpc-bridge"
       ],
       "env": {
-        "HPC_BRIDGE_USER_DIR": "${CLAUDE_PLUGIN_DATA}/globus_compute"
+        "HPC_BRIDGE_USER_DIR": "${CLAUDE_PLUGIN_DATA}/globus_compute",
+        "HPC_BRIDGE_OMIT_INSTRUCTIONS": "1"
       }
     }
   }

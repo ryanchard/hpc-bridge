@@ -3,6 +3,21 @@
 All notable changes to hpc-bridge. The plugin version lives in `.claude-plugin/plugin.json` (Claude Code updates an
 installed plugin only when that version changes); git tags mark releases.
 
+## 0.1.15 — 2026-09-05 — operational guidance travels over MCP, for hosts beyond Claude Code
+
+### Added
+- **The driving-hpc guidance is now available over MCP itself**, so hosts without Claude Code's skill system (e.g.
+  NousResearch hermes-agent) can get it. The server exposes an `@mcp.resource` `hpcbridge://guidance/operations` that
+  serves `SKILL.md` **verbatim** (one source, zero drift, fetched only on demand), and a small always-on **pointer**
+  in the MCP `instructions` field telling the model to read that resource before consequential actions — the lazy,
+  Claude-Code-like path (a host loads the full text only when relevant), verified live on hermes-on-ALCF and Claude
+  Code. `SKILL.md` is unchanged and remains Claude Code's channel.
+
+### Changed
+- **Claude Code opts out of the pointer** via `HPC_BRIDGE_OMIT_INSTRUCTIONS=1` in `.mcp.json` — it already loads the
+  skill, so it gets no `instructions` pointer and does not re-read the resource: no behaviour change, no extra tokens.
+  Any host that already delivers the guidance another way can set the same flag; every other host gets the pointer.
+
 ## 0.1.14 — 2026-09-05 — stopping during provisioning waits for the pilot instead of falsely reporting `down`
 
 ### Changed
