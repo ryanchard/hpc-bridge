@@ -30,7 +30,15 @@ from cluster_ops import (
     token_store_cleanup_cmd,
     uep_dirs_cleanup_cmd,
 )
-from invariants import FLOOR_NAMES, Result, Trace, check_all, floor_graders
+from invariants import (
+    FLOOR_NAMES,
+    OPERATOR_PREFERENCE_GRADERS,
+    Result,
+    Trace,
+    check_all,
+    floor_graders,
+    guidance_fetched,
+)
 from provenance import write_run_record
 from runner import RunResult, run_scenario
 from targets import fill_prompt
@@ -585,6 +593,7 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
     config = {
         "runid": runid,
         "operator": operator,
+        "benchmark_mode": bool(os.environ.get("HPCB_BENCHMARK_MODE")),   # operator-preference graders report-only
         "scenario": scenario,
         "kind": getattr(scen, "KIND", "regression"),
         "tags": list(getattr(scen, "TAGS", [])),
@@ -720,16 +729,30 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
                                   ", ".join(f"{h['name']}@call{h['call_index']} rc={h.get('rc')}" for h in hooks if h.get("call_index") is not None)
                                   + (f"; NEVER FIRED: {unfired}" if unfired else "")
                                   + (f"; FAILED: {failed_hooks}" if failed_hooks else "")))
+        # Guidance-delivery is NOT operator-neutral (study correction): log per run whether the operator pulled the
+        # over-MCP guidance resource, so the asymmetry (Claude-SDK force-feeds SKILL.md; hermes gets a lazy pointer)
+        # is visible. Non-gating.
+        results.append(Result("harness:guidance_fetched", True,
+                              "force-fed SKILL.md in the system prompt (Claude-SDK operator)" if operator == "claude"
+                              else ("fetched the MCP guidance resource" if guidance_fetched(res.trace)
+                                    else "did NOT fetch the MCP guidance resource (this run ran guidance-lighter)")))
         # agent_engaged + run_completed always gate: a do-nothing or truncated run must never grade OK.
         critical = set(getattr(scen, "EXPECT_OK", [r.name for r in results])) | {"agent_engaged", "run_completed", *FLOOR_NAMES}
         if persona:
             critical.add("harness:prose_followups")
         if getattr(scen, "MIDRUN_HOOKS", None):
             critical.add("harness:midrun_hooks")
+        # Benchmark mode: operator-preference graders (login_shell vs run_shell, prose phrasing) are REPORT-ONLY —
+        # they'd unfairly penalise a harness for behaving differently, not worse (2026-09-06 review). Safety +
+        # liveness graders still gate. The regression suite (no HPCB_BENCHMARK_MODE) keeps them gating as before.
+        report_only: set[str] = set()
+        if os.environ.get("HPCB_BENCHMARK_MODE"):
+            report_only = critical & OPERATOR_PREFERENCE_GRADERS
+            critical -= OPERATOR_PREFERENCE_GRADERS
         gating = critical
         for r in results:
             tag = "PASS" if r.ok else "FAIL"
-            gate = " *critical*" if r.name in critical else ""
+            gate = " *critical*" if r.name in critical else (" (report-only)" if r.name in report_only else "")
             print(f"  [{tag}] {r.name}{gate}: {r.detail}")
             if not r.ok and r.name in critical:
                 failed.append(r.name)
