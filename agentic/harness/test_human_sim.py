@@ -82,3 +82,17 @@ def test_parse_reply_unparseable_is_safe_unclear():
     reply, kind, _ = HumanSim._parse_reply("the model rambled with no json")
     assert kind == "unclear"
     assert "can't tell" in reply.lower()   # a neutral nudge, never a fabricated approval
+
+
+def test_confirmation_request_anywhere_is_a_question():
+    # a lead-in confirmation ask followed by a config block (ends on bullets, not "?") — must be detected
+    msg = ("This facility isn't in the catalog, so hpc-bridge proposed a config. Before I proceed I need to "
+           "confirm this with you:\n- interface: eth0\n- scratch_root: /home/u/.hpc-bridge")
+    assert ends_with_question(msg)
+    assert ends_with_question("Which partition should I request the block on?")
+    assert ends_with_question("Awaiting your approval before I start the billed block.")
+
+
+def test_completion_summaries_still_not_questions():
+    assert not ends_with_question("Done. Ran hostname on node c1; released the block. All finished.")
+    assert not ends_with_question("Perfect! Compute block successfully shut down.")

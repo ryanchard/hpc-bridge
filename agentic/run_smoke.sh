@@ -140,6 +140,9 @@ if [ "$OPERATOR" = "hermes" ]; then
   # experiment knob: expose the hpc-bridge MCP tools DIRECTLY (no tool_search deferral). Forwarded only when set,
   # so default runs stay deferred; hermes_setup reads it. (`-e VAR` with no value passes it only if set on the host.)
   [ -n "${HPCB_HERMES_EAGER_TOOLS:-}" ] && ARGS+=( -e HPCB_HERMES_EAGER_TOOLS )
+  # When the operator's model endpoint is a tunnel on the HOST (e.g. argo-proxy at host.docker.internal), the jail —
+  # which runs on the fake-cluster docker network — needs a route to the host gateway to reach it.
+  case "${HPCB_ALCF_BASE_URL:-}" in *host.docker.internal*) ARGS+=( --add-host=host.docker.internal:host-gateway ) ;; esac
 fi
 if [ -n "$HPCB_T_NETWORK" ]; then
   ARGS+=( --network "$HPCB_T_NETWORK" )   # the fake cluster's compose network: the jail reaches `login:22` directly

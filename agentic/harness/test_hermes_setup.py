@@ -37,3 +37,14 @@ def test_build_config_requires_base_url(monkeypatch):
     except SystemExit:
         return
     raise AssertionError("expected SystemExit when HPCB_ALCF_BASE_URL is unset")
+
+
+def test_build_config_no_clarify_routes_asks_to_prose(monkeypatch):
+    monkeypatch.setenv("HPCB_ALCF_BASE_URL", "https://alcf.example/v1")
+    monkeypatch.setenv("HPCB_HERMES_NO_CLARIFY", "1")
+    monkeypatch.delenv("HPCB_HERMES_EAGER_TOOLS", raising=False)
+    cfg = hermes_setup.build_config()
+    # clarify dropped -> the operator must ask in prose (which the interactive loop routes to the human-sim)
+    assert cfg["platform_toolsets"]["cli"] == ["file", "terminal", "todo"]
+    assert "clarify" not in cfg["platform_toolsets"]["cli"]
+    assert "tools" not in cfg   # deferral is unchanged; only the ask-tool is removed

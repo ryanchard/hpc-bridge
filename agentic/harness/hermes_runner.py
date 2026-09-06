@@ -157,6 +157,11 @@ async def run_scenario(
 ) -> RunResult:
     if midrun_hooks:
         raise NotImplementedError("the hermes operator does not support mid-run chaos hooks yet")
+    # Interactive runs route the operator's questions to OUR persona'd human-sim: drop hermes' `clarify` tool, which
+    # in oneshot mode auto-answers "no user — decide yourself" and bypasses the persona (a false spend-gate failure;
+    # found via the Claude control). build_config reads this env, so set it BEFORE _prepare writes the config.
+    if persona is not None:
+        os.environ["HPCB_HERMES_NO_CLARIFY"] = "1"
     home, child_env = _prepare(ablate_skill, extra_env)
     alcf_model = os.environ.get("HPCB_ALCF_MODEL", model)
     db = home / "state.db"
@@ -175,7 +180,7 @@ async def run_scenario(
                                                         session_id=(rows[0].get("session_id") if rows else None)),
                          messages=rows)
 
-    # ---- interactive: multi-turn prose loop with the persona'd human-sim ----
+    # ---- interactive: multi-turn prose loop with the persona'd human-sim (clarify already dropped in _prepare) ----
     from human_sim import HumanSim, ends_with_question
     human = HumanSim(persona=persona, goal=user_goal, totp_secret=os.environ.get("HPCB_SIM_TOTP_SECRET") or None)
     lead = _lead(ablate_skill, interactive=True)
