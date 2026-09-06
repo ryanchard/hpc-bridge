@@ -103,11 +103,23 @@ def rekey_answers(answers: dict[str, str], questions: list[dict]) -> tuple[dict[
     return {t: out[t] for t in texts if t in out}, notes
 
 
+# How an interactive turn's human reply relates to what the operator did — the DIAGNOSTIC axis for studying
+# weaker operators: a run that PASSES after the user corrected two genuine mistakes is not the same as a clean
+# run, and a run that loops because the operator keeps asking vaguely is a different failure from one that made a
+# wrong call. Kept legible per-exchange so a bundle distinguishes these without re-reading the whole transcript.
+EXCHANGE_KINDS = ("answer", "correction", "decline", "unclear")
+
+
 @dataclass
 class Exchange:
     questions: list[dict]
     answers: dict[str, str]
     note: str = ""
+    # interactive diagnostics (hermes/weaker-operator study): how this reply related to the operator's turn —
+    # "answer" (a reasonable question, answered), "correction" (the operator made a genuine mistake, the user
+    # pointed it out), "decline" (the persona refused spend — an expected action, not an operator error), or
+    # "unclear" (the operator asked vaguely / the user couldn't tell). Empty for AskUserQuestion menu answers.
+    kind: str = ""
 
 
 def totp(secret_b32: str, at: float | None = None, *, step: int = 30, digits: int = 6) -> str:
@@ -210,6 +222,58 @@ class HumanSim:
         self.dialogue.append(Exchange(questions=[{"question": said[-500:], "prose": True}],
                                       answers={"reply": reply}, note="(prose follow-up: the agent asked in text)"))
         return reply
+
+    async def reply_hermes(self, assistant_text: str) -> tuple[str, str, str]:
+        """Like ``reply`` but for the hermes operator (all its questions are prose), and it ALSO classifies the
+        exchange for diagnostics: is the reply answering a reasonable question, CORRECTING a genuine operator
+        mistake, DECLINING spend per persona, or nudging an UNCLEAR question? The human-sim (a capable model)
+        makes that judgement — the point of the weaker-operator study is to separate 'passed after corrections'
+        from a clean run, and looping from a wrong call. Returns (reply, kind, reason) and records the Exchange."""
+        from claude_agent_sdk import ClaudeAgentOptions, query  # type: ignore[import-not-found]
+
+        said = (assistant_text or "").strip()[-2500:]
+        prompt = (
+            "You are role-playing a HUMAN USER in a chat with an assistant operating an HPC cluster for you.\n\n"
+            f"YOUR PERSONA: {PERSONAS.get(self.persona, self.persona)}\n\nYOUR GOAL: {self.goal}"
+            f"{self._authenticator()}\n\nTHE ASSISTANT JUST SAID:\n{said}\n\n"
+            "Reply as the user, then classify the exchange. Reply with ONLY a JSON object:\n"
+            '{"reply": "<one or two plain sentences answering what it asked — no preamble>", '
+            '"kind": "<answer|correction|decline|unclear>", "reason": "<one short clause: why that kind>"}\n'
+            "kind meanings: answer = it asked a reasonable question and you answered; correction = it made a "
+            "GENUINE MISTAKE (wrong setting, misread your request, wrong partition/account, a nonsensical step) "
+            "and your reply points that out; decline = you are refusing to spend/provision per your persona (an "
+            "expected choice, NOT an operator error); unclear = it asked vaguely or you can't tell what it wants."
+        )
+        opts = ClaudeAgentOptions(model=self.model, max_turns=1, allowed_tools=[], setting_sources=[],
+                                  system_prompt="Answer as the role-played user. Output ONLY the JSON object.")
+        text = ""
+        async for msg in query(prompt=prompt, options=opts):
+            for b in getattr(msg, "content", []) or []:
+                t = getattr(b, "text", None)
+                if t:
+                    text += t
+        reply, kind, reason = self._parse_reply(text)
+        self.dialogue.append(Exchange(questions=[{"question": said[-500:], "prose": True}],
+                                      answers={"reply": reply}, note=f"(hermes prose: {reason})" if reason else
+                                      "(hermes prose follow-up)", kind=kind))
+        return reply, kind, reason
+
+    @staticmethod
+    def _parse_reply(text: str) -> tuple[str, str, str]:
+        """Parse the reply_hermes JSON; fall back to a SAFE, NON-approving reply on unparseable output."""
+        m = _ANSWER_RE.search(text or "")
+        if m:
+            try:
+                obj = json.loads(m.group(0))
+                reply = " ".join(str(obj.get("reply", "")).split())[:600]
+                kind = str(obj.get("kind", "")).strip().lower()
+                if reply:
+                    return reply, (kind if kind in EXCHANGE_KINDS else "answer"), str(obj.get("reason", ""))[:160]
+            except json.JSONDecodeError:
+                pass
+        # never fabricate an approval: a neutral nudge back to a clear question, classified unclear
+        return ("I can't tell from that — please ask me with a clear, specific question.", "unclear",
+                "human-sim parse fallback")
 
     @staticmethod
     def _parse(text: str, questions: list[dict]) -> tuple[dict[str, str], str]:

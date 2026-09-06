@@ -152,3 +152,24 @@ def trace_from_messages(rows: list[dict]) -> Trace:
 
 def trace_from_hermes_db(db_path: str | Path) -> Trace:
     return trace_from_messages(load_messages(db_path))
+
+
+def stamp_exchanges(trace: Trace, exchanges: list[dict] | None) -> Trace:
+    """Represent the human-sim's PROSE Q&A as synthetic ``AskUserQuestion`` ToolCalls in the trace, so the
+    interactive graders (spend_follows_question / choice_respected / refusal_exercised / no_spend_after_decline
+    — all keyed on ``t.named("AskUserQuestion")`` with the answer in ``ToolCall.answers``) work for the hermes
+    operator exactly as for Claude. hermes has no AskUserQuestion tool: the operator asks in prose and the
+    human-sim replies in prose. Each exchange = ``{call_index, question, answer}``; the synthetic call is
+    inserted right AFTER ``call_index`` (the trace position where the operator asked). Highest index first so
+    earlier inserts don't shift later ones. No structured options are attached (prose has none), which is safe:
+    choice_respected only flags a provisioned partition that matches a NON-chosen OPTION label, so with no
+    options it cannot false-positive."""
+    todo = [e for e in (exchanges or []) if e.get("question")]
+    for e in sorted(todo, key=lambda e: -int(e.get("call_index") or 0)):
+        k = int(e.get("call_index") or 0)
+        at = min(k + 1, len(trace.calls))
+        q = str(e["question"])
+        a = str(e.get("answer") or "")
+        tc = ToolCall.of("AskUserQuestion", {"questions": [{"question": q}]}, answers={q: a})
+        trace.calls.insert(at, tc)
+    return trace
