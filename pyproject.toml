@@ -1,6 +1,6 @@
 [project]
 name = "hpc-bridge"
-version = "0.1.15"
+version = "0.1.16"
 description = "Extend AI coding agents into HPC via Globus Compute"
 requires-python = ">=3.11"
 license = "Apache-2.0"
@@ -27,6 +27,13 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/hpc_bridge"]
+
+# Ship the driving-hpc SKILL.md INSIDE the wheel so an installed server (uvx/pip — non-Claude-Code hosts) can serve
+# it over the `hpcbridge://guidance/operations` MCP resource. It lives at skills/driving-hpc/ for Claude Code's skill
+# system (a sibling of src/, so not packaged by default); force-include copies it into the package as _guidance/.
+# The Claude Code marketplace install is unaffected — it ships the whole plugin directory, skill included.
+[tool.hatch.build.targets.wheel.force-include]
+"skills/driving-hpc/SKILL.md" = "hpc_bridge/_guidance/SKILL.md"
 
 # This plugin launches via `uvx --from <repo> hpc-bridge`. uv's default cache heuristic
 # rebuilds a local dir dependency only when pyproject.toml/setup.py/setup.cfg or the

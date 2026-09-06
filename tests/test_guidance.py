@@ -32,10 +32,18 @@ def test_guidance_resource_serves_skill_verbatim():
     txt = server._guidance_text()
     assert "Driving HPC with hpc-bridge" in txt           # the real SKILL.md content
     assert txt == server._operations_guidance()           # the resource function returns it
-    assert txt == server._SKILL_PATH.read_text()          # verbatim: byte-for-byte the file, so zero drift
+    p = server._skill_path()
+    assert p is not None and txt == p.read_text()          # verbatim: byte-for-byte the resolved file, so zero drift
+
+
+def test_skill_resolves_from_source_tree_today():
+    # running from the repo, the source-tree candidate exists (the wheel copy won't in a dev checkout)
+    p = server._skill_path()
+    assert p is not None and p.is_file() and p.name == "SKILL.md"
 
 
 def test_guidance_text_falls_back_when_skill_missing(monkeypatch, tmp_path):
-    monkeypatch.setattr(server, "_SKILL_PATH", tmp_path / "does-not-exist.md")
+    monkeypatch.setattr(server, "_SKILL_CANDIDATES", (tmp_path / "does-not-exist.md",))
+    assert server._skill_path() is None
     txt = server._guidance_text()
     assert "unavailable" in txt.lower()                   # graceful, never crashes the server

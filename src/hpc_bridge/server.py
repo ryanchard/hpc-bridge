@@ -187,7 +187,13 @@ async def lifespan(server: FastMCP) -> AsyncIterator[AppCtx]:
 #   • the full SKILL.md served VERBATIM as an @mcp.resource (one source, zero drift, paid for only when fetched).
 # Claude Code sets HPC_BRIDGE_OMIT_INSTRUCTIONS=1 in .mcp.json → no pointer for it (it has the skill; no duplication).
 _GUIDANCE_URI = "hpcbridge://guidance/operations"
-_SKILL_PATH = Path(__file__).resolve().parents[2] / "skills" / "driving-hpc" / "SKILL.md"
+# SKILL.md is found in either of two layouts: bundled into the wheel at hpc_bridge/_guidance/ (an installed uvx/pip
+# server — see the pyproject force-include), or the source tree's skills/driving-hpc/ when running from the repo
+# (`uv run --directory <repo>`, which both Claude Code's .mcp.json and the hermes config use today).
+_SKILL_CANDIDATES = (
+    Path(__file__).resolve().parent / "_guidance" / "SKILL.md",                     # installed wheel
+    Path(__file__).resolve().parents[2] / "skills" / "driving-hpc" / "SKILL.md",    # source tree
+)
 _INSTRUCTIONS_POINTER = (
     "These tools drive real HPC: stand up (or reuse) a Globus Compute endpoint on a login node, then run shell work "
     "over it. Before you provision a billed compute block, present a spend gate, or handle a Globus/MFA login, READ "
@@ -197,15 +203,22 @@ _INSTRUCTIONS_POINTER = (
 )
 
 
+def _skill_path() -> Path | None:
+    """The first SKILL.md that exists — the bundled wheel copy, else the source-tree copy."""
+    return next((p for p in _SKILL_CANDIDATES if p.is_file()), None)
+
+
 def _guidance_text() -> str:
     """The full driving-hpc guidance (SKILL.md) served verbatim as an MCP resource, for hosts without a skill system.
-    Resolved from the source tree; when hpc-bridge is published to PyPI, ship SKILL.md as package data and resolve it
-    here too (see the Cross-harness portability note)."""
-    try:
-        return _SKILL_PATH.read_text()
-    except OSError:
-        return ("hpc-bridge operational guidance is unavailable in this installation — rely on each tool's own "
-                "description. (The driving-hpc SKILL.md could not be located.)")
+    Found whether the server is installed (wheel) or run from the source tree; a graceful note if neither exists."""
+    p = _skill_path()
+    if p is not None:
+        try:
+            return p.read_text()
+        except OSError:
+            pass
+    return ("hpc-bridge operational guidance is unavailable in this installation — rely on each tool's own "
+            "description. (The driving-hpc SKILL.md could not be located.)")
 
 
 def _server_instructions() -> str | None:

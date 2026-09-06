@@ -3,6 +3,17 @@
 All notable changes to hpc-bridge. The plugin version lives in `.claude-plugin/plugin.json` (Claude Code updates an
 installed plugin only when that version changes); git tags mark releases.
 
+## 0.1.16 — 2026-09-05 — ship SKILL.md in the wheel so an installed server serves the guidance
+
+### Fixed
+- **`SKILL.md` is now bundled into the built package** (`hpc_bridge/_guidance/SKILL.md`, via a hatchling
+  force-include), so an installed server — `uvx hpc-bridge` / `uvx --from git+…` on non-Claude-Code hosts — can serve
+  the `hpcbridge://guidance/operations` resource. Before, the wheel packaged only `src/hpc_bridge`, so the guidance
+  file (a sibling of `src/`) was absent from an install and the resource fell back to "unavailable". The resolver now
+  finds SKILL.md whether the server is installed (the bundled copy) or run from the source tree. Claude Code's
+  marketplace install and skill are unaffected. Verified by building the wheel and resolving the resource from an
+  isolated install with no repo present.
+
 ## 0.1.15 — 2026-09-05 — operational guidance travels over MCP, for hosts beyond Claude Code
 
 ### Added
