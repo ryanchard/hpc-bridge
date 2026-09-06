@@ -13,6 +13,7 @@ Runs only in the harness image, never imported by the hermetic `pytest -q`.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import sys
 from dataclasses import dataclass, field
@@ -52,6 +53,21 @@ def _chunk_text(content: Any) -> str:
     return str(getattr(content, "text", "") or "")
 
 
+def _fmt_call(title: Any, raw_input: Any) -> str:
+    """A compact `tool(args)` line for the live stderr play-by-play — mirrors the Claude-SDK operator's
+    `  → {logical_name}({inp})` (runner.py). Strips MCP/server name prefixes so `hpc-bridge:list_facilities`
+    / `mcp__hpc-bridge__connect` read as the logical tool; truncates args so one call is one readable line."""
+    name = str(title or "?").split(":")[-1].split("__")[-1]
+    if isinstance(raw_input, dict):
+        args = ", ".join(f"{k}={str(v)[:40]}" for k, v in raw_input.items())
+    elif raw_input is None:
+        args = ""
+    else:
+        args = str(raw_input)[:80]
+    s = f"{name}({args})"
+    return s if len(s) <= 160 else s[:157] + "…)"
+
+
 class BenchClient(Client):
     """Auto-approves every permission (the disposable jail IS the sandbox, like Claude's bypassPermissions),
     records the update stream, and stubs the fs/terminal client methods (the agent drives HPC via the hpc-bridge
@@ -74,12 +90,20 @@ class BenchClient(Client):
         if "agent_message" in kind or type(update).__name__ == "AgentMessageChunk":
             self.capture.texts.append(_chunk_text(getattr(update, "content", None)))
         elif type(update).__name__ == "ToolCallStart" or kind == "tool_call":
+            title = getattr(update, "title", None)
+            raw_input = getattr(update, "raw_input", None)
             self.capture.tool_calls.append({
                 "tool_call_id": getattr(update, "tool_call_id", None),
-                "title": getattr(update, "title", None),
+                "title": title,
                 "kind": str(getattr(update, "kind", "") or ""),
-                "raw_input": getattr(update, "raw_input", None),
+                "raw_input": raw_input,
             })
+            # Live legibility: stream each operator tool call to stderr, so the hermes/ACP docker log gets the
+            # same `  → tool(args)` play-by-play the Claude-SDK operator prints (runner.py). Without it the log
+            # shows only the human-sim's replies — the operator's list_facilities/connect/run_shell steps land
+            # only in the post-hoc Trace. Best-effort; logging must never break the run.
+            with contextlib.suppress(Exception):
+                print(f"  → {_fmt_call(title, raw_input)}", file=sys.stderr, flush=True)
         elif type(update).__name__ == "ToolCallProgress" or "tool_call_update" in kind:
             tid = getattr(update, "tool_call_id", None)
             if tid is not None and getattr(update, "raw_output", None) is not None:
