@@ -49,13 +49,18 @@ def build_config(extra_env: dict[str, str] | None = None) -> dict:
     base_url = os.environ.get("HPCB_ALCF_BASE_URL") or ""
     if not base_url:
         raise SystemExit("hermes_setup: HPCB_ALCF_BASE_URL is unset (the ALCF OpenAI-compatible base URL)")
+    # Streaming: OFF by default because the ALCF gateway's SSE isn't clean ('empty stream'). But streaming is what
+    # makes a request log token usage — argo-proxy only meters (and argo-dash only costs) streamed requests. So for
+    # the Argo path (host.docker.internal tunnel), or when HPCB_HERMES_STREAM is set, turn it ON so spend is
+    # trackable against a budget. Verified: streaming over Argo tool-calls fine and shows up in argo-dash.
+    streaming = bool(os.environ.get("HPCB_HERMES_STREAM")) or ("host.docker.internal" in base_url)
     cfg = {
         "model": {
             "provider": "custom",
             "base_url": base_url,
             "api_key": "${ALCF_INFERENCE_TOKEN}",       # interpolated by hermes from the env; never written here
             "default": os.environ.get("HPCB_ALCF_MODEL", "openai/gpt-oss-120b"),
-            "streaming": False,                          # ALCF gateway SSE isn't clean → 'empty stream' without this
+            "streaming": streaming,
             "context_length": 131072,                    # ALCF 404s /v1/models → auto-detect fails; set explicitly
             "max_tokens": 4096,
         },
