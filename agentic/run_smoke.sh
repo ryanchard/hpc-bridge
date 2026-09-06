@@ -137,6 +137,9 @@ if [ "$OPERATOR" = "hermes" ]; then
     -e HPCB_ALCF_MODEL
     -e HERMES_HOME="$USER_DIR/hermes"
   )
+  # experiment knob: expose the hpc-bridge MCP tools DIRECTLY (no tool_search deferral). Forwarded only when set,
+  # so default runs stay deferred; hermes_setup reads it. (`-e VAR` with no value passes it only if set on the host.)
+  [ -n "${HPCB_HERMES_EAGER_TOOLS:-}" ] && ARGS+=( -e HPCB_HERMES_EAGER_TOOLS )
 fi
 if [ -n "$HPCB_T_NETWORK" ]; then
   ARGS+=( --network "$HPCB_T_NETWORK" )   # the fake cluster's compose network: the jail reaches `login:22` directly

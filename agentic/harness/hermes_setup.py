@@ -34,6 +34,14 @@ def hermes_home() -> Path:
     return Path(os.environ.get("HERMES_HOME", "").strip() or (Path.home() / ".hermes"))
 
 
+# Eager-tools experiment (HPCB_HERMES_EAGER_TOOLS): hermes defers MCP tools behind tool_search/tool_describe
+# by default (every hpc-bridge tool is `mcp-*` → always deferrable). Turning tool_search OFF exposes them
+# DIRECTLY as functions — the A/B for "is the deferred-tool overhead a confound?". We also trim the built-in
+# toolsets to a light set (else 'no deferral' inlines ~16 built-ins, swapping one confound for a big-context one),
+# leaving a clean minimal surface: the hpc-bridge tools + terminal/file/clarify/todo.
+_EAGER_KEEP_TOOLSETS = ["clarify", "file", "terminal", "todo"]
+
+
 def build_config(extra_env: dict[str, str] | None = None) -> dict:
     env = {k: os.environ[k] for k in _PASSTHROUGH if k in os.environ}
     if extra_env:
@@ -41,7 +49,7 @@ def build_config(extra_env: dict[str, str] | None = None) -> dict:
     base_url = os.environ.get("HPCB_ALCF_BASE_URL") or ""
     if not base_url:
         raise SystemExit("hermes_setup: HPCB_ALCF_BASE_URL is unset (the ALCF OpenAI-compatible base URL)")
-    return {
+    cfg = {
         "model": {
             "provider": "custom",
             "base_url": base_url,
@@ -60,6 +68,10 @@ def build_config(extra_env: dict[str, str] | None = None) -> dict:
             }
         },
     }
+    if os.environ.get("HPCB_HERMES_EAGER_TOOLS"):
+        cfg["tools"] = {"tool_search": {"enabled": "off"}}      # expose MCP tools directly (no tool_search gateway)
+        cfg["platform_toolsets"] = {"cli": list(_EAGER_KEEP_TOOLSETS)}   # trim built-in bulk to a light surface
+    return cfg
 
 
 def write_config(extra_env: dict[str, str] | None = None) -> Path:
