@@ -33,10 +33,24 @@ if [ -f "$ENV_FILE" ]; then
   done < "$ENV_FILE"
 fi
 
+# Which harness drives hpc-bridge: `claude` (default) or `hermes` (an ALCF-hosted model, no Anthropic auth).
+OPERATOR="${HPCB_OPERATOR:-claude}"
+AUTH_ARGS=()
+if [ "$OPERATOR" = "hermes" ]; then
+  # hermes drives the scenario with an ALCF-hosted model — no Claude/Anthropic auth needed. Mint the ALCF
+  # inference token ON THE HOST (a short-lived bearer minted from the maintainer's Globus login — never the
+  # Globus creds themselves) and pass only that in. Base URL + model default to Sophia/gpt-oss-120b.
+  echo "operator: hermes (ALCF-hosted model) — no Anthropic auth needed"
+  ALCF_INFERENCE_TOKEN="${ALCF_INFERENCE_TOKEN:-$(uv run --directory "$REPO_ROOT" --extra integration \
+    python "$REPO_ROOT/agentic/harness/inference_auth_token.py" get_access_token 2>/dev/null || true)}"
+  [ -n "$ALCF_INFERENCE_TOKEN" ] || { echo "ERROR: could not mint an ALCF inference token — run once: uv run --extra integration python agentic/harness/inference_auth_token.py authenticate"; exit 1; }
+  HPCB_ALCF_BASE_URL="${HPCB_ALCF_BASE_URL:-https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1}"
+  HPCB_ALCF_MODEL="${HPCB_ALCF_MODEL:-openai/gpt-oss-120b}"
+  export ALCF_INFERENCE_TOKEN HPCB_ALCF_BASE_URL HPCB_ALCF_MODEL
 # Prefer the Claude subscription token; fall back to an API key. PRECEDENCE TRAP:
 # ANTHROPIC_API_KEY silently wins over CLAUDE_CODE_OAUTH_TOKEN — so when using the
 # subscription we pass an EMPTY ANTHROPIC_API_KEY into the container to block it.
-if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+elif [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
   echo "auth: Claude subscription (CLAUDE_CODE_OAUTH_TOKEN)"
   AUTH_ARGS=( -e CLAUDE_CODE_OAUTH_TOKEN -e ANTHROPIC_API_KEY= )
 elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then
@@ -85,7 +99,7 @@ IMAGE_ID="$(docker image inspect -f '{{.Id}}' hpc-bridge-agentic 2>/dev/null || 
 ARGS=(
   --rm
   --stop-timeout 120                  # `docker stop`: give run.py's teardown (SIGTERM -> its finally) time to finish
-  "${AUTH_ARGS[@]}"
+  ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"}    # empty for the hermes operator (no Anthropic auth); safe under set -u (bash 3.2)
   -e HPCB_RUNID="$RUNID"
   -e HPCB_IMAGE_ID="$IMAGE_ID"
   -e HPC_BRIDGE_SSH_USER="$SSH_USER"
@@ -104,6 +118,17 @@ ARGS=(
   -v "$RUNS_HOST":/work/hpc-bridge/agentic/runs   # provenance bundles survive the --rm container
   -v "$KEY":/run/secrets/test_key:ro
 )
+if [ "$OPERATOR" = "hermes" ]; then
+  # The hermes operator: the ALCF bearer (minted above), the model knobs, and a per-run HERMES_HOME so its
+  # state.db (the trace source) is fresh + co-located under the run dir. HPCB_OPERATOR selects the runner.
+  ARGS+=(
+    -e HPCB_OPERATOR=hermes
+    -e ALCF_INFERENCE_TOKEN
+    -e HPCB_ALCF_BASE_URL
+    -e HPCB_ALCF_MODEL
+    -e HERMES_HOME="$USER_DIR/hermes"
+  )
+fi
 if [ -n "$HPCB_T_NETWORK" ]; then
   ARGS+=( --network "$HPCB_T_NETWORK" )   # the fake cluster's compose network: the jail reaches `login:22` directly
 fi
@@ -126,6 +151,7 @@ if [ -n "${HPC_BRIDGE_SEARCH_INDEX:-}" ]; then
 fi
 
 RUN_ARGS=("$SCENARIO")
+[ "$OPERATOR" != "claude" ] && RUN_ARGS+=(--operator "$OPERATOR")   # which harness drives (default claude)
 [ -n "${HPCB_MODEL:-}" ]   && RUN_ARGS+=(--model "$HPCB_MODEL")      # pin an Anthropic model version
 [ -n "${HPCB_EFFORT:-}" ]  && RUN_ARGS+=(--effort "$HPCB_EFFORT")    # pin a reasoning level (low..max)
 [ -n "${HPCB_PERSONA:-}" ] && RUN_ARGS+=(--persona "$HPCB_PERSONA")  # interactive: simulated-human persona

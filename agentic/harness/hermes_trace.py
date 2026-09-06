@@ -1,0 +1,136 @@
+"""Adapter: a hermes-agent run's state.db (SQLite) -> normalised Trace (invariants.py).
+
+hermes records the whole conversation in ``$HERMES_HOME/state.db`` (``~/.hermes/state.db`` by default):
+each ``messages`` row is one turn — an ``assistant`` row carries ``tool_calls`` (a JSON array of
+OpenAI-style function calls: ``id`` + ``function.name`` + ``function.arguments``) and/or prose in
+``content``; a ``tool`` row carries the result (``tool_call_id`` pairs back to the call, ``content`` is
+the tool output — MCP results wrapped in an ``<untrusted_tool_result source="…">…</untrusted_tool_result>``
+envelope). We pair them into ToolCalls and collect the assistant prose into ``Trace.texts`` — the SAME
+shape the Claude SDK adapter (``trace_adapter``) produces, so the SAME invariants grade both operators.
+
+hermes' own built-in tools (``tool_search`` for deferred-tool discovery, ``todo_list``, …) appear as
+ToolCalls too; graders key on the hpc-bridge logical names (``list_facilities``, ``run_shell``, …) and
+simply don't match those, exactly as the Claude trace's ``Bash``/``Read`` calls don't match.
+
+This couples grading to hermes' on-disk schema; the harness-agnostic alternative (a tap at the MCP
+stdio boundary) is a later refinement. Pure stdlib, so the hermetic tier can test it.
+"""
+from __future__ import annotations
+
+import json
+import re
+import sqlite3
+from pathlib import Path
+from typing import Any
+
+from invariants import ToolCall, Trace
+
+# The envelope hermes wraps every MCP tool result in (prompt-injection framing). We grade the payload,
+# so we unwrap it; a tool-loop warning hermes appends lands OUTSIDE the closing tag and is dropped.
+_UNTRUSTED = re.compile(r"<untrusted_tool_result\b[^>]*>(.*?)</untrusted_tool_result>", re.S)
+_DECODER = json.JSONDecoder()
+
+
+def _first_json(text: str) -> Any | None:
+    """The first JSON value in ``text`` (a result may be several JSON objects — e.g. list_facilities'
+    per-facility blocks — or JSON followed by a trailing hermes warning). Returns None if none parses."""
+    for i, ch in enumerate(text):
+        if ch in "{[":
+            try:
+                obj, _ = _DECODER.raw_decode(text, i)
+                return obj
+            except json.JSONDecodeError:
+                continue
+    return None
+
+
+def _unwrap(name: str, args: dict) -> tuple[str, dict]:
+    """hpc-bridge tools are DEFERRED in hermes (discovered via ``tool_search``), so the model may invoke one
+    directly (``function.name = mcp__hpc_bridge__list_facilities``) OR through hermes' generic dispatcher
+    (``function.name = tool_call`` with ``arguments = {"name": "mcp__hpc_bridge__…", "arguments": {…}}``) —
+    gpt-oss-120b does both across runs. Unwrap the dispatcher so the REAL tool + input reach the Trace; a
+    bare tool_call without a nested name (shouldn't happen) passes through unchanged."""
+    if name == "tool_call" and isinstance(args, dict) and args.get("name"):
+        inner = args.get("arguments")
+        if isinstance(inner, str):
+            try:
+                inner = json.loads(inner)
+            except (json.JSONDecodeError, TypeError):
+                inner = {}
+        return str(args["name"]), (inner if isinstance(inner, dict) else {})
+    return name, args
+
+
+def result_to_dict(content: str | None) -> dict | None:
+    """A hermes ``tool`` row's ``content`` -> parsed dict, mirroring ``trace_adapter._result_to_dict``.
+    Strips the untrusted-result envelope, then takes the first JSON value; non-JSON output is wrapped
+    as ``{"text": …}`` (bounded) so a grader can still read what was said."""
+    if not content:
+        return None
+    m = _UNTRUSTED.search(content)
+    text = (m.group(1) if m else content).strip()
+    if not text:
+        return None
+    obj = _first_json(text)
+    if obj is None:
+        return {"text": text[:2000]}
+    return obj if isinstance(obj, dict) else {"value": obj}
+
+
+def load_messages(db_path: str | Path) -> list[dict]:
+    """The run's messages as plain dicts, in order — the trace source AND the bundle transcript.
+    Ordered by ``id`` (insertion order); a single jail container holds exactly one hermes run."""
+    con = sqlite3.connect(str(db_path))
+    con.row_factory = sqlite3.Row
+    try:
+        rows = con.execute(
+            "SELECT id, session_id, role, content, tool_calls, tool_name, tool_call_id "
+            "FROM messages ORDER BY id"
+        ).fetchall()
+    finally:
+        con.close()
+    return [dict(r) for r in rows]
+
+
+def trace_from_messages(rows: list[dict]) -> Trace:
+    """Pair hermes ``assistant`` tool_calls with their ``tool`` results into a Trace of ToolCalls,
+    collecting assistant prose into ``texts``."""
+    calls: list[ToolCall] = []
+    by_id: dict[str, ToolCall] = {}
+    texts: list[str] = []
+    for r in rows:
+        role = r.get("role")
+        if role == "assistant":
+            raw = r.get("tool_calls")
+            if raw:
+                try:
+                    tcs = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    tcs = []
+                for tc in tcs if isinstance(tcs, list) else []:
+                    fn = tc.get("function") or {}
+                    name = fn.get("name") or ""
+                    try:
+                        args = json.loads(fn.get("arguments") or "{}")
+                    except (json.JSONDecodeError, TypeError):
+                        args = {}
+                    if not isinstance(args, dict):
+                        args = {"value": args}
+                    name, args = _unwrap(name, args)
+                    call = ToolCall.of(name, args)
+                    calls.append(call)
+                    cid = tc.get("id") or tc.get("call_id")
+                    if cid:
+                        by_id[cid] = call
+            txt = (r.get("content") or "").strip()
+            if txt:
+                texts.append(txt)
+        elif role == "tool":
+            call = by_id.get(r.get("tool_call_id"))
+            if call is not None and call.result is None:
+                call.result = result_to_dict(r.get("content"))
+    return Trace(calls, texts)
+
+
+def trace_from_hermes_db(db_path: str | Path) -> Trace:
+    return trace_from_messages(load_messages(db_path))
