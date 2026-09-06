@@ -1,7 +1,7 @@
 """Human-sim mechanics (hermetic): answer re-keying and prose-question detection."""
 from __future__ import annotations
 
-from human_sim import HumanSim, ends_with_question, rekey_answers
+from human_sim import EXCHANGE_KINDS, HumanSim, ends_with_question, rekey_answers
 
 Q_IFACE = "Does the proposed network interface `enP7s7` look right for this machine, or should I use something else?"
 Q_PART = ("Login node is up. This is a small Slurm cluster with a single account ('lab'). Two partitions are "
@@ -56,3 +56,29 @@ def test_statements_are_not_questions():
     assert not ends_with_question("Perfect! Compute block successfully shut down.")
     assert not ends_with_question("`hostname` came back as **globus2** — the compute node is up. Now shutting it down as requested.")
     assert not ends_with_question("")
+
+
+def test_parse_reply_extracts_reply_and_kind():
+    reply, kind, reason = HumanSim._parse_reply(
+        '{"reply": "Yes, go ahead on debug.", "kind": "answer", "reason": "reasonable question"}')
+    assert reply == "Yes, go ahead on debug."
+    assert kind == "answer" and kind in EXCHANGE_KINDS
+    assert reason == "reasonable question"
+
+
+def test_parse_reply_classifies_correction():
+    reply, kind, _ = HumanSim._parse_reply(
+        '{"reply": "No — I asked for the compute partition, not debug.", "kind": "correction", "reason": "wrong partition"}')
+    assert kind == "correction"
+    assert "compute partition" in reply
+
+
+def test_parse_reply_unknown_kind_falls_back_to_answer():
+    _, kind, _ = HumanSim._parse_reply('{"reply": "sure", "kind": "banana"}')
+    assert kind == "answer"   # unknown label normalised, never invented
+
+
+def test_parse_reply_unparseable_is_safe_unclear():
+    reply, kind, _ = HumanSim._parse_reply("the model rambled with no json")
+    assert kind == "unclear"
+    assert "can't tell" in reply.lower()   # a neutral nudge, never a fabricated approval

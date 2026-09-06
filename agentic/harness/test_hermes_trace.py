@@ -116,3 +116,28 @@ def test_malformed_tool_calls_are_skipped(tmp_path):
     t = trace_from_hermes_db(_make_db(tmp_path, rows))
     assert t.calls == []
     assert t.texts == ["hi"]
+
+
+def test_stamp_exchanges_makes_interactive_graders_work():
+    """A hermes prose Q&A stamped as a synthetic AskUserQuestion lands at the right position, carries the answer
+    structurally, and satisfies spend_follows_question — so the interactive graders apply to hermes unchanged."""
+    from hermes_trace import stamp_exchanges
+    from invariants import ToolCall, Trace, spend_follows_question
+    # connect, then a billed provision — the operator asked a spend question in prose after the connect (call 0)
+    t = Trace([ToolCall.of("mcp__hpc_bridge__connect_facility", {}),
+               ToolCall.of("mcp__hpc_bridge__ensure_endpoint_up", {"confirm_spend": True})], [])
+    q = "Shall I provision a compute block on debug for about $2?"
+    stamp_exchanges(t, [{"call_index": 0, "question": q, "answer": "Yes, go ahead."}])
+    assert [c.name for c in t.calls] == ["connect_facility", "AskUserQuestion", "ensure_endpoint_up"]
+    assert t.calls[1].answers == {q: "Yes, go ahead."}
+    # the billed start (index 2) now follows a spend question (index 1) -> the interactive gate passes
+    assert spend_follows_question(t).ok
+
+
+def test_stamp_exchanges_noop_on_empty():
+    from hermes_trace import stamp_exchanges
+    from invariants import ToolCall, Trace
+    t = Trace([ToolCall.of("list_facilities", {})], [])
+    stamp_exchanges(t, [])
+    stamp_exchanges(t, None)
+    assert [c.name for c in t.calls] == ["list_facilities"]

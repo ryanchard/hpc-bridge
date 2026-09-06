@@ -47,6 +47,15 @@ if [ "$OPERATOR" = "hermes" ]; then
   HPCB_ALCF_BASE_URL="${HPCB_ALCF_BASE_URL:-https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1}"
   HPCB_ALCF_MODEL="${HPCB_ALCF_MODEL:-openai/gpt-oss-120b}"
   export ALCF_INFERENCE_TOKEN HPCB_ALCF_BASE_URL HPCB_ALCF_MODEL
+  # The operator is hermes/ALCF; but INTERACTIVE scenarios also need the human-sim (the simulated USER), which runs
+  # on Claude via our own SDK harness — forward its token too (autonomous scenarios ignore it). Empty ANTHROPIC_API_KEY
+  # blocks the precedence trap. hermes_runner scrubs this token from the hermes child; only run.py's human-sim sees it.
+  if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+    AUTH_ARGS=( -e CLAUDE_CODE_OAUTH_TOKEN -e ANTHROPIC_API_KEY= )
+    echo "human-sim: Claude subscription token forwarded (interactive personas)"
+  else
+    echo "note: CLAUDE_CODE_OAUTH_TOKEN unset — interactive (persona) scenarios will fail (the human-sim needs it); autonomous scenarios are fine"
+  fi
 # Prefer the Claude subscription token; fall back to an API key. PRECEDENCE TRAP:
 # ANTHROPIC_API_KEY silently wins over CLAUDE_CODE_OAUTH_TOKEN — so when using the
 # subscription we pass an EMPTY ANTHROPIC_API_KEY into the container to block it.

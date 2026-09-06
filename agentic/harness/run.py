@@ -568,10 +568,10 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
     user_goal = fill(getattr(scen, "USER_GOAL", ""))
 
     # Operator dispatch: `hermes` drives the SAME scenario + graders with an ALCF-hosted model (guidance over MCP).
-    # Autonomous-only for now — refuse the combinations it can't drive rather than grade them vacuously.
+    # Autonomous AND interactive (persona) scenarios are supported; refuse only what it can't yet drive rather than
+    # grade it vacuously.
     if operator == "hermes":
-        reason = ("interactive personas" if persona else
-                  "cross-restart chains (PHASES)" if phases else
+        reason = ("cross-restart chains (PHASES)" if phases else
                   "mid-run chaos hooks" if getattr(scen, "MIDRUN_HOOKS", None) else None)
         if reason:
             print(f"RESULT: SKIPPED — the hermes operator does not support {reason} yet")
@@ -697,6 +697,19 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
             results.append(Result("harness:prose_followups", not capped,
                                   f"{n} prose question(s) answered by the human-sim"
                                   + ("; the run ENDED at the cap — the agent kept asking in prose" if capped else "")))
+            # Interaction DIAGNOSTIC (non-gating): how the human replies related to the operator's turns — so a run
+            # that PASSED after correcting genuine operator mistakes is distinguishable from a clean one (the point
+            # of the weaker-operator study). Kinds come from the human-sim (hermes prose exchanges); empty for the
+            # Claude AskUserQuestion path, where it reads as "0 classified".
+            kinds: dict[str, int] = {}
+            for x in (res.dialogue or []):
+                k = getattr(x, "kind", "") or ""
+                if k:
+                    kinds[k] = kinds.get(k, 0) + 1
+            summary = ", ".join(f"{k}×{v}" for k, v in sorted(kinds.items())) or "none classified"
+            results.append(Result("harness:interaction", True,   # diagnostic axis, never a pass/fail on its own
+                                  f"exchanges by kind: {summary}"
+                                  + (f"  [{kinds['correction']} genuine operator correction(s)]" if kinds.get("correction") else "")))
         hooks = list(getattr(res, "hooks_fired", None) or [])
         if getattr(scen, "MIDRUN_HOOKS", None):
             # a chaos scenario's premise is that its fault was injected: a hook that never fired means the agent
