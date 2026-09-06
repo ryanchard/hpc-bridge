@@ -89,6 +89,18 @@ def test_unwraps_hermes_tool_call_dispatcher(tmp_path):
     assert t.calls[2].result == {"phase": "needs_login"}
 
 
+def test_unwraps_dispatcher_result_envelope():
+    """The tool_call dispatcher double-encodes the tool's output as {"result": "<json string>"} —
+    unwrap it so graders see phase/status; but leave a legitimate non-JSON string field alone."""
+    # dispatcher envelope: the real result nested as a JSON string
+    c = '<untrusted_tool_result source="x">{"result": "{\\"phase\\": \\"complete\\", \\"result\\": \\"node07\\"}"}</untrusted_tool_result>'
+    assert result_to_dict(c) == {"phase": "complete", "result": "node07"}
+    # a directly-invoked tool whose result has a plain-string `result` (command output) is NOT unwrapped
+    assert result_to_dict('{"phase":"complete","result":"node07"}') == {"phase": "complete", "result": "node07"}
+    # {"result": "<non-json string>"} passes through untouched
+    assert result_to_dict('{"result":"just text"}') == {"result": "just text"}
+
+
 def test_result_to_dict_variants():
     assert result_to_dict(None) is None
     # a tool-loop warning trailing the JSON, inside the envelope, is dropped

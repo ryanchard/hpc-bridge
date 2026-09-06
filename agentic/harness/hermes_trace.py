@@ -61,10 +61,26 @@ def _unwrap(name: str, args: dict) -> tuple[str, dict]:
     return name, args
 
 
+def _unwrap_dispatcher_result(obj: dict) -> dict:
+    """hermes' generic ``tool_call`` dispatcher returns the tool's output wrapped as
+    ``{"result": "<the MCP result, re-encoded as a JSON string>"}`` — so a tool invoked through it
+    (which gpt-oss does) arrives DOUBLE-encoded, and a grader keyed on ``result["phase"]`` / ``["status"]``
+    sees nothing. Unwrap ONLY when the ``result`` value is a JSON string that parses to a dict (the
+    dispatcher envelope); a legitimate string field like run_shell's command output (not JSON) is left
+    alone, so a directly-invoked tool's result passes through untouched."""
+    inner = obj.get("result")
+    if isinstance(inner, str):
+        parsed = _first_json(inner)
+        if isinstance(parsed, dict):
+            return parsed
+    return obj
+
+
 def result_to_dict(content: str | None) -> dict | None:
     """A hermes ``tool`` row's ``content`` -> parsed dict, mirroring ``trace_adapter._result_to_dict``.
-    Strips the untrusted-result envelope, then takes the first JSON value; non-JSON output is wrapped
-    as ``{"text": …}`` (bounded) so a grader can still read what was said."""
+    Strips the untrusted-result envelope, takes the first JSON value, and unwraps the tool_call
+    dispatcher's ``{"result": …}`` envelope; non-JSON output is wrapped as ``{"text": …}`` (bounded)
+    so a grader can still read what was said."""
     if not content:
         return None
     m = _UNTRUSTED.search(content)
@@ -74,7 +90,9 @@ def result_to_dict(content: str | None) -> dict | None:
     obj = _first_json(text)
     if obj is None:
         return {"text": text[:2000]}
-    return obj if isinstance(obj, dict) else {"value": obj}
+    if not isinstance(obj, dict):
+        return {"value": obj}
+    return _unwrap_dispatcher_result(obj)
 
 
 def load_messages(db_path: str | Path) -> list[dict]:
