@@ -27,6 +27,9 @@ RUN pip install --no-cache-dir claude-agent-sdk==0.2.152
 RUN git clone -q https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent \
     && git -C /opt/hermes-agent checkout -q 245e48008fa814b3251f50755eb656bd9fb86cb1 \
     && pip install --no-cache-dir -e /opt/hermes-agent
+# ACP (Agent Client Protocol): hermes' `[acp]` extra — needed for `hermes acp` AND for our agent-agnostic
+# ACP benchmark client (agentic/harness/acp_client.py) to drive it. Pinned to what hermes 0.21.0 declares.
+RUN pip install --no-cache-dir agent-client-protocol==0.9.0
 
 # The hpc-bridge repo (plugin + MCP server + skill + harness). Build context is the
 # repo root (run_smoke.sh builds from there); .dockerignore trims it.
