@@ -180,8 +180,49 @@ clarify fix modestly raised the pass count (~1→2) and, more importantly, made 
 open-model ceiling stands. (Devstral/405B interactive re-runs — also ALCF/free — and the Argo frontier control +
 generalization remain to complete the apples-to-apples picture.)
 
+## Follow-up 5 — the OPERATOR is a dominant confound (headline walked back)
+
+Argo let me finally run the missing control: **Claude driven through hermes** (same operator + path as the open
+models), instead of via the Claude SDK. Result (repeat 1, clarify-fixed, streamed/metered):
+
+| control | interactive |
+|---|---|
+| **claude-sonnet-5 via hermes** | **1/4** |
+| claude-opus-5 via the Claude SDK (the "8/8" headline) | 8/8 |
+
+**Claude via hermes scores like the open models, not like "8/8".** So the headline comparison — "Claude 8/8 vs
+open 0" — **conflated the operator with the model**: Claude ran via the Claude SDK (direct tools, native
+`AskUserQuestion`), the open models via hermes (deferral, `clarify` interception, prose transcript-replay). The
+right apples-to-apples control (all via hermes) shows the *harness*, not the model, drives most of the gap.
+
+And digging into the control's failures surfaced **another grader bug** (independent of clarify):
+`no_raw_ssh_after_endpoint_up` anchors "endpoint up" on `_LIVE_PHASES = {needs_account, warm, needs_confirmation,
+up}`, so a `connect_facility` result of **`needs_account`** (a *refusal* — no access, no block) or
+`needs_confirmation` counts as "up". A run that then does legitimate **pre-block `login_shell` discovery** (sinfo,
+mybalance) — exactly what happens when a persona declines spend, so no block is ever provisioned — is falsely
+flagged as "raw SSH after endpoint up." This inflated failures for the control **and** the open models
+(`no_raw_ssh` appeared 5× in the clean gpt-oss run). Fix (not done here — it's a shared grader in many EXPECT_OK
+lists + the block tier, so it needs its own careful re-validation): `no_raw_ssh` should anchor only on a live
+**compute block** (`ensure_endpoint_up` status `up`/`warm`, or a completed `run_shell shape=compute`), not on
+`connect_facility` gate phases.
+
+**Net validity verdict:** the interactive persona results in this study are **not a valid model comparison** —
+they measure the hermes interactive harness (operator differences + clarify interception [fixed] + `no_raw_ssh`
+mis-anchoring + token-heavy transcript-replay) at least as much as the model. **What still stands:** the
+*autonomous* results (happy_path etc., each operator's own path), the `compute_ran` *completion* signal (a model
+that never provisions isn't a grader artifact), and the qualitative failure taxonomy. **What to distrust:** the
+interactive pass-rate numbers and any "model A beats model B on the gates" claim drawn from them.
+
+**To make interactive numbers trustworthy** (future work): run every model through the **same** operator; audit
+the graders (`no_raw_ssh` anchor first) against clean traces; and replace the prose transcript-replay with a
+proper interactive driver (ACP, or a direct tool-call loop where the human-sim answers structured asks) — which
+also cuts the input-token cost (a single control model was ~$5 of Argo spend, 1.7M input tokens, because each
+turn re-sends the whole conversation + the guidance resource).
+
 ## Reading
 
+- The interactive comparison is confounded by the operator (above); treat the cross-model *interactive* numbers
+  as provisional. The ceiling framing below applies to what survived: autonomous completion + the failure modes.
 - The ceiling is **reliable multi-step tool USE over a long gated chain**, not hpc-bridge, not the hermes
   deferred-tool mechanism (ruled out above), and not merely model size or specialization: gpt-oss stalls after
   the gate (deferred AND direct), Devstral loops in tool-discovery, 405B provisions but
