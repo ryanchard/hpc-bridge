@@ -79,6 +79,28 @@ update-stream tap deferred — state.db already works and the graders read it un
 This is **n=1**: it validates the *driver mechanically* (a weaker model passing is strong evidence the driver
 isn't the bottleneck), NOT a pass rate (gpt-oss has run-to-run variance).
 
+**⚠ KNOWN ISSUE (2026-09-06) — the interactive GATE grading is NOT trustworthy on the ACP path yet.** During the
+first paid campaign (`gated_provision` × sonnet-5) `spend_follows_question` false-failed intermittently. Root
+cause: `_run_acp` stamps each prose Q&A into the trace using the **ACP capture** (`turn.calls_so_far`,
+`" ".join(chunks)`), but the graded trace is built from hermes' **state.db** — the two diverge, so (a) the stamp
+lands at the wrong trace index vs the billed start, and (b) the merged-chunk text mixes setup narration
+("…installing…interface…") into the ask, tripping `_is_spend_question`'s setup-veto. A first patch (read the
+state.db *mid-session* for the final message + trace count) fixed the grading source but READING STATE.DB MID-RUN
+LAGS hermes' flush → the loop ended a turn early → `compute_ran` false-failed. Reverted.
+
+**Correct fix (designed, not yet built):** stamp POST-RUN from the fully-flushed state.db, correlated by message
+order — the human-sim's replies are recorded as `user` messages in state.db, so each `user` message after the
+first marks an exchange; the trace index = tool-calls-before-it, the question = the preceding assistant prose.
+No mid-run state.db reads, no capture-vs-trace count mismatch, no chunk-merge. Alternatively build the graded
+trace directly from the ACP capture stream (plan step 2, "MCP-boundary tap" — operator-neutral) so exchange
+indices align by construction. Either must land with HERMETIC tests (feed a synthetic message list, assert the
+stamp position/text), then a free gpt-oss + one paid sonnet-5 validation — NOT live paid iteration.
+
+**Still solid:** the driver MECHANICS (persistent session, turn boundaries, human-sim loop, teardown) and the
+live `→` tool-call logging (fixed + tested). The completion-oriented turn loop (version A) DOES finish runs.
+What's unreliable is only the strict interactive GATE pass-rates (`spend_follows_question`/`choice_respected`
+stamping alignment). Autonomous results, `compute_ran`/teardown signals, and qualitative behaviours stand.
+
 **Go/no-go still open:** the capable-agent control. Cheapest first (free ALCF): 405B over ACP on the interactive
 scenarios. Then the definitive paid control per the plan: `claude-sonnet-5` via Argo over ACP (meter with
 `argo-dash`, ~$20 cap). Only after a capable control clearly beats the 1/4 transcript-replay do we (5) retire
