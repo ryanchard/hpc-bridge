@@ -176,3 +176,49 @@ def stamp_exchanges(trace: Trace, exchanges: list[dict] | None) -> Trace:
         tc = ToolCall.of("AskUserQuestion", {"questions": [{"question": q}]}, answers={q: a})
         trace.calls.insert(at, tc)
     return trace
+
+
+def exchanges_from_messages(rows: list[dict], replies: list[dict]) -> list[dict]:
+    """Build ``stamp_exchanges`` records by correlating the human-sim's replies to the operator's prose questions
+    using the FLUSHED state.db message order — the robust path for the ACP operator (no mid-run state.db reads,
+    no ACP-capture-vs-trace count skew, no streamed-chunk merge).
+
+    Each human reply was sent as the next prompt, so it lands as a ``user`` row AFTER the first (the original
+    task); the Nth such row pairs with ``replies[N]`` (order-preserving; ``replies`` = ``{answer, kind}`` in the
+    order the human-sim produced them). The QUESTION is the assistant prose right before that reply — one clean
+    message, not merged chunks — so ``_is_spend_question`` classifies the real ask. The trace position is the
+    number of tool-calls emitted before the reply, counted EXACTLY as ``trace_from_messages`` counts them (each
+    entry of every assistant ``tool_calls`` array), so ``call_index = count - 1`` places the synthetic
+    AskUserQuestion right where the operator asked — before any later billed ``ensure_endpoint_up``."""
+    exchanges: list[dict] = []
+    call_count = 0
+    last_prose = ""
+    user_seen = 0
+    reply_i = 0
+    for r in rows:
+        role = r.get("role")
+        if role == "assistant":
+            raw = r.get("tool_calls")
+            if raw:
+                try:
+                    tcs = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    tcs = []
+                call_count += len(tcs) if isinstance(tcs, list) else 0
+            txt = (r.get("content") or "").strip()
+            if txt:
+                last_prose = txt
+        elif role == "user":
+            user_seen += 1
+            if user_seen == 1:
+                continue                      # the original task prompt, not a human-sim reply
+            if reply_i < len(replies):
+                rep = replies[reply_i]
+                exchanges.append({
+                    "call_index": max(0, call_count - 1),
+                    "question": last_prose[-1000:],
+                    "answer": rep.get("answer", ""),
+                    "kind": rep.get("kind"),
+                })
+                reply_i += 1
+    return exchanges

@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import hermes_setup
-from hermes_trace import load_messages, stamp_exchanges, trace_from_messages
+from hermes_trace import exchanges_from_messages, load_messages, stamp_exchanges, trace_from_messages
 from runner import HPC_BRIDGE_TOOLS, MAX_PROSE_FOLLOWUPS, RunResult  # shared dataclass + logical tool names + cap
 
 _HERMES_BIN = "hermes"
@@ -162,22 +162,26 @@ async def _run_acp(prompt: str, *, home: Path, child_env: dict[str, str], alcf_m
     full_prompt = _lead(ablate_skill, interactive=interactive) + "\n\n" + prompt
     db = home / "state.db"
     human = None
-    exchanges: list[dict] = []
+    replies: list[dict] = []   # {answer, kind} per human-sim turn, in order — correlated to prose questions POST-RUN
     state = {"capped": False}
     respond = None
     if interactive:
         from human_sim import HumanSim, ends_with_question
+
         human = HumanSim(persona=persona, goal=user_goal, totp_secret=os.environ.get("HPCB_SIM_TOTP_SECRET") or None)
 
         async def respond(turn):
+            # ends_with_question(turn.text) uses the ACP capture (reliable, complete when prompt() returns) to
+            # decide whether the operator asked — this drives turn CONTINUATION and completes runs. We record only
+            # {answer, kind}; the question TEXT + its trace INDEX are reconstructed POST-RUN from the flushed
+            # state.db (exchanges_from_messages) — the ACP capture's count/joined-chunks misaligned both.
             if not ends_with_question(turn.text):
                 return None        # the operator finished / didn't ask — end the session
-            if len(exchanges) >= MAX_PROSE_FOLLOWUPS:
+            if len(replies) >= MAX_PROSE_FOLLOWUPS:
                 state["capped"] = True
                 return None
             reply, kind, reason = await human.reply_hermes(turn.text)
-            exchanges.append({"call_index": max(0, turn.calls_so_far - 1), "question": turn.text[-1000:],
-                              "answer": reply, "kind": kind})
+            replies.append({"answer": reply, "kind": kind})
             print(f"  human({persona}) [{kind}{f': {reason}' if reason else ''}]: {reply[:140]}",
                   file=sys.stderr, flush=True)
             return reply
@@ -201,13 +205,15 @@ async def _run_acp(prompt: str, *, home: Path, child_env: dict[str, str], alcf_m
     rows = load_messages(db) if db.is_file() else []
     trace = trace_from_messages(rows)
     if interactive:
-        trace = stamp_exchanges(trace, exchanges)
+        # Stamp POST-RUN from the flushed state.db: correlate each recorded reply to the operator's prose question
+        # by message order, so the synthetic AskUserQuestion lands at the right trace index with the clean ask text.
+        trace = stamp_exchanges(trace, exchanges_from_messages(rows, replies))
     answer = trace.texts[-1] if trace.texts else ""
     return RunResult(
         trace=trace,
         final=HermesFinal(result=answer, is_error=err, session_id=(rows[0].get("session_id") if rows else None)),
         messages=rows, dialogue=(human.dialogue if human else []),
-        prose_followups=len(exchanges), followups_capped=state["capped"],
+        prose_followups=len(replies), followups_capped=state["capped"],
         human_sim_model=(human.model if human else None),
     )
 
