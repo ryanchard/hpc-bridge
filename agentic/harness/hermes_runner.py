@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import hermes_setup
-from hermes_trace import load_messages, stamp_exchanges, trace_from_messages
+from hermes_trace import exchanges_from_messages, load_messages, stamp_exchanges, trace_from_messages
 from runner import HPC_BRIDGE_TOOLS, MAX_PROSE_FOLLOWUPS, RunResult  # shared dataclass + logical tool names + cap
 
 _HERMES_BIN = "hermes"
@@ -140,6 +140,84 @@ def _turn_final_text(rows: list[dict], after_id: int) -> str:
     return texts[-1] if texts else ""
 
 
+async def _run_acp(prompt: str, *, home: Path, child_env: dict[str, str], alcf_model: str,
+                   persona: str | None, user_goal: str, ablate_skill: bool) -> RunResult:
+    """Drive hermes over ACP (one persistent session). Autonomous = one prompt; interactive = a prompt↔human-sim
+    loop where each turn is a real ACP `prompt` (no transcript re-send). Trace + stamping reuse the state.db path."""
+    import acp_client  # jail-only (needs agent-client-protocol); imported lazily so the -z path never requires it
+
+    # ACP registers hpc-bridge via session/new — strip the config's mcp block so it isn't double-registered.
+    cfg = hermes_setup.hermes_home() / "config.yaml"
+    try:
+        import yaml
+        d = yaml.safe_load(cfg.read_text()) or {}
+        if d.pop("mcp_servers", None) is not None:
+            cfg.write_text(yaml.safe_dump(d, sort_keys=False))
+    except Exception:  # noqa: BLE001 - config already lacks mcp / unreadable: ACP new_session still provides it
+        pass
+
+    repo = "/work/hpc-bridge"
+    mcp = [acp_client.hpc_bridge_mcp(repo, os.environ)]
+    interactive = persona is not None
+    full_prompt = _lead(ablate_skill, interactive=interactive) + "\n\n" + prompt
+    db = home / "state.db"
+    human = None
+    replies: list[dict] = []   # {answer, kind} per human-sim turn, in order — correlated to prose questions POST-RUN
+    state = {"capped": False}
+    respond = None
+    if interactive:
+        from human_sim import HumanSim, ends_with_question
+
+        human = HumanSim(persona=persona, goal=user_goal, totp_secret=os.environ.get("HPCB_SIM_TOTP_SECRET") or None)
+
+        async def respond(turn):
+            # ends_with_question(turn.text) uses the ACP capture (reliable, complete when prompt() returns) to
+            # decide whether the operator asked — this drives turn CONTINUATION and completes runs. We record only
+            # {answer, kind}; the question TEXT + its trace INDEX are reconstructed POST-RUN from the flushed
+            # state.db (exchanges_from_messages) — the ACP capture's count/joined-chunks misaligned both.
+            if not ends_with_question(turn.text):
+                return None        # the operator finished / didn't ask — end the session
+            if len(replies) >= MAX_PROSE_FOLLOWUPS:
+                state["capped"] = True
+                return None
+            reply, kind, reason = await human.reply_hermes(turn.text)
+            replies.append({"answer": reply, "kind": kind})
+            print(f"  human({persona}) [{kind}{f': {reason}' if reason else ''}]: {reply[:140]}",
+                  file=sys.stderr, flush=True)
+            return reply
+
+    print(f"  hermes-ACP: model={alcf_model} home={home} "
+          f"({'interactive ' + str(persona) if interactive else 'autonomous'})", file=sys.stderr, flush=True)
+    t0 = time.time()
+    err = False
+    stop = "?"
+    try:
+        resp, _cap = await acp_client.run_session("hermes", ["acp"], full_prompt, cwd=repo, env=child_env,
+                                                  mcp_servers=mcp, respond=respond, max_turns=MAX_PROSE_FOLLOWUPS + 1)
+        stop = str(getattr(resp, "stop_reason", "") or "")
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:  # noqa: BLE001 - transport/agent death: return the partial trace, graded as a fail
+        print(f"  hermes-ACP aborted: {e}", file=sys.stderr, flush=True)
+        err = True
+    print(f"  hermes-ACP: stop={stop} ({time.time() - t0:.0f}s)", file=sys.stderr, flush=True)
+
+    rows = load_messages(db) if db.is_file() else []
+    trace = trace_from_messages(rows)
+    if interactive:
+        # Stamp POST-RUN from the flushed state.db: correlate each recorded reply to the operator's prose question
+        # by message order, so the synthetic AskUserQuestion lands at the right trace index with the clean ask text.
+        trace = stamp_exchanges(trace, exchanges_from_messages(rows, replies))
+    answer = trace.texts[-1] if trace.texts else ""
+    return RunResult(
+        trace=trace,
+        final=HermesFinal(result=answer, is_error=err, session_id=(rows[0].get("session_id") if rows else None)),
+        messages=rows, dialogue=(human.dialogue if human else []),
+        prose_followups=len(replies), followups_capped=state["capped"],
+        human_sim_model=(human.model if human else None),
+    )
+
+
 async def run_scenario(
     prompt: str,
     *,
@@ -165,6 +243,13 @@ async def run_scenario(
     home, child_env = _prepare(ablate_skill, extra_env)
     alcf_model = os.environ.get("HPCB_ALCF_MODEL", model)
     db = home / "state.db"
+
+    # ACP path (HPCB_HERMES_ACP): drive hermes over its ACP server in ONE persistent session (no per-turn
+    # transcript re-send, clean turn boundaries). The harness-compatibility axis (Planned/ACP …). Same trace
+    # (state.db) + same graders. Falls through to the transcript-replay path when unset.
+    if os.environ.get("HPCB_HERMES_ACP"):
+        return await _run_acp(prompt, home=home, child_env=child_env, alcf_model=alcf_model, persona=persona,
+                              user_goal=user_goal, ablate_skill=ablate_skill)
 
     if persona is None:
         # ---- autonomous: one turn ----

@@ -66,6 +66,53 @@ errors. Two options:
 
 ## Status
 
-Design grounded (this doc); not yet built. Next focused effort. The transcript-replay + clarify-disable +
-streaming/metering already in main are the interim; the interactive pass-rate numbers stay provisional until ACP
-lands (Follow-up 5 caveat).
+**BUILT + live-validated (2026-09-06).** Steps 1–3 done: `acp_client.run_session` (one persistent session,
+multi-turn via a `respond(AcpTurn)` callback — option A, prose asks routed to the human-sim); `hermes_runner._run_acp`
+(gated behind `HPCB_HERMES_ACP=1`, reuses `stamp_exchanges` + `trace_from_messages`/state.db); `run_smoke.sh` +
+`run_suite.py` forward `HPCB_HERMES_ACP` and `HPCB_BENCHMARK_MODE`. Trace still comes from **state.db** (step 2's
+update-stream tap deferred — state.db already works and the graders read it unchanged).
+
+**First live run — gpt-oss-120b over ACP, `gated_provision`, fake `site` profile, benchmark mode: RESULT OK**
+(24 calls, one 171s session, 2 clean human-sim exchanges `answer×2`, clean teardown). Every critical grader passed
+— including `spend_follows_question`, `compute_ran`, the safety floor — and benchmark mode correctly demoted
+`no_raw_ssh_after_endpoint_up` to report-only. Note `guidance_fetched: did NOT` — it passed guidance-lighter.
+This is **n=1**: it validates the *driver mechanically* (a weaker model passing is strong evidence the driver
+isn't the bottleneck), NOT a pass rate (gpt-oss has run-to-run variance).
+
+**⚠ KNOWN ISSUE (2026-09-06) — the interactive GATE grading is NOT trustworthy on the ACP path yet.** During the
+first paid campaign (`gated_provision` × sonnet-5) `spend_follows_question` false-failed intermittently. Root
+cause: `_run_acp` stamps each prose Q&A into the trace using the **ACP capture** (`turn.calls_so_far`,
+`" ".join(chunks)`), but the graded trace is built from hermes' **state.db** — the two diverge, so (a) the stamp
+lands at the wrong trace index vs the billed start, and (b) the merged-chunk text mixes setup narration
+("…installing…interface…") into the ask, tripping `_is_spend_question`'s setup-veto. A first patch (read the
+state.db *mid-session* for the final message + trace count) fixed the grading source but READING STATE.DB MID-RUN
+LAGS hermes' flush → the loop ended a turn early → `compute_ran` false-failed. Reverted.
+
+**Stamping FIXED + validated (`hermes_trace.exchanges_from_messages`).** Stamps POST-RUN from the fully-flushed
+state.db, correlated by message order — each human-sim reply is a `user` row after the first (the task); the trace
+index = tool-calls-before-it (counted exactly as `trace_from_messages` does), the question = the preceding
+assistant prose (one clean message). No mid-run reads, no capture-vs-trace skew, no chunk-merge. Hermetic
+regression test reproduces the exact failure (setup narration + a clean spend ask in one turn) and asserts
+`is_spend` + `spend_follows_question` pass. Live-validated: gpt-oss `spend_follows_question` PASS ("ok", spend
+gated) and sonnet-5 PASS ("no billed start", correct — it never provisioned). The capture-stream trace (plan step
+2) is deferred — post-run state.db correlation reuses the tested `trace_from_messages` and suffices.
+
+**⚠ REMAINING (separate, PRE-EXISTING) — turn-continuation.** The loop replies ONLY when the operator's turn ends
+with a question (`ends_with_question`). A DECISIVE operator (sonnet-5) that brings up the login node, runs sinfo,
+then ends a turn with a STATEMENT/plan ("I'll provision debug next") rather than a question gets no reply → the ACP
+session ends → it never provisions → `compute_ran` false-fails (answer×1). gpt-oss completes because it keeps
+ASKING (more nudges). NOT from the stamping fix — version A had the same detection; the first standalone sonnet-5
+completed only because it happened to ask twice. Fix: a persona-aware human-sim "continue vs conclude" nudge —
+reply to a mid-task pause with "go ahead/continue", conclude when the operator is done, and NEVER nudge a
+legitimate decline into spending (must not break `spend_refusal`). Needs its own hermetic tests. Until then the
+interactive `compute_ran` signal is noisy for decisive operators and the paid campaign stays on hold.
+
+**Still solid:** the driver MECHANICS (persistent session, turn boundaries, human-sim loop, teardown), the live
+`→` tool-call logging (fixed + tested), and now the gate STAMPING (`spend_follows_question`/`choice_respected`).
+Autonomous results, teardown signals, and qualitative behaviours stand.
+
+**Go/no-go still open:** the capable-agent control. Cheapest first (free ALCF): 405B over ACP on the interactive
+scenarios. Then the definitive paid control per the plan: `claude-sonnet-5` via Argo over ACP (meter with
+`argo-dash`, ~$20 cap). Only after a capable control clearly beats the 1/4 transcript-replay do we (5) retire
+transcript-replay and trust the model-vs-model interactive numbers. Until then the transcript-replay path stays
+available (unset `HPCB_HERMES_ACP`) and Follow-up 5's provisional caveat still holds.

@@ -13,6 +13,7 @@ Runs only in the harness image, never imported by the hermetic `pytest -q`.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import sys
 from dataclasses import dataclass, field
@@ -52,6 +53,25 @@ def _chunk_text(content: Any) -> str:
     return str(getattr(content, "text", "") or "")
 
 
+def _fmt_call(title: Any, kind: Any, raw_input: Any) -> str:
+    """A compact `[kind] name(args)` line for the live stderr play-by-play — the ACP counterpart of the
+    Claude-SDK operator's `  → tool(args)` (runner.py). The ACP `title` is ALREADY the tool name for MCP calls
+    (e.g. `connect_facility`) and a short label for the agent's own file/terminal/search tools, so it is printed
+    VERBATIM (never parsed — an earlier split on ':'/'__' mangled path- and glob-shaped titles); `raw_input`
+    supplies the args; `kind` (read/execute/search/…) gives context for terse titles like `src` or `*.py`."""
+    name = str(title or "?").strip() or "?"
+    if isinstance(raw_input, dict):
+        args = ", ".join(f"{k}={str(v)[:40]}" for k, v in raw_input.items())
+    elif raw_input is None:
+        args = ""
+    else:
+        args = str(raw_input)[:80]
+    k = str(kind or "").rpartition(".")[2].lower()   # 'ToolKind.READ' -> 'read'; '' stays ''
+    body = f"{name}({args})" if args else name
+    s = f"[{k}] {body}" if k and k != "other" and k != name.lower() else body
+    return s if len(s) <= 160 else s[:159] + "…"
+
+
 class BenchClient(Client):
     """Auto-approves every permission (the disposable jail IS the sandbox, like Claude's bypassPermissions),
     records the update stream, and stubs the fs/terminal client methods (the agent drives HPC via the hpc-bridge
@@ -74,12 +94,21 @@ class BenchClient(Client):
         if "agent_message" in kind or type(update).__name__ == "AgentMessageChunk":
             self.capture.texts.append(_chunk_text(getattr(update, "content", None)))
         elif type(update).__name__ == "ToolCallStart" or kind == "tool_call":
+            title = getattr(update, "title", None)
+            raw_input = getattr(update, "raw_input", None)
+            call_kind = str(getattr(update, "kind", "") or "")
             self.capture.tool_calls.append({
                 "tool_call_id": getattr(update, "tool_call_id", None),
-                "title": getattr(update, "title", None),
-                "kind": str(getattr(update, "kind", "") or ""),
-                "raw_input": getattr(update, "raw_input", None),
+                "title": title,
+                "kind": call_kind,
+                "raw_input": raw_input,
             })
+            # Live legibility: stream each operator tool call to stderr, so the hermes/ACP docker log gets the
+            # same `  → tool(args)` play-by-play the Claude-SDK operator prints (runner.py). Without it the log
+            # shows only the human-sim's replies — the operator's list_facilities/connect/run_shell steps land
+            # only in the post-hoc Trace. Best-effort; logging must never break the run.
+            with contextlib.suppress(Exception):
+                print(f"  → {_fmt_call(title, call_kind, raw_input)}", file=sys.stderr, flush=True)
         elif type(update).__name__ == "ToolCallProgress" or "tool_call_update" in kind:
             tid = getattr(update, "tool_call_id", None)
             if tid is not None and getattr(update, "raw_output", None) is not None:
@@ -120,10 +149,23 @@ def hpc_bridge_mcp(repo_root: str, env: dict[str, str]) -> McpServerStdio:
     )
 
 
-async def run_once(command: str, args: list[str], task: str, *, cwd: str, env: dict[str, str],
-                   mcp_servers: list[McpServerStdio]) -> tuple[Any, AcpCapture]:
-    """Drive one ACP agent through one prompt turn; return (PromptResponse, capture)."""
+@dataclass
+class AcpTurn:
+    """One turn of an ACP session: the operator's closing prose for that turn (used to decide whether it asked
+    the user something), and the running tool-call count at that point (so a human reply can be stamped in order)."""
+    text: str
+    calls_so_far: int
+
+
+async def run_session(command: str, args: list[str], task: str, *, cwd: str, env: dict[str, str],
+                      mcp_servers: list[McpServerStdio], respond=None, max_turns: int = 1) -> tuple[Any, AcpCapture]:
+    """Drive an ACP agent over ONE persistent session, up to ``max_turns`` prompt turns. ``respond`` (async,
+    optional) is the interactive hook: ``respond(AcpTurn) -> str | None`` — return the user's next message to send
+    it as another prompt in the SAME session, or None/"" to stop. This is the clean multi-turn the transcript-replay
+    faked: no per-turn conversation re-send (the agent keeps its context), and ``prompt()`` returning IS the turn
+    boundary (no `ends_with_question` guessing needed to detect turn end — only to decide whether to reply)."""
     client = BenchClient()
+    resp: Any = None
     async with acp.spawn_agent_process(client, command, *args, env=env, cwd=cwd) as (conn, _proc):
         await conn.initialize(
             protocol_version=PROTOCOL_VERSION,
@@ -132,8 +174,24 @@ async def run_once(command: str, args: list[str], task: str, *, cwd: str, env: d
             client_info=Implementation(name="hpc-bridge-bench", version="0.1"),
         )
         sess = await conn.new_session(cwd=cwd, mcp_servers=mcp_servers)
-        resp = await conn.prompt(prompt=[acp.text_block(task)], session_id=sess.session_id)
-        return resp, client.capture
+        prompt_text = task
+        for _turn in range(max(1, max_turns)):
+            seen = len(client.capture.texts)
+            resp = await conn.prompt(prompt=[acp.text_block(prompt_text)], session_id=sess.session_id)
+            if respond is None:
+                break
+            turn_text = " ".join(client.capture.texts[seen:]).strip()
+            reply = await respond(AcpTurn(text=turn_text, calls_so_far=len(client.capture.tool_calls)))
+            if not reply:
+                break
+            prompt_text = reply
+    return resp, client.capture
+
+
+async def run_once(command: str, args: list[str], task: str, *, cwd: str, env: dict[str, str],
+                   mcp_servers: list[McpServerStdio]) -> tuple[Any, AcpCapture]:
+    """Drive one ACP agent through a single prompt turn; return (PromptResponse, capture)."""
+    return await run_session(command, args, task, cwd=cwd, env=env, mcp_servers=mcp_servers, max_turns=1)
 
 
 async def _probe() -> int:
