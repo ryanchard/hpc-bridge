@@ -216,7 +216,8 @@ class AcpTurn:
 
 
 async def run_session(command: str, args: list[str], task: str, *, cwd: str, env: dict[str, str],
-                      mcp_servers: list[McpServerStdio], respond=None, max_turns: int = 1) -> tuple[Any, AcpCapture]:
+                      mcp_servers: list[McpServerStdio], respond=None, max_turns: int = 1,
+                      **session_kwargs: Any) -> tuple[Any, AcpCapture]:
     """Drive an ACP agent over ONE persistent session, up to ``max_turns`` prompt turns. ``respond`` (async,
     optional) is the interactive hook: ``respond(AcpTurn) -> str | None`` — return the user's next message to send
     it as another prompt in the SAME session, or None/"" to stop. This is the clean multi-turn the transcript-replay
@@ -231,7 +232,9 @@ async def run_session(command: str, args: list[str], task: str, *, cwd: str, env
                                                                              write_text_file=False), terminal=False),
             client_info=Implementation(name="hpc-bridge-bench", version="0.1"),
         )
-        sess = await conn.new_session(cwd=cwd, mcp_servers=mcp_servers)
+        # session_kwargs: agent-specific extras, e.g. `field_meta` (ACP `_meta`) — claude-agent-acp reads
+        # `_meta.claudeCode.options.model` to pin the model.
+        sess = await conn.new_session(cwd=cwd, mcp_servers=mcp_servers, **session_kwargs)
         prompt_text = task
         for _turn in range(max(1, max_turns)):
             client.capture.turn += 1

@@ -27,9 +27,17 @@ RUN pip install --no-cache-dir claude-agent-sdk==0.2.152
 RUN git clone -q https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent \
     && git -C /opt/hermes-agent checkout -q 245e48008fa814b3251f50755eb656bd9fb86cb1 \
     && pip install --no-cache-dir -e /opt/hermes-agent
-# ACP (Agent Client Protocol): hermes' `[acp]` extra — needed for `hermes acp` AND for our agent-agnostic
-# ACP benchmark client (agentic/harness/acp_client.py) to drive it. Pinned to what hermes 0.21.0 declares.
-RUN pip install --no-cache-dir agent-client-protocol==0.9.0
+# ACP (Agent Client Protocol): needed for `hermes acp` AND for our agent-agnostic ACP benchmark client
+# (agentic/harness/acp_client.py). 0.12.1 (not hermes' declared 0.9.0): it adds the ELICITATION client methods +
+# capability the Claude adapter's structured asks will need; `hermes acp` re-validated live under it (2026-09-08).
+RUN pip install --no-cache-dir agent-client-protocol==0.12.1
+# Node + Zed's claude-agent-acp: Claude Code as an ACP agent — the SECOND harness on the benchmark's harness axis
+# (agentic/harness/acp_runner.py drives it with the same client/human-sim/graders as hermes). Node 22 via NodeSource
+# (Debian's nodejs is too old); the adapter is pinned (its published 0.23.1 disallows AskUserQuestion → prose asks).
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs && rm -rf /var/lib/apt/lists/* \
+    && npm install -g --no-audit --no-fund @zed-industries/claude-agent-acp@0.23.1 \
+    && claude-agent-acp --version >/dev/null 2>&1 || true
 
 # The hpc-bridge repo (plugin + MCP server + skill + harness). Build context is the
 # repo root (run_smoke.sh builds from there); .dockerignore trims it.

@@ -1135,3 +1135,11 @@ def test_operator_preference_graders_are_report_only_material_not_safety():
                  "no_detached_long_job_on_slurm", "agent_engaged", "run_completed"):
         assert keep not in OPERATOR_PREFERENCE_GRADERS
     assert not (set(FLOOR_NAMES) & OPERATOR_PREFERENCE_GRADERS)
+
+
+def test_guidance_fetched_recognises_both_resource_readers():
+    from invariants import ToolCall, Trace, guidance_fetched
+    uri = "hpcbridge://guidance/operations"
+    assert guidance_fetched(Trace([ToolCall.of("read_resource", {"uri": uri})], []))                        # hermes
+    assert guidance_fetched(Trace([ToolCall.of("ReadMcpResourceTool", {"server": "hpc-bridge", "uri": uri})], []))  # Claude Code
+    assert not guidance_fetched(Trace([ToolCall.of("ReadMcpResourceTool", {"server": "x", "uri": "other://y"})], []))

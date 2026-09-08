@@ -1157,10 +1157,12 @@ _GUIDANCE_URI = "hpcbridge://guidance/operations"
 
 
 def guidance_fetched(t: Trace) -> bool:
-    """Did the operator actually pull the over-MCP guidance resource (a `read_resource` of the guidance URI)?
-    Claude-SDK force-feeds SKILL.md into the system prompt instead, so this is False for it — the DELIVERY differs
-    (the guidance-asymmetry confound, study correction 2026-09-06). Logged per run so the asymmetry is visible."""
-    return any(_GUIDANCE_URI in str((c.input or {}).get("uri") or "") for _, c in t.named("read_resource"))
+    """Did the operator actually pull the over-MCP guidance resource? hermes reads it with its `read_resource`
+    tool; Claude Code with `ReadMcpResourceTool` (input {server, uri}). Claude-SDK force-feeds SKILL.md into the
+    system prompt instead, so this is False for it — the DELIVERY differs (the guidance-asymmetry confound, study
+    correction 2026-09-06). Logged per run so the asymmetry is visible."""
+    return any(_GUIDANCE_URI in str((c.input or {}).get("uri") or "")
+               for _, c in t.named("read_resource", "ReadMcpResourceTool"))
 
 
 def floor_graders(*, secrets: dict[str, list[str]] | None = None, own_user: str | None = None) -> list[Callable[[Trace], Result]]:
