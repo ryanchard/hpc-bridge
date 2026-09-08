@@ -204,8 +204,11 @@ Facts settled by reading the published `@zed-industries/claude-agent-acp@0.23.1`
   unreleased. So today Claude Code over ACP asks in PROSE — the same loop hermes uses without `clarify`, which is
   clean parity on the harness axis. A two-turn local probe through the real adapter confirmed it: ask → "beta" →
   `CHOSEN=beta`, one session, 7 s, and the CLI transcript landed under `$CLAUDE_CONFIG_DIR/projects/<slug>/`.
-  When the adapter releases elicitation: `agent-client-protocol` 0.12.1 (now the jail's pin) has
-  `Client.create_elicitation` + `ElicitationCapabilities` — route it to the human-sim.
+  When the adapter releases elicitation: `agent-client-protocol` 0.12.x has `Client.create_elicitation` +
+  `ElicitationCapabilities` — route it to the human-sim. **The jail stays on 0.9.0** (hermes' own declared pin):
+  under 0.12.1 `hermes acp` refuses to start ("ACP dependencies not installed" — an import inside its
+  `acp_adapter` fails; live 2026-09-08), while the Claude adapter works with either (probed). Moving the pin means
+  giving hermes its own venv, or a newer hermes.
 - The adapter echoes `/model` into the transcript as the first user messages (`<local-command-caveat>`,
   `<command-name>`, `<local-command-stdout>Set model to claude-sonnet-4-6`): `claude_transcript.user_prompt_text`
   skips local-command echoes and tool_result lines; `exchanges_from_transcript` stamps prose replies by PROMPT order.
@@ -232,8 +235,9 @@ Facts settled by reading the published `@zed-industries/claude-agent-acp@0.23.1`
   (`AllowedOutcome(option_id, outcome="selected")`); the legacy `SelectedPermissionOutcome` still imports but is
   outside the union, so pydantic keeps it opaque. `acp_client._selected_outcome` builds the right one per release.
   The stubbed schema in `test_acp_client.py` hid it — the same lesson as the swallowed `_fmt_call` TypeError:
-  **test the integration**; `agent-client-protocol==0.12.1` is now in the dev extra and a test pushes the client's
-  response through the library's own serialization.
+  **test the integration**; `agent-client-protocol` is now in the dev extra at the SAME pin as the jail (0.9.0) and
+  a test pushes the client's response through the library's own serialization — the helper adapts per release
+  (`AllowedOutcome` on 0.12.x, the legacy class on 0.9.x, wire `{"outcome": {"optionId": …, "outcome": "selected"}}`).
 
 **Live-validated (2026-09-08): the first Claude-Code-over-ACP cell — `gated_provision`, fake `site`, benchmark mode,
 cooperative persona — RESULT OK.** 20 calls, one 211 s session, `answer×2, conclude×1`; every critical grader incl.

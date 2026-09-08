@@ -28,9 +28,12 @@ RUN git clone -q https://github.com/NousResearch/hermes-agent.git /opt/hermes-ag
     && git -C /opt/hermes-agent checkout -q 245e48008fa814b3251f50755eb656bd9fb86cb1 \
     && pip install --no-cache-dir -e /opt/hermes-agent
 # ACP (Agent Client Protocol): needed for `hermes acp` AND for our agent-agnostic ACP benchmark client
-# (agentic/harness/acp_client.py). 0.12.1 (not hermes' declared 0.9.0): it adds the ELICITATION client methods +
-# capability the Claude adapter's structured asks will need; `hermes acp` re-validated live under it (2026-09-08).
-RUN pip install --no-cache-dir agent-client-protocol==0.12.1
+# (agentic/harness/acp_client.py). PINNED to what hermes 0.21.0 declares: under 0.12.1 `hermes acp` refuses to start
+# ("ACP dependencies not installed" — its own dependency check; live 2026-09-08), while the Claude adapter works with
+# either. 0.12.x adds the ELICITATION client methods the adapter's unreleased structured asks will need — when that
+# lands, hermes needs its own venv (or a newer hermes) before this pin can move. acp_client adapts the permission
+# outcome shape per release.
+RUN pip install --no-cache-dir agent-client-protocol==0.9.0
 # Node + Zed's claude-agent-acp: Claude Code as an ACP agent — the SECOND harness on the benchmark's harness axis
 # (agentic/harness/acp_runner.py drives it with the same client/human-sim/graders as hermes). Node 22 via NodeSource
 # (Debian's nodejs is too old); the adapter is pinned (its published 0.23.1 disallows AskUserQuestion → prose asks).
