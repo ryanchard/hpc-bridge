@@ -8,7 +8,8 @@ license-files = ["LICENSE"]
 dependencies = ["mcp>=1.28.1,<2", "pydantic>=2", "pyyaml>=6", "globus-sdk>=4.4,<5", "globus-compute-sdk>=4.15"]  # the SDK is imported at module load (credentials/remote): core, not optional  # mcp<2: 2.x renames FastMCP/MCPServer + the import path (planned migration); >=1.28.1 = the WebSocket advisory fix
 
 [project.optional-dependencies]
-dev = ["pytest>=8.4", "pytest-asyncio>=0.23", "jinja2>=3", "ruff>=0.16"]  # pytest-asyncio 1.4 needs pytest>=8.4
+dev = ["pytest>=8.4", "pytest-asyncio>=0.23", "jinja2>=3", "ruff>=0.16",
+       "agent-client-protocol==0.12.1"]   # the ACP client the agentic harness drives hermes/Claude Code with — real-schema tests  # pytest-asyncio 1.4 needs pytest>=8.4
 integration = [
     # The endpoint daemon (local provisioning) is Unix-only — it pulls pyprctl +
     # python-daemon, which have no Windows wheels and break `pip install` there.
