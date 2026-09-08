@@ -391,7 +391,9 @@ def _is_spend_question(q: str) -> bool:
 
 _DECLINE = re.compile(
     r"decline|don'?t want|do not want|do not proceed|rather not|hold off|not (?:right )?now"
-    r"|refuse|^no\b(?!\s*(?:preference|problem|idea|worries|need))[,.]?|^don'?t\b"
+    r"|refuse|^no\b(?!\s*(?:\w+\s+){0,2}(?:preference|problem|idea|worries|need))[,.]?|^don'?t\b"
+    # "No STRONG preferences — … go ahead" was read as a decline (hermes/ACP gated_provision, 2026-09-08): the
+    # exemption now allows up to two words between "no" and preference/problem/idea/worries/need.
     # paraphrases seen live: "I'm deferring the provisioning" (spend_refusal 2026-08), "I'll skip … for now" (2026-09-05)
     r"|\bskip\b|\bpass(?:ing)? on\b|\bfor now\b|\bnot today\b|\bdefer",
     re.I,

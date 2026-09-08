@@ -1143,3 +1143,14 @@ def test_guidance_fetched_recognises_both_resource_readers():
     assert guidance_fetched(Trace([ToolCall.of("read_resource", {"uri": uri})], []))                        # hermes
     assert guidance_fetched(Trace([ToolCall.of("ReadMcpResourceTool", {"server": "hpc-bridge", "uri": uri})], []))  # Claude Code
     assert not guidance_fetched(Trace([ToolCall.of("ReadMcpResourceTool", {"server": "x", "uri": "other://y"})], []))
+
+
+def test_decline_regex_exempts_no_preference_with_adjectives():
+    """'No strong preferences — … go ahead' is an approval, not a refusal (false decline seen live, 2026-09-08)."""
+    from invariants import _DECLINE
+    assert not _DECLINE.search("No strong preferences — just use whatever defaults are cheapest, and go ahead with it.")
+    assert not _DECLINE.search("No particular preference, pick the cheapest.")
+    assert not _DECLINE.search("No preference")
+    assert _DECLINE.search("No — hold off on the block for now.")
+    assert _DECLINE.search("No.")
+    assert _DECLINE.search("No, don't provision anything today.")
