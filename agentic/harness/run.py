@@ -674,10 +674,15 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
         if res.dialogue:
             print(f"\n=== DIALOGUE (persona: {persona}) ===")
             for x in res.dialogue:
+                # ACP turn policy: a nudge answered a PAUSE, a conclude answered a wrap-up — label them as such,
+                # not as questions, so the transcript reads the way the sim judged it.
+                kind = getattr(x, "kind", "") or ""
+                agent_label = {"nudge": "agent paused:", "conclude": "agent said: "}.get(kind, "agent asked:")
+                human_label = "human nudged:" if kind == "nudge" else "human chose:"
                 for q in x.questions:
-                    print(f"  agent asked: {q.get('question')}")
+                    print(f"  {agent_label} {q.get('question')}")
                 for k, v in x.answers.items():
-                    print(f"  human chose: {v}   ({k[:60]}…)" if len(k) > 60 else f"  human chose: {v}   ({k})")
+                    print(f"  {human_label} {v}   ({k[:60]}…)" if len(k) > 60 else f"  {human_label} {v}   ({k})")
                 if x.note:
                     print(f"  human note:  {x.note}")
         for e in getattr(res, "interjections", None) or []:
@@ -703,9 +708,16 @@ async def _run(scenario: str, model: str, effort: str | None, persona: str | Non
         if persona:
             n = getattr(res, "prose_followups", 0)
             capped = getattr(res, "followups_capped", False)
+            nudges = getattr(res, "nudges", 0) or 0
+            nudges_capped = getattr(res, "nudges_capped", False)
+            # Gates on the ANSWER cap only (the agent kept asking = looping). Nudges are the ACP turn policy's
+            # "carry on" after a mid-task pause; running out of them is reported here but judged by the liveness
+            # graders (compute_ran, ends_with_stop) — a paused-out run fails on what it never did.
             results.append(Result("harness:prose_followups", not capped,
                                   f"{n} prose question(s) answered by the human-sim"
-                                  + ("; the run ENDED at the cap — the agent kept asking in prose" if capped else "")))
+                                  + (f"; {nudges} nudge(s) to carry on after a pause" if nudges else "")
+                                  + ("; the run ENDED at the cap — the agent kept asking in prose" if capped else "")
+                                  + ("; the NUDGE budget ran out — the agent kept pausing without finishing" if nudges_capped else "")))
             # Interaction DIAGNOSTIC (non-gating): how the human replies related to the operator's turns — so a run
             # that PASSED after correcting genuine operator mistakes is distinguishable from a clean one (the point
             # of the weaker-operator study). Kinds come from the human-sim (hermes prose exchanges); empty for the

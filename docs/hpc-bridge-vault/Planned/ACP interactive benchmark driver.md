@@ -7,6 +7,20 @@ driver**, so cross-harness *interactive* benchmarks are trustworthy. Decision (2
 the SAME operator (hermes/ACP) so the comparison is model-vs-model, not operator-vs-operator (see the operator
 confound in `Reference/Cross-harness study - gpt-oss-120b vs Claude.md`, Follow-up 5).
 
+> [!important] Objective refined (2026-09-08, user decision after a methods review)
+> The benchmark compares **like models through a VARIETY of harnesses** — one agent-agnostic ACP driver, one
+> persona'd human-sim — so hpc-bridge can claim *cross-harness capability*. Several models through hermes alone is a
+> model comparison conditioned on one harness, not a harness measurement. Hence the order below: (1) turn-continuation
+> as a tested human-sim policy, (2) the Trace from the ACP `session/update` stream (Claude Code has no state.db),
+> (3) Claude Code as the second ACP agent via Zed's `@zed-industries/claude-agent-acp` (takes `mcp_servers` at
+> `session/new`; Node returns to the jail) — the missing cell is sonnet-5 via Claude Code vs sonnet-5 via hermes, and
+> it retires the SDK force-fed SKILL.md baseline, (4) the campaign at n=5 with the per-grader failure taxonomy as the
+> primary result, (5) `spend_revoked` over ACP via `session/cancel` + the revocation as the next prompt, (6) an
+> offline LLM-judge agreement pass over the existing hermes bundles for the prose→regex gate classifier, (7) later,
+> MCP elicitation for the spend gate behind a capability probe. The human-sim and the gate classifier are
+> INSTRUMENTS: validate them before reading campaign numbers as operator behaviour. The direct tool-call harness
+> (raw model capability) is deprioritised — the product question is harness-shaped.
+
 ## Why ACP (vs the current transcript-replay)
 
 The transcript-replay re-invokes `hermes -z` per turn, carrying the whole conversation in each prompt. That:
@@ -106,6 +120,49 @@ completed only because it happened to ask twice. Fix: a persona-aware human-sim 
 reply to a mid-task pause with "go ahead/continue", conclude when the operator is done, and NEVER nudge a
 legitimate decline into spending (must not break `spend_refusal`). Needs its own hermetic tests. Until then the
 interactive `compute_ran` signal is noisy for decisive operators and the paid campaign stays on hold.
+
+**Turn-continuation FIXED as a tested policy (2026-09-08).** `HumanSim.move` decides EVERY operator turn —
+`reply` (it asked, or set out a concrete step and is waiting for a go-ahead; anything that would start/pay for
+compute is always a reply, decided per persona), `nudge` (a mid-task pause with nothing to decide → "carry on"),
+`conclude` (goal met / declined and wrapped up) — and `hermes_runner.AcpResponder` sends what it says; `ends_with_question`
+no longer drives the ACP path (it still drives the `-z` and Claude-SDK prose loops). Deterministic guards in the sim,
+hermetically tested: a STANDING decline is never nudged (a later answer/correction supersedes it — the
+`no_spend_after_decline` re-gating semantics, so budget_hawk's "not until you tell me the cost" → cost → yes still
+allows nudges afterwards); nudges have their OWN budget (`MAX_NUDGES`, separate from `MAX_PROSE_FOLLOWUPS`, which
+now lives in `human_sim`) so a decisive-but-chatty operator is not scored as looping; each budget ends in `conclude`
+(`nudges_capped` is a diagnostic in `harness:prose_followups`, the liveness graders carry the verdict); the parse
+fallback is the neutral "ask me clearly" reply, never a nudge or an approval. STAMPING: a nudge is a user row, so it
+is recorded in `replies` for the post-run correlation, but `stamp_exchanges` stamps it as a `user_nudge` marker
+(like `user_interjection`) — never an AskUserQuestion — because "next I'll provision a debug node" + "carry on" would
+otherwise satisfy `spend_follows_question` through the spend-ish regex. A reply at a proposal-pause IS stamped as a
+question (the operator put the spend to the user and yielded; the go-ahead counts). Tests: `test_human_sim.py`
+(policy + guards), `test_hermes_trace.py` (nudge ≠ question; the false-pass guard), `test_hermes_runner.py`
+(loop-level: pause → nudge, ask → answer, wrap-up → conclude, standing decline → no nudge).
+
+**Live validation (free, gpt-oss-120b over ALCF, fake `site`, benchmark mode, 2026-09-08): `gated_provision` RESULT
+OK** (13 calls, one 124 s session; `answer×1, conclude×1`; every critical grader incl. `spend_follows_question` +
+`compute_ran`; clean stop, world check clean) **and `spend_refusal` RESULT OK** (10 calls, 78 s; `decline×1, answer×1,
+conclude×1` — the persona declined the spend, answered a login-node CONFIG confirmation, and concluded when the
+operator wrapped up; `refusal_exercised` + `no_spend_after_decline` pass, nothing billed). That second transcript
+exposed a guard gap fixed before merge: a config answer after a decline must NOT supersede it — only an answer to a
+SPEND-ish question does (`_standing_decline` now uses the grader's own `_is_spend_question`, so guard and grader
+agree by construction; hermetic test from the live text). Note what these runs did and did not exercise: gpt-oss ASKS,
+so the `conclude` path ran live but the `nudge` path did not — the nudge is for the decisive operator (sonnet-5); see
+the paid run below. Bundles: `agentic/runs/1788878972-93059-gated_provision`, `agentic/runs/1788879164-97189-spend_refusal`.
+
+**Paid validation (claude-sonnet-5 via Argo over ACP, 2026-09-08): `gated_provision` RESULT OK** — 19 calls, one
+207 s session, `answer×3, conclude×1`, every critical grader incl. `compute_ran` (the false-fail this fix targets),
+guidance resource fetched, clean stop, world check clean; **$1.73 metered** (22 requests, 576k input). Stated plainly:
+sonnet-5 ASKED at every step this time (config confirm → partition + spend confirm → wrap-up "let me know"), so the
+`nudge` path still ran only hermetically — run-to-run variance; what this run shows is that the policy does not
+disturb a capable operator that asks, and the loop-level test shows it answers a plan-and-pause when one occurs.
+Instrument defect found in this transcript and FIXED: over the Argo tunnel hermes STREAMS, so the ACP capture's
+chunks are token deltas, and `run_session` joined them with spaces — the sim read "part ition", "sp ending", "c ost"
+as the operator's ask (it still judged correctly, but that is luck, not design). `acp_client._join_chunks` now
+concatenates deltas verbatim and only inserts a newline between two whole messages that would otherwise fuse.
+Grading was never affected (the graded question comes from state.db post-run). Bundle
+`agentic/runs/1788880401-22038-gated_provision`. **The campaign gate is met**: turn-continuation landed with tests, a
+free validation on both a cooperative and a declining persona, and a paid capable-operator validation.
 
 **Still solid:** the driver MECHANICS (persistent session, turn boundaries, human-sim loop, teardown), the live
 `→` tool-call logging (fixed + tested), and now the gate STAMPING (`spend_follows_question`/`choice_respected`).

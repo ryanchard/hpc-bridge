@@ -82,3 +82,19 @@ def test_session_update_logs_and_captures(monkeypatch):
     assert "→ [execute] run_shell(command=hostname, shape=compute)" in out
     assert [c["title"] for c in bc.capture.tool_calls] == ["connect_facility", "run_shell"]
     assert [c["kind"] for c in bc.capture.tool_calls] == ["ToolKind.OTHER", "ToolKind.EXECUTE"]
+
+
+def test_join_chunks_streamed_deltas_concatenate_verbatim(monkeypatch):
+    """Argo streams token deltas; ' '.join put spaces inside words and the human-sim read 'part ition' (2026-09-08)."""
+    ac = _load_acp_client(monkeypatch)
+    deltas = ["Can", " you", " confirm", " `", "eth", "0", "`", " and", " the", " part", "ition", "?", " Once", " conf", "irmed", ","]
+    assert ac._join_chunks(deltas) == "Can you confirm `eth0` and the partition? Once confirmed,"
+
+
+def test_join_chunks_whole_messages_keep_a_boundary(monkeypatch):
+    """Non-streaming providers send whole messages per chunk: two sentences must not fuse into one word."""
+    ac = _load_acp_client(monkeypatch)
+    assert ac._join_chunks(["Sure — confirm the interface first.", "Hostname came back as c1."]) == \
+        "Sure — confirm the interface first.\nHostname came back as c1."
+    assert ac._join_chunks(["", "a", None, "b"]) == "ab"          # empties skipped, no separator invented
+    assert ac._join_chunks(["9587", ".5", " SU"]) == "9587.5 SU"   # a delta after '.' that is not a new sentence
