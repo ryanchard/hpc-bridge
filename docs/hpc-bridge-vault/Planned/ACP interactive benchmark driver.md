@@ -189,6 +189,13 @@ harvests into the bundle as `claude-session/`). What landed (branch `feat/trace-
   Claude CLI transcript (`sessionId`+`type`). A `-z` transcript-replay bundle replays trace-only (each turn was a
   fresh session carrying the whole conversation, so message order doesn't identify replies). This is what the
   offline judge-agreement pass (step 6) needs.
+**Live-validated (free, gpt-oss over ACP, gated_provision, 2026-09-08): RESULT OK**; `acp-updates.jsonl` persisted (42 events, 3
+turns) and `harness:acp_capture` agreed with the graded trace on 8 hpc-bridge calls. The stream confirmed the adapter
+finding in the wild: every completed tool call arrived with `raw_output: null`. Offline, `regrade` over all 568 bundles
+re-stamped the ACP-era hermes bundles correctly — the sonnet-5 run the old stamping bug had false-failed now regrades
+PASS on `spend_follows_question` — and regrade now honours the recorded benchmark mode (preference graders were
+report-only live, so they no longer decide the replayed verdict). Bundle `agentic/runs/1788881977-55550-gated_provision`.
+
 Open for step 3 (Claude Code via `claude-agent-acp`): how AskUserQuestion surfaces to the ACP client (the adapter
 routes `canUseTool` to `session/request_permission`; whether the question's options become permission options and
 how the choice becomes `updatedInput` is not visible in the excerpt read) — verify empirically on the first run and
