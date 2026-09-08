@@ -7,7 +7,7 @@
 #
 # One-time setup: authenticate once (opens the Globus browser flow), then point hermes' ALCF provider at
 # key_env: ALCF_INFERENCE_TOKEN. After that, just run `hermes-alcf` instead of `hermes`.
-#   uv run --directory <repo> --extra integration python agentic/harness/inference_auth_token.py authenticate
+#   uv run --directory <repo> --extra integration python agentic/harness/alcf_token.py authenticate
 #
 # The token stays in this process's environment only — never written to a file, the repo, or git.
 set -euo pipefail
@@ -18,9 +18,9 @@ while [ -L "$src" ]; do src="$(readlink "$src")"; done
 REPO="$(cd "$(dirname "$src")/.." && pwd)"
 
 token="$(uv run --directory "$REPO" --extra integration python \
-  "$REPO/agentic/harness/inference_auth_token.py" get_access_token)" || {
+  "$REPO/agentic/harness/alcf_token.py" get_access_token)" || {
   echo "hermes-alcf: could not mint an ALCF token. Authenticate once with:" >&2
-  echo "  uv run --directory $REPO --extra integration python agentic/harness/inference_auth_token.py authenticate" >&2
+  echo "  uv run --directory $REPO --extra integration python agentic/harness/alcf_token.py authenticate" >&2
   exit 1
 }
 export ALCF_INFERENCE_TOKEN="$token"

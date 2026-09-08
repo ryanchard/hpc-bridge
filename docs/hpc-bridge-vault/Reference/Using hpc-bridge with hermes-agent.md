@@ -24,7 +24,7 @@ model:
   max_tokens: 4096
 ```
 
-ALCF access tokens last 24 h. Use the repo's **`scripts/hermes-alcf`** launcher (symlink it onto your PATH as `hermes-alcf`) — it mints a fresh token into `ALCF_INFERENCE_TOKEN` and execs `hermes`, so the expiry is invisible. One-time: `uv run --directory <repo> --extra integration python agentic/harness/inference_auth_token.py authenticate`.
+ALCF access tokens last 24 h. Use the repo's **`scripts/hermes-alcf`** launcher (symlink it onto your PATH as `hermes-alcf`) — it mints a fresh token into `ALCF_INFERENCE_TOKEN` and execs `hermes`, so the expiry is invisible. One-time: `uv run --directory <repo> --extra integration python agentic/harness/alcf_token.py authenticate`.
 
 > [!warning] hermes config gotchas (ALCF / any custom OpenAI-compatible endpoint)
 > - `api_key: ${VAR}` (interpolation) — the inline `key_env:` was ignored, causing a 401.
