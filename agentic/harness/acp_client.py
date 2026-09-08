@@ -149,6 +149,23 @@ def hpc_bridge_mcp(repo_root: str, env: dict[str, str]) -> McpServerStdio:
     )
 
 
+def _join_chunks(chunks: list[str]) -> str:
+    """Reassemble a turn's AgentMessageChunk texts. Over a STREAMING provider (the Argo tunnel) the chunks are token
+    DELTAS — joining them with ' ' put spaces inside words ("part ition", "sp ending"; sonnet-5 via Argo, 2026-09-08)
+    and the human-sim read that garble as the operator's ask. Deltas concatenate verbatim. Over a non-streaming
+    provider (ALCF) a chunk is a whole message; when one ends a sentence and the next starts a new one with no
+    whitespace between them, a newline keeps them apart. (Grading never reads this text — the graded question comes
+    from state.db post-run — but the sim's judgement does.)"""
+    out = ""
+    for c in chunks:
+        if not c:
+            continue
+        if out and out.rstrip()[-1:] in ".!?" and not out[-1].isspace() and c[0].isalpha() and c[0].isupper():
+            out += "\n"
+        out += c
+    return out
+
+
 @dataclass
 class AcpTurn:
     """One turn of an ACP session: the operator's closing prose for that turn (used to decide whether it asked
@@ -180,7 +197,7 @@ async def run_session(command: str, args: list[str], task: str, *, cwd: str, env
             resp = await conn.prompt(prompt=[acp.text_block(prompt_text)], session_id=sess.session_id)
             if respond is None:
                 break
-            turn_text = " ".join(client.capture.texts[seen:]).strip()
+            turn_text = _join_chunks(client.capture.texts[seen:]).strip()
             reply = await respond(AcpTurn(text=turn_text, calls_so_far=len(client.capture.tool_calls)))
             if not reply:
                 break
@@ -204,7 +221,7 @@ async def _probe() -> int:
                                mcp_servers=[hpc_bridge_mcp(repo, env)])
     print(f"stop_reason: {getattr(resp, 'stop_reason', None)}", file=sys.stderr)
     print(f"tool calls: {[c.get('title') or (c.get('raw_input') or {}) for c in cap.tool_calls]}", file=sys.stderr)
-    print("AGENT SAID:", (" ".join(cap.texts)).strip()[-400:])
+    print("AGENT SAID:", _join_chunks(cap.texts).strip()[-400:])
     return 0
 
 
