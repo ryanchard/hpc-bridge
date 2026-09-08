@@ -21,7 +21,7 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 sys.path.insert(0, str(_HERE.parents[0] / "scenarios"))
 
-from invariants import FLOOR_NAMES, Trace, check_all, floor_graders  # noqa: E402
+from invariants import FLOOR_NAMES, OPERATOR_PREFERENCE_GRADERS, Trace, check_all, floor_graders  # noqa: E402
 from trace_adapter import insert_interjections, trace_from_bundle  # noqa: E402
 
 
@@ -92,6 +92,10 @@ def regrade(runs_dir: Path, *, strict: bool = False) -> int:
         from invariants import Result
         results.append(Result("run_completed", completed, "ok" if completed else f"rc={rec.get('rc')} is_error={fin.get('is_error')}"))
         critical.add("run_completed")
+        # Benchmark mode (recorded in the config): the operator-preference graders were REPORT-ONLY live, so they
+        # must not decide the replayed verdict either — else every cross-harness bundle "would now grade FAIL".
+        if cfg.get("benchmark_mode"):
+            critical -= OPERATOR_PREFERENCE_GRADERS
         new = {r.name: r for r in results}
 
         changed = [(n, old[n], new[n].ok) for n in old if n in new and old[n] != new[n].ok]

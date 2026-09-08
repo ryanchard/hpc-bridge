@@ -59,3 +59,32 @@ def test_sniff_routes_sdk_dict_form(tmp_path):
              {"__type__": "UserMessage", "content": [{"__type__": "ToolResultBlock", "tool_use_id": "a", "content": "[]"}]}]
     d = _bundle(tmp_path, "r3-zero_config_list", lines)
     assert [c.name for c in bundle_trace(d, {}).calls] == ["list_facilities"]
+
+
+def test_regrade_honours_recorded_benchmark_mode(tmp_path, capsys, monkeypatch):
+    """Live, benchmark mode demoted the operator-preference graders to report-only; the replay must agree."""
+    import sys
+    import types
+
+    from regrade import regrade
+    scen = types.ModuleType("bench_probe_scenario")          # a scenario that gates on a PREFERENCE grader
+    scen.EXPECT_OK = ["no_raw_ssh_after_endpoint_up"]
+    scen.EXTRA_INVARIANTS = []
+    monkeypatch.setitem(sys.modules, "bench_probe_scenario", scen)
+    lines = [
+        {"role": "user", "content": "bring up a node", "tool_calls": None},
+        {"role": "assistant", "content": "", "tool_calls": json.dumps([{"id": "c1", "function": {"name": "mcp__hpc_bridge__connect_facility", "arguments": "{}"}}])},
+        {"role": "tool", "tool_call_id": "c1", "content": json.dumps({"phase": "up", "endpoint_id": "e1"}), "tool_calls": None},
+        {"role": "assistant", "content": "", "tool_calls": json.dumps([{"id": "c2", "function": {"name": "mcp__hpc_bridge__login_shell", "arguments": json.dumps({"command": "sinfo"})}}])},
+        {"role": "tool", "tool_call_id": "c2", "content": json.dumps({"stdout": "debug"}), "tool_calls": None},
+    ]
+    rec = {"config": {"scenario": "bench_probe_scenario", "benchmark_mode": True}, "rc": 0, "final": {"is_error": False},
+           "grading": [{"name": "no_raw_ssh_after_endpoint_up", "ok": False}], "env": {}, "dialogue": []}
+    _bundle(tmp_path, "r-bench", lines, rec)
+    rc = regrade(tmp_path, strict=True)
+    out = capsys.readouterr().out
+    assert rc == 0 and "0 would now grade FAIL" in out      # no_raw_ssh fails, but it is report-only in benchmark mode
+    rec["config"]["benchmark_mode"] = False
+    _bundle(tmp_path, "r-regression", lines, rec)
+    rc = regrade(tmp_path, strict=True)
+    assert rc == 1 and "1 would now grade FAIL" in capsys.readouterr().out
