@@ -43,8 +43,8 @@ if [ "$OPERATOR" = "hermes" ]; then
   # Globus creds themselves) and pass only that in. Base URL + model default to Sophia/gpt-oss-120b.
   echo "operator: hermes (ALCF-hosted model) — no Anthropic auth needed"
   ALCF_INFERENCE_TOKEN="${ALCF_INFERENCE_TOKEN:-$(uv run --directory "$REPO_ROOT" --extra integration \
-    python "$REPO_ROOT/agentic/harness/alcf_token.py" get_access_token 2>/dev/null || true)}"
-  [ -n "$ALCF_INFERENCE_TOKEN" ] || { echo "ERROR: could not mint an ALCF inference token — run once: uv run --extra integration python agentic/harness/alcf_token.py authenticate"; exit 1; }
+    python "$REPO_ROOT/agentic/harness/inference_auth_token.py" get_access_token 2>/dev/null || true)}"
+  [ -n "$ALCF_INFERENCE_TOKEN" ] || { echo "ERROR: could not mint an ALCF inference token — run once: uv run --extra integration python agentic/harness/inference_auth_token.py authenticate"; exit 1; }
   HPCB_ALCF_BASE_URL="${HPCB_ALCF_BASE_URL:-https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1}"
   HPCB_ALCF_MODEL="${HPCB_ALCF_MODEL:-openai/gpt-oss-120b}"
   export ALCF_INFERENCE_TOKEN HPCB_ALCF_BASE_URL HPCB_ALCF_MODEL

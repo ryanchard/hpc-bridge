@@ -14,7 +14,7 @@ SECRET HYGIENE (the whole point):
   ARE recorded in the bundle (useful provenance: which endpoint/model drove the run).
 
 CLI (stdlib only — no `openai` dependency):
-    uv run --extra integration python agentic/harness/alcf_token.py authenticate   # ONE-TIME, interactive (Globus browser)
+    uv run python agentic/harness/inference_auth_token.py authenticate   # ONE-TIME, interactive (Globus browser)
     uv run python agentic/harness/alcf_inference.py probe                 # list models (connectivity check)
     uv run python agentic/harness/alcf_inference.py expires               # seconds until the access token expires
 """
@@ -37,7 +37,6 @@ def access_token() -> str:
     """A valid ALCF access token, minted/refreshed via the vendored Globus helper. Triggers the interactive
     login ONLY if no cached token exists (or the refresh token lapsed after 6 months) — in the harness we run
     the one-time `authenticate` first, so this is non-interactive at run time."""
-    import globus_sdk.gare  # noqa: F401 - binds the lazy attr the vendored script reads (globus-sdk 4.9)
     import inference_auth_token  # vendored; flat on the harness PYTHONPATH
 
     return inference_auth_token.get_access_token()
@@ -104,7 +103,6 @@ def _main(argv: list[str]) -> int:
             print(f"  {m}")
         return 0
     if action == "expires":
-        import globus_sdk.gare  # noqa: F401 - binds the lazy attr the vendored script reads (globus-sdk 4.9)
         import inference_auth_token
         print(f"{inference_auth_token.get_time_until_token_expiration('seconds')} s until the access token expires")
         return 0

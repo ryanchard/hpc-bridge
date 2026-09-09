@@ -55,6 +55,7 @@ markers = ["real_catalog: the test may build the real catalog (the hermetic tier
 line-length = 120
 target-version = "py311"
 extend-exclude = ["agentic/runs", "agentic/fakecluster", "docs", "agentic/harness/inference_auth_token.py"]  # last: vendored upstream (MIT), kept unmodified
+force-exclude = true   # honour the excludes even for explicitly passed paths: `ruff --fix agentic/harness/*.py` once stripped a load-bearing "unused" import from the vendored script (2026-09-09)
 
 [tool.ruff.lint]
 # The rule set the code's existing `# noqa` annotations already imply (E/F/I/B/BLE/A); they were
