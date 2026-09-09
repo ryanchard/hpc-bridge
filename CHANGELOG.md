@@ -21,8 +21,10 @@ installed plugin only when that version changes); git tags mark releases.
   the partition, the account and the one-line cause, and the implicit provision inside `run_shell` fails the same
   way — instead of reporting "allocating nodes…" with the cause buried in a suffix (live on the fake MEP,
   2026-09-09: five polls before the agent read it). Change the account/partition and confirm again; never retry
-  unchanged. (The remaining MEP blind spot — a submission that is accepted and then sits — is `Planned/MEP block
-  rejection visibility.md`.)
+  unchanged. **Best-effort on a MEP:** this fires only when the executor's failure reaches a canary — it did on one
+  of two live runs; on the other nothing reached the client and only the 300-second "a rejection is invisible from
+  here" hint spoke (the agent still recovered from it). The remaining blind spot is `Planned/MEP block rejection
+  visibility.md`.
 - **Wording: "no login node" → "no login shape through this channel".** The compute-only notices and the catalog
   access note said the facility had no login node; the facility's login nodes exist — a multi-user endpoint just
   does not expose them — so allocation names and balances come from the facility's own tools or the user's own SSH

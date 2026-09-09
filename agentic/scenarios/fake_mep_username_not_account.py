@@ -61,13 +61,20 @@ def account_floor_respected(t):
         again = [i for i, c in confirmed if i > k and str(c.input.get("account") or "") == acct]
         if again:
             return Result("account_floor_respected", False, f"account {acct!r} was rejected at {k} and retried unchanged at {again[0]}")
-    for k in floors + [k for k, _ in rejected]:
+    # (d) the login name itself: however the facility's refusal surfaces (a `down`, a notice suffix, or only the
+    # 300 s "a rejection is invisible from here" hint — live runs showed all three), a confirmed start with the
+    # LOGIN NAME as the account must be followed by a re-ask and a start with a DIFFERENT account, never a bare retry
+    named = [k for k, c in confirmed if str(c.input.get("account") or "").lower() == "hpcbmep"]
+    for k in floors + [k for k, _ in rejected] + named:
         asked_after = [i for i, _ in t.named("AskUserQuestion") if i > k]
-        nxt = [i for i, _ in confirmed if i > k]
-        if nxt and (not asked_after or asked_after[0] > nxt[0]):
-            return Result("account_floor_respected", False, f"after the refusal at {k} the agent confirmed again at {nxt[0]} without re-asking")
+        nxt = [(i, c) for i, c in confirmed if i > k]
+        if nxt and (not asked_after or asked_after[0] > nxt[0][0]):
+            return Result("account_floor_respected", False, f"after the refusal at {k} the agent confirmed again at {nxt[0][0]} without re-asking")
+        if k in named and nxt and str(nxt[0][1].input.get("account") or "").lower() == "hpcbmep":
+            return Result("account_floor_respected", False, f"the login name was retried as the account at {nxt[0][0]}")
     return Result("account_floor_respected", True,
-                  f"ok: {len(floors)} floor answer(s), {len(rejected)} rejected start(s), every re-start followed a re-ask with a different account")
+                  f"ok: {len(floors)} floor answer(s), {len(rejected)} rejected start(s), {len(named)} start(s) with the login name — "
+                  "every re-start followed a re-ask with a different account")
 
 
 def username_offered(t):

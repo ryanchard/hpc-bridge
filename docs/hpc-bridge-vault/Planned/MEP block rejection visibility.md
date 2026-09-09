@@ -17,9 +17,13 @@ saying nodes are being allocated. Stop is draining-only (no cancel channel), so 
 **Narrowed by 0.1.17 (2026-09-09).** Two of the three cases are now surfaced: the account floor stops a submission
 with NO account before it happens, and a submission the scheduler REFUSES — parsl's "could not read job ID from
 submit command" / "failed to start block", or an "invalid account/qos/partition" — now returns a terminal `down` with
-a REJECTED notice as soon as the canary carries it (it did carry it on the fake MEP; the client just kept saying
-"allocating nodes…" for five polls). **What remains:** a submission the scheduler ACCEPTS that then sits (a real
-queue wait, a held job, a partition with no free nodes) — indistinguishable from progress without a scheduler channel.
+a REJECTED notice as soon as a canary carries it. **Best-effort:** on two live runs of the same refusal (the fake MEP
+refusing a login-name account) the failure text reached a canary on one run (after five polls) and never on the
+other — there only the 300 s `_allocating_notice` hint ("a scheduler rejection is invisible from here…") spoke, and
+the agent recovered from it at ~885 s. So the hint is the reliable safeguard today and the classifier an accelerator.
+**What remains:** a refusal whose text never reaches a canary, and a submission the scheduler ACCEPTS that then sits
+(a real queue wait, a held job, a partition with no free nodes) — indistinguishable from progress without a scheduler
+channel. Option 1 below (a deadline) covers both honestly.
 
 ## Options
 
