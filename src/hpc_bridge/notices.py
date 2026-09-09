@@ -160,9 +160,10 @@ def _spend_floor_guidance(app: AppCtx | None) -> str:
     (they used to drift). Names the free login shape only where one exists: on a compute-only
     facility every shape is billed, so pointing at shape='login' is a dead-end."""
     if app is not None and not _has_login_shape(app):
-        return ("This facility is compute-only (no free login shape — every command bills a block, which "
-                "then stays warm between calls). Confirm with the user, then call "
-                "ensure_endpoint_up(confirm_spend=True) before running work.")
+        return ("This facility is compute-only through this channel: hpc-bridge reaches it only via its compute "
+                "endpoint, so there is no free login shape here (the facility's login nodes are outside this "
+                "channel) and every command bills a block, which then stays warm between calls. Confirm with the "
+                "user, then call ensure_endpoint_up(confirm_spend=True) before running work.")
     return ("Surface the allocation balance (e.g. run_shell('mybalance', shape='login')) and call "
             "ensure_endpoint_up(confirm_spend=True) to proceed — or use shape='login' for free "
             "login-node work.")
@@ -325,6 +326,25 @@ def _cold_outcome(block: BlockState, canary: CanaryResult | None = None) -> Shel
         est_wait_s=60,
         notice="allocating nodes…" + _dispatch_error_suffix(canary),
     )
+
+def _needs_account_notice(app: AppCtx | None = None) -> str:
+    """The account floor fired: the facility requires an allocation account and none is set — nothing started.
+    Names what an account is NOT (a login name — the live confusion) and where the real one comes from."""
+    return ("this facility requires an allocation account for every block and none is set — nothing was started. "
+            "A LOGIN NAME is not an account: an account is the project/allocation the scheduler charges (a project "
+            "id from the facility's allocation tool or portal, or the ACCESS project id). Ask the user which one to "
+            "charge, then call ensure_endpoint_up(account=…, partition=…, confirm_spend=True).")
+
+
+def _needs_account_outcome(app: AppCtx | None = None) -> ShellOutcome:
+    """A billed shape on an account-required facility with no account: the command is NOT dispatched and no block
+    is started."""
+    return ShellOutcome(
+        phase="needs_account",
+        block_state="cold",
+        notice="scheduler compute shape: " + _needs_account_notice(app),
+    )
+
 
 def _needs_confirmation_outcome(app: AppCtx | None = None) -> ShellOutcome:
     """A billed shape whose spend wasn't acknowledged: the command is NOT dispatched and no
