@@ -15,6 +15,14 @@ installed plugin only when that version changes); git tags mark releases.
   submitted a GPU block Slurm could only reject, and — a MEP having no login shape to run the rejection probe — the
   plugin reported "allocating nodes…" for five minutes until the user cancelled. Graders treat `needs_account` as
   "nothing started", like `needs_confirmation`.
+- **A scheduler-rejected submission is now a terminal `down`, not "allocating nodes…".** When the block's submit
+  is refused (parsl's "could not read job ID from submit command" / "failed to start block", or the scheduler's own
+  "invalid account/qos/partition"), `ensure_endpoint_up` returns `status="down"` with a **REJECTED** notice naming
+  the partition, the account and the one-line cause, and the implicit provision inside `run_shell` fails the same
+  way — instead of reporting "allocating nodes…" with the cause buried in a suffix (live on the fake MEP,
+  2026-09-09: five polls before the agent read it). Change the account/partition and confirm again; never retry
+  unchanged. (The remaining MEP blind spot — a submission that is accepted and then sits — is `Planned/MEP block
+  rejection visibility.md`.)
 - **Wording: "no login node" → "no login shape through this channel".** The compute-only notices and the catalog
   access note said the facility had no login node; the facility's login nodes exist — a multi-user endpoint just
   does not expose them — so allocation names and balances come from the facility's own tools or the user's own SSH

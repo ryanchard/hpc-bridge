@@ -277,6 +277,47 @@ _NO_ACCOUNT_MARKERS = (
     "untrusted identity",                     # single-user endpoint: not the owner's identity
 )
 
+# The scheduler REFUSED the block's submission: parsl's provider could not read a job id from the submit
+# command (sbatch/qsub exited non-zero — a bad account, partition or QOS, a missing resource request), or the
+# scheduler said so in words. Not a queue wait, not an identity problem: the config is wrong for this facility.
+# Seen live on the fake MEP (accounting enforced; account = a login name, 2026-09-09): the client kept saying
+# "allocating nodes…" for five polls with this text buried in the notice's suffix.
+_SUBMIT_REJECTED_MARKERS = (
+    "could not read job id from submit command",
+    "failed to start block",
+    "cannot launch job",
+    "batch job submission failed",
+    "invalid account",
+    "invalid qos",
+    "invalid partition",
+    "requested node configuration is not available",
+)
+
+
+def _submit_rejected(error: str | None) -> bool:
+    e = (error or "").lower()
+    return any(m in e for m in _SUBMIT_REJECTED_MARKERS)
+
+
+def _submit_rejection_cause(error: str | None) -> str:
+    """The one line worth showing: what follows the provider's 'failed due to:' (or the error itself), no traceback."""
+    e = str(error or "")
+    if "failed due to:" in e:
+        e = e.split("failed due to:", 1)[1]
+    e = " ".join(e.replace("+", " ").split())
+    return e[:220]
+
+
+def _submit_rejected_notice(partition: str | None, account: str | None, error: str | None) -> str:
+    where = f" on {partition!r}" if partition else ""
+    charged = f" for account {account!r}" if account else " with no account"
+    return (f"the scheduler REJECTED the block submission{where}{charged}: {_submit_rejection_cause(error)}. "
+            "Nothing is queued and nothing was billed. Not a queue wait: the account, partition or QOS is wrong for "
+            "this facility, or the partition needs a resource request. Ask the user / check the facility's docs, then "
+            "change it and confirm again — ensure_endpoint_up(account=…, partition=…, confirm_spend=True). Do not "
+            "retry unchanged.")
+
+
 def _no_account_failure(error: str | None) -> bool:
     e = (error or "").lower()
     return any(m in e for m in _NO_ACCOUNT_MARKERS)
@@ -320,6 +361,9 @@ def _cold_outcome(block: BlockState, canary: CanaryResult | None = None) -> Shel
 
         return ShellOutcome(phase="failed", block_state=block,
                             notice=_no_account_notice(None, canary.error, globus_identity_label(fetch=False)))
+    if canary is not None and _submit_rejected(canary.error):
+        return ShellOutcome(phase="failed", block_state=block,
+                            notice="scheduler compute shape: " + _submit_rejected_notice(None, None, canary.error))
     return ShellOutcome(
         phase="cold_start",
         block_state=block,

@@ -14,8 +14,12 @@ SSH facility the login shape lets the probe run `sacct`/`squeue` and say so (`RE
 endpoint status stays "online" (the manager is fine), the block stays "provisioning", and `_allocating_notice` keeps
 saying nodes are being allocated. Stop is draining-only (no cancel channel), so nothing can be confirmed either way.
 
-The 0.1.17 account floor removes the most common cause on Delta (no account → nothing submitted), but not the class:
-a wrong partition, an expired allocation or a QOS refusal still look like a queue wait.
+**Narrowed by 0.1.17 (2026-09-09).** Two of the three cases are now surfaced: the account floor stops a submission
+with NO account before it happens, and a submission the scheduler REFUSES — parsl's "could not read job ID from
+submit command" / "failed to start block", or an "invalid account/qos/partition" — now returns a terminal `down` with
+a REJECTED notice as soon as the canary carries it (it did carry it on the fake MEP; the client just kept saying
+"allocating nodes…" for five polls). **What remains:** a submission the scheduler ACCEPTS that then sits (a real
+queue wait, a held job, a partition with no free nodes) — indistinguishable from progress without a scheduler channel.
 
 ## Options
 

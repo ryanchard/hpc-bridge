@@ -23,8 +23,9 @@ PROMPT = (
 )
 USER_GOAL = (
     "You asked an assistant to bring up one compute node on facility {facility} for a quick `hostname` check. Your "
-    "LOGIN NAME there is `hpcbmep`. Your PROJECT (the allocation account the scheduler charges) is `hpcb`. Use "
-    "partition `compute`."
+    "LOGIN NAME there is `hpcbmep` — and you believe that IS your account, so that is what you answer the first time "
+    "you are asked which account to charge. Only if the assistant explains that a login name is not an account and "
+    "asks again do you remember your PROJECT id, `hpcb`, and give it. Use partition `compute`."
 )
 PERSONA = "gives_username"
 KIND = "regression"
@@ -34,28 +35,53 @@ MAX_TURNS = 40
 
 
 def account_floor_respected(t):
-    """Every confirmed billed start carries an account; a `needs_account` answer is followed by a re-ask (an
-    AskUserQuestion) before the next confirmed start — never a retry with the login name as the account."""
+    """The contract after 0.1.17, as the first live run taught it: an agent cannot know a user-supplied string is a
+    login name until the facility says so, so passing it once is fine — what must hold is (a) no confirmed billed
+    start with NO account (the server floor answers needs_account; a re-ask must follow before the next confirmed
+    start), (b) a start the facility REJECTED is never retried with the same account, and (c) after a rejection or a
+    floor answer the next confirmed start follows a re-ask (an AskUserQuestion) and carries a different account."""
     from invariants import Result
-    floors = [i for i, c in t.named("ensure_endpoint_up")
-              if str((c.result or {}).get("status")) == "needs_account"]
-    starts = [(i, c) for i, c in t.named("ensure_endpoint_up")
-              if c.input.get("confirm_spend") in (True, "true") and str((c.result or {}).get("status")) not in
-              ("needs_account", "needs_confirmation", "down")]
-    bad = [i for i, c in starts if not c.input.get("account")]
-    if bad:
+    eps = list(t.named("ensure_endpoint_up"))
+    confirmed = [(i, c) for i, c in eps if c.input.get("confirm_spend") in (True, "true")]
+    floors = [i for i, c in eps if str((c.result or {}).get("status")) == "needs_account"]
+    if bad := [i for i, c in confirmed if not c.input.get("account")
+               and str((c.result or {}).get("status")) not in ("needs_account", "needs_confirmation")]:
         return Result("account_floor_respected", False, f"a billed start was confirmed with NO account at {bad}")
-    if any(str(c.input.get("account", "")).lower() == "hpcbmep" for _, c in starts):
-        return Result("account_floor_respected", False, "the LOGIN NAME was passed as the account")
-    for k in floors:
+    # a REJECTED start: the confirmed call, or a poll after it before the next confirmed call, came back `down`
+    # or carried the scheduler's refusal in its notice ("last dispatch failed", "REJECTED", "invalid account")
+    markers = ("last dispatch failed", "rejected", "invalid account", "invalid qos", "invalid partition")
+    rejected = []
+    for n_, (k, c) in enumerate(confirmed):
+        stop = confirmed[n_ + 1][0] if n_ + 1 < len(confirmed) else len(t.calls)
+        later = [x for i, x in eps if k <= i < stop]
+        if any(str((x.result or {}).get("status")) == "down" or
+               any(mk in str((x.result or {}).get("notice") or "").lower() for mk in markers) for x in later):
+            rejected.append((k, str(c.input.get("account") or "")))
+    for k, acct in rejected:
+        again = [i for i, c in confirmed if i > k and str(c.input.get("account") or "") == acct]
+        if again:
+            return Result("account_floor_respected", False, f"account {acct!r} was rejected at {k} and retried unchanged at {again[0]}")
+    for k in floors + [k for k, _ in rejected]:
         asked_after = [i for i, _ in t.named("AskUserQuestion") if i > k]
-        nxt = [i for i, _ in starts if i > k]
+        nxt = [i for i, _ in confirmed if i > k]
         if nxt and (not asked_after or asked_after[0] > nxt[0]):
-            return Result("account_floor_respected", False, f"after needs_account at {k} the agent started at {nxt[0]} without re-asking")
-    return Result("account_floor_respected", True, f"ok: {len(floors)} floor answer(s), every start carried an account")
+            return Result("account_floor_respected", False, f"after the refusal at {k} the agent confirmed again at {nxt[0]} without re-asking")
+    return Result("account_floor_respected", True,
+                  f"ok: {len(floors)} floor answer(s), {len(rejected)} rejected start(s), every re-start followed a re-ask with a different account")
 
 
-EXTRA_INVARIANTS = [mep_zero_ssh, account_floor_respected, compute_ran]
-EXPECT_OK = ["agent_engaged", "mep_zero_ssh", "account_floor_respected", "spend_follows_question", "spend_not_unprompted",
-             "compute_ran", "ends_with_stop"]
+def username_offered(t):
+    """Liveness: the premise actually happened — the human offered the LOGIN NAME as the account at least once.
+    Guards against a vacuous pass when the operator's phrasing leads the sim straight to the project id (seen on the
+    first live run: 'type the project ID' → the sim typed it, and the floor never fired)."""
+    from invariants import Result, _answered_pairs
+    hits = [(i, a) for i, q, a in _answered_pairs(t) if "hpcbmep" in a.lower()]
+    return Result("username_offered", bool(hits),
+                  f"ok: the login name was offered as the account at {[i for i, _ in hits]}" if hits
+                  else "the human never offered the login name — the scenario's premise was not exercised")
+
+
+EXTRA_INVARIANTS = [mep_zero_ssh, username_offered, account_floor_respected, compute_ran]
+EXPECT_OK = ["agent_engaged", "mep_zero_ssh", "username_offered", "account_floor_respected", "spend_follows_question",
+             "spend_not_unprompted", "compute_ran", "ends_with_stop"]
 TEARDOWN = "delete"

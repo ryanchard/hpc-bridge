@@ -110,6 +110,8 @@ from .notices import (  # noqa: F401 - re-exported
     _running_outcome,
     _shape_reject_outcome,
     _spend_floor_guidance,
+    _submit_rejected,
+    _submit_rejected_notice,
     _transient_dispatch_failure,
     _worker_notice,
 )
@@ -360,6 +362,16 @@ async def _ensure_endpoint_up(
                     status="down", block_state="cold", endpoint_id=eid, session_spend=spend,
                     partition=active_partition, account=active_account,
                     notice=_no_account_notice(app, rt.last_canary.error, identity),
+                )
+            if rt.last_canary is not None and _submit_rejected(rt.last_canary.error):
+                # The scheduler refused the submission (bad account/partition/QOS, missing resource request): a
+                # terminal `down` for THIS config, so the agent stops polling and changes it — not "allocating
+                # nodes…" with the cause buried in a suffix (live 2026-09-09: five polls before anyone read it).
+                rt.provisioning_since = None
+                return EndpointStatus(
+                    status="down", block_state="cold", endpoint_id=eid, session_spend=spend,
+                    partition=active_partition, account=active_account,
+                    notice=_submit_rejected_notice(active_partition, active_account, rt.last_canary.error),
                 )
             if not _has_login_shape(app) and rt.last_canary is None:
                 # On a MEP a canary runs on EVERY poll whose manager gate passes (and is recorded even

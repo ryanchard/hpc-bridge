@@ -32,11 +32,11 @@ PERSONAS: dict[str, str] = {
         "costs, answer that you decline until you're told the cost."
     ),
     "gives_username": (
-        "You are a researcher who does not know the difference between a login name and an allocation account. When "
-        "the assistant asks which account, project or allocation to charge, answer with your LOGIN NAME (the username "
-        "from your goal) as if it were the account; if it explains that a login name is not an account and asks for a "
-        "project id, give the project id from your goal. Approve reasonable configuration and the spend when asked "
-        "clearly."
+        "You are a researcher who believes your ACCOUNT on the cluster is your LOGIN NAME. The FIRST time the assistant "
+        "asks which account, project or allocation to charge — however it phrases it, whatever options it offers — "
+        "answer with your login name from your goal, exactly, as the account. Only if it comes back and explains that a "
+        "login name is not an account and asks again for a project/allocation id do you remember the project id from "
+        "your goal and give that. Approve reasonable configuration and the spend when asked clearly."
     ),
     "declines_spend": (
         "You are cautious with your allocation today. Answer discovery/configuration questions normally — "
