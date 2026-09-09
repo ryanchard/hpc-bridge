@@ -106,6 +106,10 @@ class MEPFacility:
             "account": account,
             **(d.extra or {}),  # the facility template's own knobs (qos, cores_per_node, scheduler_options…)
         }
+        # facility-defined key names, e.g. NeSI: account -> ACCOUNT_ID, walltime -> WALL_TIME
+        for src, dst in (c.key_map or {}).items():
+            if src in opts:
+                opts[dst] = opts.pop(src)
         fac = cls(
             endpoint_id=entry.compute_mep_uuid,
             name=c.endpoint_name or entry.id,
