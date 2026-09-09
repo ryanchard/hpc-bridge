@@ -259,6 +259,13 @@ reported a "billed start despite the user's refusal" (non-gating for gated_provi
 two words allowed between "no" and preference/problem/idea/worries/need). This is exactly the instrument-validation
 item (step 6, the judge-agreement pass over the prose→regex classifiers) — the regex is the gate; keep auditing it.
 
+**Step 4 — the CAMPAIGN, core pair, DONE (2026-09-09).** claude-sonnet-4.6 through hermes/Argo vs through Claude
+Code, 3 scenarios × n=5, one cell at a time, harnesses interleaved: **30/30 OK**, empty failure taxonomy, no report-only
+grader fired, identical dialogue shape and hpc-bridge call counts, cross-check agreed in all 30, $23.62 Argo. Full record
+with process metrics, validity notes and what the campaign surfaced (the nudge path's first live firing, on a tunnel
+outage): `Reference/Cross-harness benchmark - sonnet-4.6 core pair 2026-09-09.md`. Next: the hostile profile across
+both harnesses (security posture per harness), a provider-path control, a third ACP harness on the same model.
+
 **Still solid:** the driver MECHANICS (persistent session, turn boundaries, human-sim loop, teardown), the live
 `→` tool-call logging (fixed + tested), and now the gate STAMPING (`spend_follows_question`/`choice_respected`).
 Autonomous results, teardown signals, and qualitative behaviours stand.
